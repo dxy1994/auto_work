@@ -1,6 +1,8 @@
 package com.auto.ws;
 
 import com.auto.trade.TradeDispatchCoordinator;
+import com.auto.trade.MarketplaceOrderIngestionService;
+import com.auto.trade.OrderDetectedMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,23 +26,31 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(AgentWebSocketHandler.class);
     private static final String ATTR_MACHINE_ID = "machineId";
+    private static final int MAX_MESSAGE_CHARS = 32 * 1024;
 
     private final AgentRegistry registry;
     private final ObjectMapper objectMapper;
     private final TradeDispatchCoordinator tradeCoordinator;
+    private final MarketplaceOrderIngestionService orderIngestionService;
 
     public AgentWebSocketHandler(
             AgentRegistry registry,
             ObjectMapper objectMapper,
-            TradeDispatchCoordinator tradeCoordinator) {
+            TradeDispatchCoordinator tradeCoordinator,
+            MarketplaceOrderIngestionService orderIngestionService) {
         this.registry = registry;
         this.objectMapper = objectMapper;
         this.tradeCoordinator = tradeCoordinator;
+        this.orderIngestionService = orderIngestionService;
     }
 
     @Override
     @SuppressWarnings("unchecked")
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+        if (message.getPayloadLength() > MAX_MESSAGE_CHARS) {
+            log.warn("[Agent] 忽略超过 32KiB 的上行消息");
+            return;
+        }
         Map<String, Object> raw;
         try {
             raw = objectMapper.readValue(message.getPayload(), Map.class);
@@ -73,6 +83,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             case "captcha_required" -> registry.forwardCaptchaRequired(raw);
             case "trade_offer_decision" -> handleTradeDecision(session, raw);
             case "trade_status" -> handleTradeStatus(session, raw);
+            case "order_detected" -> handleOrderDetected(session, raw);
             default -> log.info("[Agent] 未知上行消息类型: {}", type);
         }
     }
@@ -132,5 +143,38 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
 
     private static String str(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleOrderDetected(WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+            log.warn("[Order] 忽略非当前机器会话的订单观察 machine_id={}", machineId);
+            return;
+        }
+        Integer accountId = asInt(raw.get("account_id"));
+        Object order = raw.get("order");
+        if (accountId == null || !(order instanceof Map<?, ?>)) {
+            log.warn("[Order] 忽略字段不完整的订单观察 machine_id={}", machineId);
+            return;
+        }
+        try {
+            OrderDetectedMessage message = objectMapper.convertValue(
+                    (Map<String, Object>) order, OrderDetectedMessage.class);
+            orderIngestionService.ingest(machineId, accountId, message);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.warn("[Order] 订单观察校验失败 machine_id={}: {}", machineId, e.getMessage());
+        }
+    }
+
+    private static Integer asInt(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return value == null ? null : Integer.parseInt(value.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 }

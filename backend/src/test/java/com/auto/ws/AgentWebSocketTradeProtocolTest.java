@@ -1,6 +1,7 @@
 package com.auto.ws;
 
 import com.auto.trade.TradeDispatchCoordinator;
+import com.auto.trade.MarketplaceOrderIngestionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,7 +26,9 @@ class AgentWebSocketTradeProtocolTest {
     void setUp() {
         registry = mock(AgentRegistry.class);
         coordinator = mock(TradeDispatchCoordinator.class);
-        handler = new AgentWebSocketHandler(registry, new ObjectMapper(), coordinator);
+        handler = new AgentWebSocketHandler(
+                registry, new ObjectMapper(), coordinator,
+                mock(MarketplaceOrderIngestionService.class));
         session = mock(WebSocketSession.class);
         HashMap<String, Object> attributes = new HashMap<>();
         attributes.put("machineId", 7);

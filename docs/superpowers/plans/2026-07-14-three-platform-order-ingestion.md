@@ -139,11 +139,11 @@ git commit -m "feat: ingest marketplace orders idempotently"
 - Test: `worker/tests/test_trade_reporter.py`
 - Test: `backend/src/test/java/com/auto/ws/AgentWebSocketOrderIngestionTest.java`
 
-- [ ] **Step 1: Write failing protocol tests**
+- [x] **Step 1: Write failing protocol tests**
 
 Worker test expects `Reporter.report_order_detected(account_id, order)` to emit `type=order_detected`, `account_id`, and `order.to_wire()`. Backend test sends this JSON from the currently bound session and verifies `MarketplaceOrderIngestionService.ingest(machineId, accountId, order)` once; a replaced session must be ignored.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run both focused suites and confirm missing methods/constructor dependencies.
 

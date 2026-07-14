@@ -74,6 +74,13 @@ class Reporter:
             "message": message,
         })
 
+    def report_order_detected(self, account_id, order):
+        self._client.send_threadsafe({
+            "type": "order_detected",
+            "account_id": account_id,
+            "order": order.to_wire(),
+        })
+
     # ── 验证码交互（跨线程）──
     def report_captcha_required(self, task_id):
         with self._lock:

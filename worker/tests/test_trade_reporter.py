@@ -1,5 +1,7 @@
 import unittest
+from decimal import Decimal
 
+from orders.model import NormalizedOrder
 from reporter import Reporter
 
 
@@ -37,6 +39,21 @@ class TradeReporterTest(unittest.TestCase):
             "assignment_id": "a-1",
             "status": "started",
             "message": "simulation",
+        }, client.messages[0])
+
+    def test_reports_normalized_order_without_credentials(self):
+        client = FakeClient()
+        reporter = Reporter(client)
+        order = NormalizedOrder(
+            "itembay", "B-300", "1", "adena", Decimal("2500000"),
+            "buyer", "paid", "adena")
+
+        reporter.report_order_detected(12, order)
+
+        self.assertEqual({
+            "type": "order_detected",
+            "account_id": 12,
+            "order": order.to_wire(),
         }, client.messages[0])
 
 
