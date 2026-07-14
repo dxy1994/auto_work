@@ -105,25 +105,25 @@ git commit -m "feat: normalize three marketplace order formats"
 - Modify: `sql/2_lineage_trade_foundation.sql`
 - Test: `backend/src/test/java/com/auto/trade/MarketplaceOrderIngestionServiceTest.java`
 
-- [ ] **Step 1: Write failing idempotency and validation tests**
+- [x] **Step 1: Write failing idempotency and validation tests**
 
 Test that `(website_id, source_order_no)` creates exactly one order, a repeated message returns the existing ID, unknown region mapping is rejected before insert, and `asset_type != adena` is suspended with `last_error_code=UNSUPPORTED_ASSET`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `cd backend && mvn -Dmaven.repo.local=/tmp/auto-work-m2 -Dtest=MarketplaceOrderIngestionServiceTest test`  
 Expected: compilation failure for missing ingestion types.
 
-- [ ] **Step 3: Implement the guarded upsert**
+- [x] **Step 3: Implement the guarded upsert**
 
 Add unique key `uk_game_item_orders_source (website_id, source_order_no)`. Parse the message into `OrderDetectedMessage`, resolve the configured internal region ID, create `GameItemOrder` at `validated`, then transition Adena orders to `waiting_assignment`. On duplicate-key races, query and return the existing row. Store only the bounded raw title in `remark`; do not persist HTML or secrets.
 
-- [ ] **Step 4: Verify GREEN and schema contract**
+- [x] **Step 4: Verify GREEN and schema contract**
 
 Run: `cd backend && mvn -Dmaven.repo.local=/tmp/auto-work-m2 -Dtest=MarketplaceOrderIngestionServiceTest,TradeSchemaContractTest test`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/src/main/java/com/auto/trade backend/src/main/java/com/auto/mapper sql backend/src/test/java/com/auto/trade

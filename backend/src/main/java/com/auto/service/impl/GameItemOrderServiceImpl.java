@@ -26,6 +26,13 @@ public class GameItemOrderServiceImpl extends ServiceImpl<GameItemOrderMapper, G
     }
 
     @Override
+    public GameItemOrder findByWebsiteIdAndSourceOrderNo(Integer websiteId, String sourceOrderNo) {
+        return getOne(new LambdaQueryWrapper<GameItemOrder>()
+                .eq(GameItemOrder::getWebsiteId, websiteId)
+                .eq(GameItemOrder::getSourceOrderNo, sourceOrderNo), false);
+    }
+
+    @Override
     public void updateDeliveryStatus(Integer orderId, String expectedStatus, String targetStatus,
                                      String assignmentId) {
         GameItemOrder current = getById(orderId);

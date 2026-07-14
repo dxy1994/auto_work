@@ -9,6 +9,8 @@ public interface GameItemOrderService extends IService<GameItemOrder> {
 
     IPage<GameItemOrder> search(Integer gameId, String status, String keyword, Page<GameItemOrder> page);
 
+    GameItemOrder findByWebsiteIdAndSourceOrderNo(Integer websiteId, String sourceOrderNo);
+
     void updateDeliveryStatus(Integer orderId, String expectedStatus, String targetStatus,
                               String assignmentId);
 }
