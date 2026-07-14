@@ -133,8 +133,17 @@ CREATE TABLE IF NOT EXISTS `game_accounts` (
 CREATE TABLE IF NOT EXISTS `game_item_orders` (
     `id`            INT AUTO_INCREMENT PRIMARY KEY,
     `order_no`      VARCHAR(64)   NOT NULL COMMENT '订单编号(全局唯一)',
+    `website_id`    INT           DEFAULT NULL COMMENT '来源网站ID',
+    `source_order_no` VARCHAR(100) DEFAULT NULL COMMENT '平台订单号',
     `game_id`       INT           NOT NULL COMMENT '关联游戏ID',
     `region_id`     INT           NOT NULL COMMENT '关联大区ID',
+    `game_account_id` INT         DEFAULT NULL COMMENT '执行游戏账号ID',
+    `buyer_character` VARCHAR(100) DEFAULT NULL COMMENT '买家游戏角色名',
+    `asset_type`    VARCHAR(32)   NOT NULL DEFAULT 'adena' COMMENT '交付资产类型',
+    `asset_amount`  DECIMAL(30,0) DEFAULT NULL COMMENT '交付资产数量',
+    `delivery_status` VARCHAR(32) NOT NULL DEFAULT 'detected' COMMENT '自动交付状态',
+    `assignment_id` VARCHAR(36)   DEFAULT NULL COMMENT '当前有效指派ID',
+    `row_version`   INT           NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
     `customer_name` VARCHAR(100)  COMMENT '客户名称',
     `customer_contact` VARCHAR(200) COMMENT '客户联系方式',
     `total_amount`  DECIMAL(12,2) DEFAULT 0.00 COMMENT '订单总金额',
@@ -143,6 +152,10 @@ CREATE TABLE IF NOT EXISTS `game_item_orders` (
     `assigned_machine_id` INT     DEFAULT NULL COMMENT '分配的机器ID',
     `assigned_at`   DATETIME      COMMENT '分配时间',
     `completed_at`  DATETIME      COMMENT '完成时间',
+    `game_delivered_at` DATETIME  COMMENT '游戏交付时间',
+    `website_confirmed_at` DATETIME COMMENT '网站确认时间',
+    `last_error_code` VARCHAR(64) COMMENT '最后错误编码',
+    `last_error_message` VARCHAR(500) COMMENT '最后错误描述',
     `remark`        TEXT          COMMENT '备注',
     `created_at`    DATETIME      DEFAULT CURRENT_TIMESTAMP,
     `updated_at`    DATETIME      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -150,9 +163,12 @@ CREATE TABLE IF NOT EXISTS `game_item_orders` (
     FOREIGN KEY (`region_id`) REFERENCES `game_regions`(`id`),
     FOREIGN KEY (`assigned_machine_id`) REFERENCES `machines`(`id`) ON DELETE SET NULL,
     UNIQUE KEY `uk_order_no` (`order_no`),
+    UNIQUE KEY `uk_source_order` (`website_id`, `source_order_no`),
     KEY `idx_status` (`status`),
     KEY `idx_game` (`game_id`),
-    KEY `idx_machine` (`assigned_machine_id`)
+    KEY `idx_machine` (`assigned_machine_id`),
+    KEY `idx_delivery_status` (`delivery_status`),
+    KEY `idx_assignment_id` (`assignment_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='游戏物品订单主表';
 
 -- ============================================================
@@ -176,6 +192,45 @@ CREATE TABLE IF NOT EXISTS `game_item_order_details` (
     FOREIGN KEY (`item_id`) REFERENCES `game_items`(`id`),
     KEY `idx_order` (`order_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='游戏物品订单子表';
+
+-- ============================================================
+-- 8.1 自动交易指派与事件
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `trade_assignments` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `assignment_id` VARCHAR(36) NOT NULL,
+    `order_id` INT NOT NULL,
+    `machine_id` INT NOT NULL,
+    `game_account_id` INT NOT NULL,
+    `status` VARCHAR(24) NOT NULL,
+    `token_hash` VARCHAR(64) NOT NULL,
+    `lease_expires_at` DATETIME NOT NULL,
+    `reject_reason` VARCHAR(255),
+    `accepted_at` DATETIME,
+    `started_at` DATETIME,
+    `finished_at` DATETIME,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_assignment_id` (`assignment_id`),
+    KEY `idx_assignment_order_status` (`order_id`, `status`),
+    FOREIGN KEY (`order_id`) REFERENCES `game_item_orders` (`id`),
+    FOREIGN KEY (`machine_id`) REFERENCES `machines` (`id`),
+    FOREIGN KEY (`game_account_id`) REFERENCES `game_accounts` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='自动交易指派';
+
+CREATE TABLE IF NOT EXISTS `trade_events` (
+    `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `order_id` INT NOT NULL,
+    `assignment_id` VARCHAR(36),
+    `event_type` VARCHAR(64) NOT NULL,
+    `from_status` VARCHAR(32),
+    `to_status` VARCHAR(32),
+    `message` VARCHAR(500),
+    `payload` JSON,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    KEY `idx_trade_event_order` (`order_id`, `id`),
+    FOREIGN KEY (`order_id`) REFERENCES `game_item_orders` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='自动交易事件日志';
 
 -- ============================================================
 -- 9. 游戏话术表（主游戏默认话术）

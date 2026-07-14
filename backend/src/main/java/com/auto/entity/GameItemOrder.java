@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -22,9 +23,28 @@ public class GameItemOrder {
 
     private String orderNo;
 
+    private Integer websiteId;
+
+    private String sourceOrderNo;
+
     private Integer gameId;
 
     private Integer regionId;
+
+    private Integer gameAccountId;
+
+    private String buyerCharacter;
+
+    private String assetType = "adena";
+
+    private BigDecimal assetAmount;
+
+    private String deliveryStatus = "detected";
+
+    private String assignmentId;
+
+    @Version
+    private Integer rowVersion = 0;
 
     private String customerName;
 
@@ -40,6 +60,14 @@ public class GameItemOrder {
     private LocalDateTime assignedAt;
 
     private LocalDateTime completedAt;
+
+    private LocalDateTime gameDeliveredAt;
+
+    private LocalDateTime websiteConfirmedAt;
+
+    private String lastErrorCode;
+
+    private String lastErrorMessage;
 
     private String remark;
 
