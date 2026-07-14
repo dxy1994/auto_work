@@ -21,7 +21,7 @@ import config
 from automation.audio_alert import play_alert_audio
 from automation.browser import launch_browser, sync_upload_profile
 from automation.login_handler import do_login
-import cookie_reader
+from automation.cookie_reader import save_from_context
 
 PLAYWRIGHT_HEADLESS = config.PLAYWRIGHT_HEADLESS
 
@@ -79,6 +79,34 @@ def _navigate_to_my_page(page, my_page_url, my_page_selector, wait_timeout, tag)
         raise Exception(f"[{tag}] 未配置 my_page_url 或 my_page_selector")
 
 
+def _resolve_my_page(context, page, my_page_url, my_page_selector, wait_timeout, tag):
+    """
+    优先复用恢复的标签页，避免不必要的导航。
+    1. 当前 page.url 已是目标 → 直接返回
+    2. 从 context.pages 中查找匹配的页面 → 返回该页
+    3. 都找不到 → 导航到目标页
+    返回正确的 page（可能是 context.pages 中的另一个页面）。
+    """
+    # URL 模式：尝试复用恢复的标签页
+    if my_page_url:
+        # 1. 当前页面已经是目标
+        if page.url == my_page_url:
+            print(f"[{tag}] 当前页面已是目标页，无需导航")
+            return page
+        # 2. 从其他标签页中找
+        for p in context.pages:
+            if p != page and p.url == my_page_url:
+                print(f"[{tag}] 从恢复标签页中找到目标页: {p.url}")
+                return p
+        # 3. 找不到 → 导航
+        _navigate_to_my_page(page, my_page_url, "", wait_timeout, tag)
+        return page
+
+    # 选择器模式：无法预判目标 URL，直接导航
+    _navigate_to_my_page(page, "", my_page_selector, wait_timeout, tag)
+    return page
+
+
 def _wait_page_stable(page, timeout=15000):
     """等待页面稳定（networkidle + 短暂缓冲）。"""
     page.wait_for_timeout(1000)
@@ -91,7 +119,7 @@ def _wait_page_stable(page, timeout=15000):
 def _save_and_upload(context, account_id):
     """保存 Cookie 并上传浏览器配置到 RustFS。"""
     try:
-        cookie_reader.save_from_context(context, account_id)
+        save_from_context(context, account_id)
     except Exception:
         pass
     try:
@@ -200,8 +228,8 @@ def _generic_monitor(
 
                 # ── 进入"我的页面" ──
                 print(f"[{tag}] ─── 步骤1: 进入我的页面 ───")
-                _navigate_to_my_page(page, my_page_url, my_page_selector,
-                                     wait_timeout, tag)
+                page = _resolve_my_page(context, page, my_page_url,
+                                        my_page_selector, wait_timeout, tag)
 
                 # ── 等待页面稳定 ──
                 print(f"[{tag}] ─── 步骤2: 等待页面加载 ───")
@@ -255,10 +283,21 @@ def _generic_monitor(
         except Exception as e:
             retry_count += 1
             print(f"[{tag}] 第{retry_count}次崩溃，5s后重试: {e}")
+            # ── 异常时确保持久化上下文数据刷盘，下次启动才能复用登录态 ──
             try:
-                page.wait_for_timeout(5000)
+                save_from_context(context, account_id)
             except Exception:
-                time.sleep(5)
+                pass
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                if browser:
+                    browser.close()
+            except Exception:
+                pass
+            time.sleep(5)
 
     return _make_result("failed", f"重试{max_retries}次后仍然失败", start)
 

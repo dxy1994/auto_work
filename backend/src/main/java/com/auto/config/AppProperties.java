@@ -18,7 +18,7 @@ public class AppProperties {
     private String secretKey = "your-32-byte-secret-key-change-this!";
 
     /** CORS 允许来源，逗号分隔。 */
-    private String corsOrigins = "http://localhost:5173,http://127.0.0.1:5173";
+    private String corsOrigins = "http://localhost:5173,http://127.0.0.1:5173,http://192.168.1.24:5173";
 
     public String[] corsOriginArray() {
         return corsOrigins.split(",");

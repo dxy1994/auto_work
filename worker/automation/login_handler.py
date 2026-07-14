@@ -18,12 +18,13 @@ from automation.browser import perform_login
 
 def check_already_logged_in(page: Page, my_page_url: str) -> bool:
     """
-    检测当前临时浏览器会话是否已处于登录态。
-    导航到「我的页面」，如果页面没有被重定向（URL 仍包含 my_page_url），说明已登录。
+    检测当前持久化浏览器会话是否已处于登录态。
+    导航到「我的页面」，通过 URL 匹配 + 登录页关键词检测判断是否已登录。
 
     针对慢速韩国站点（含 reCAPTCHA/广告 iframe）：
     - 使用 wait_until="commit" 快速进入响应阶段，避免 domcontentloaded 被外部资源阻塞而挂起
     - 预留足够的结算/重定向时间，避免在页面跳转前就误判
+    - 增加登录页关键词检测，避免因 URL 不完全匹配而误判
     """
     if not my_page_url:
         print(f"[LoginCheck] 未配置 my_page_url，跳过登录态检测")
@@ -32,7 +33,7 @@ def check_already_logged_in(page: Page, my_page_url: str) -> bool:
     try:
         page.goto(my_page_url, wait_until="commit", timeout=60000)
         # 等待页面结算（可能发生重定向到登录页），给够时间
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(5000)
         try:
             page.wait_for_load_state("domcontentloaded", timeout=20000)
         except Exception:
@@ -42,15 +43,27 @@ def check_already_logged_in(page: Page, my_page_url: str) -> bool:
         except Exception:
             pass
         # 再给一次缓冲，防止延迟重定向
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(2000)
         current_url = page.url
         print(f"[LoginCheck] 导航完成，当前URL: {current_url}")
-        # 页面没有被重定向到其他地方，说明已登录
-        if my_page_url in current_url or current_url.startswith(my_page_url.rsplit('/', 1)[0]):
-            print(f"[LoginCheck] ✅ 已处于登录态，跳过登录")
+
+        # ── 判断逻辑 ──
+        # 1. URL 完全包含目标地址，或在同一父路径下 → 未被重定向到别处，已登录
+        parent_path = my_page_url.rsplit('/', 1)[0]
+        if my_page_url in current_url or current_url.startswith(parent_path):
+            print(f"[LoginCheck] ✅ 已处于登录态（URL匹配），跳过登录")
             return True
-        print(f"[LoginCheck] ❌ 未登录，页面被重定向到: {current_url}")
-        return False
+
+        # 2. 页面被重定向到含登录关键词的 URL → 确认未登录
+        _LOGIN_KEYWORDS = ("login", "signin", "sign-in", "auth/")
+        url_lower = current_url.lower()
+        if any(kw in url_lower for kw in _LOGIN_KEYWORDS):
+            print(f"[LoginCheck] ❌ 未登录，被重定向到登录页: {current_url}")
+            return False
+
+        # 3. URL 不匹配目标但也未跳转到登录页 → 可能已登录（站点内部跳转）
+        print(f"[LoginCheck] ⚠️ URL不完全匹配但未跳转到登录页，视为已登录: {current_url}")
+        return True
     except Exception as e:
         print(f"[LoginCheck] ⚠️ 检测登录态异常: {e}")
         return False

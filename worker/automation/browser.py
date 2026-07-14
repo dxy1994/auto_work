@@ -7,7 +7,7 @@
 浏览器持久化策略：
 - 有 account_id → 使用 launch_persistent_context，按账号隔离 user_data_dir
   Cookie / localStorage 自动持久化到 worker/user_data/{account_id}/
-  登录态跨任务复用，无需重复登录
+  通过 --restore-last-session 恢复上次浏览器会话，保留 session cookie，无需重复登录
 - 无 account_id → 临时上下文，任务结束丢弃所有数据
 """
 import os
@@ -23,7 +23,7 @@ from automation.login_helper import (
     navigate_and_fill_form, submit_and_wait, is_login_success,
 )
 import storage_sync
-import cookie_reader
+from automation.cookie_reader import save_from_context
 
 # Docker 环境下需要 headless 模式，本地开发保持 headed
 PLAYWRIGHT_HEADLESS = config.PLAYWRIGHT_HEADLESS
@@ -55,6 +55,7 @@ def launch_browser(p, headless: bool = False, slow_mo: int = 0, args: list = Non
     """
     launch_args = (args or []) + [
         "--disable-blink-features=AutomationControlled",
+        "--restore-last-session",
     ]
 
     # ── 1. channel 优先（Patchright 推荐：自动匹配驱动版本）──
@@ -104,7 +105,8 @@ def launch_browser(p, headless: bool = False, slow_mo: int = 0, args: list = Non
             **launch_kwargs,
         )
         browser = context.browser
-        page = context.pages[0] if context.pages else context.new_page()
+        # --restore-last-session 会恢复上次标签页，同时产生多余的 about:blank
+        page = _pick_page_and_close_blanks(context)
         print(f"✅ [Browser] persistent user_data_dir={user_data_dir}")
     else:
         browser = p.chromium.launch(**launch_kwargs)
@@ -121,6 +123,43 @@ def launch_browser(p, headless: bool = False, slow_mo: int = 0, args: list = Non
 # ═══════════════════════════════════════════════════════════
 # 内部辅助
 # ═══════════════════════════════════════════════════════════
+
+def _pick_page_and_close_blanks(context: BrowserContext) -> Page:
+    """
+    --restore-last-session 恢复会话时 Chromium 会多开一个 about:blank 页。
+    只关闭 about:blank，保留所有恢复的真实页面。
+    返回最后一个非空白页（最活跃页），若无则返回唯一的 about:blank 页。
+
+    注意：若整个上下文只有一个 about:blank 则不关（关闭会导致浏览器退出）。
+    """
+    pages = context.pages
+    if not pages:
+        return context.new_page()
+
+    blanks = [p for p in pages if p.url == "about:blank"]
+    non_blanks = [p for p in pages if p.url != "about:blank"]
+
+    if non_blanks:
+        # 有真实页面 → 安全关闭所有 about:blank
+        for p in blanks:
+            try:
+                p.close()
+            except Exception:
+                pass
+        return non_blanks[-1]  # 最后一个通常是最近活跃的
+
+    # 没有真实页面，只剩下一个 about:blank → 保留
+    if len(blanks) == 1:
+        return blanks[0]
+
+    # 多个 about:blank → 保留第一个，关闭其余的
+    for p in blanks[1:]:
+        try:
+            p.close()
+        except Exception:
+            pass
+    return blanks[0]
+
 
 _CHROME_PATHS = [
     os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
@@ -339,7 +378,7 @@ def _close_browser(page: Page, browser, account_id: Optional[int] = None):
     ctx = page.context if page else None
     if account_id and ctx:
         try:
-            cookie_reader.save_from_context(ctx, account_id)
+            save_from_context(ctx, account_id)
         except Exception:
             pass
     try:

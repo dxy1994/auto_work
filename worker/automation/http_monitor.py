@@ -21,7 +21,7 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
-import cookie_reader
+from automation.cookie_reader import load
 
 # ── 请求超时 ──
 REQUEST_TIMEOUT = 30
@@ -82,7 +82,7 @@ def check_order(
     order_selector = custom_selector or cfg["order_selector"]
 
     # ── 1. 加载 Cookie ──
-    cookies = cookie_reader.load(account_id)
+    cookies = load(account_id)
     if not cookies:
         return _result("no_cookies", 0, f"账号 {account_id} 无已保存的 Cookie，请先通过浏览器登录一次", start)
 

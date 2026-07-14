@@ -1,5 +1,5 @@
 patchright
-websockets==16.0
+websockets==16.1
 python-dotenv==1.2.2
 pygame>=2.6
 pyttsx3>=2.97
