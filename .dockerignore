@@ -1,0 +1,38 @@
+# .dockerignore - 排除不需要发送到 Docker daemon 的文件
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+backend/.venv
+backend/venv
+backend/.env
+.env
+worker/.env
+worker/user_data
+
+# Node
+node_modules
+frontend/dist
+frontend/.vite
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+
+# Misc
+*.md
+*.log

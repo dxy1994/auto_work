@@ -1,0 +1,132 @@
+services:
+  # ────────────────────────────────────────
+  # MySQL 数据库
+  # ────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: auto-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_NAME:-auto_login}
+      TZ: Asia/Shanghai
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/logs:/var/log/mysql
+      - ./mysql/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
+      # ── 初始化 SQL（按编号顺序执行，仅首次启动生效）──
+      - ./sql/1_init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./sql/1_central_control.sql:/docker-entrypoint-initdb.d/02_central_control.sql:ro
+      - ./sql/websites_1.sql:/docker-entrypoint-initdb.d/03_websites.sql:ro
+      - ./sql/accounts_1.sql:/docker-entrypoint-initdb.d/04_accounts.sql:ro
+      - ./sql/website_schedules_1.sql:/docker-entrypoint-initdb.d/05_schedules.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ────────────────────────────────────────
+  # RustFS 对象存储 (S3 兼容)
+  # ────────────────────────────────────────
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: auto-rustfs
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${STORAGE_SECRET_KEY:-rustfsadmin}
+    ports:
+      - "${STORAGE_PORT:-9000}:9000"
+    volumes:
+      - rustfs_data:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:9000/ || wget -q -O /dev/null http://localhost:9000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ────────────────────────────────────────
+  # Spring Boot 后端
+  # ────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: auto-backend
+    restart: unless-stopped
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-root}
+      DB_NAME: ${DB_NAME:-auto_login}
+      SECRET_KEY: ${SECRET_KEY:-change-this-to-a-32-byte-secret-key!!}
+      API_PORT: 8000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      PLAYWRIGHT_HEADLESS: "true"
+      # 对象存储 (RustFS / S3 兼容)
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-http://rustfs:9000}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-rustfsadmin}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-rustfsadmin}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-auto-uploads}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
+      STORAGE_PATH_STYLE: "true"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+
+  # ────────────────────────────────────────
+  # Vite 前端 (开发模式)
+  # ────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: dev
+    container_name: auto-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_TARGET: http://backend:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/index.html:/app/index.html:ro
+      - ./frontend/vite.config.js:/app/vite.config.js:ro
+    command: npm run dev -- --host 0.0.0.0
+
+  # ────────────────────────────────────────
+  # 前端 (生产模式 nginx) —— 使用 profile prod 启用
+  # docker compose --profile prod up -d --build
+  # ────────────────────────────────────────
+  frontend-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: prod
+    container_name: auto-frontend-prod
+    restart: unless-stopped
+    profiles:
+      - prod
+    ports:
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
+    driver: local
+  rustfs_data:
+    driver: local
