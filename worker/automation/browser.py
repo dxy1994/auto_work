@@ -254,90 +254,56 @@ def run_manual_login(
 ) -> dict:
     """
     手动登录模式（适用于 captcha 类型网站）：
-    - 以 headed 模式打开浏览器
-    - 自动填充用户名和密码
-    - 通过 reporter 通知前端等待人工操作
-    - 等待人工解决验证码并手动点击登录
-    - 后台轮询检测页面跳转，判断登录成功
-    - 超时时间：5 分钟
-    - 登录成功、失败或超时后均关闭浏览器
+    委托 login_handler._do_manual_login_on_page 执行核心逻辑，
+    本函数负责浏览器生命周期管理与事件上报。
     """
     start = time.time()
-    MANUAL_TIMEOUT = 300
-    POLL_INTERVAL = 3
-
     reporter = get_reporter()
-    username_sel = login_config.get("username_selector", "input[name='username']")
-    password_sel = login_config.get("password_selector", "input[name='password']")
-    success_url = login_config.get("success_url", "")
 
     with sync_playwright() as p:
-        browser, context, page = launch_browser(p, headless=False, slow_mo=100, account_id=account_id)
+        browser, context, page = launch_browser(
+            p, headless=False, slow_mo=100, account_id=account_id,
+        )
 
         try:
-            # 1. 导航到登录页
-            page.goto(url, wait_until="commit", timeout=60000)
-            page.wait_for_timeout(2000)
+            from automation.login_handler import _do_manual_login_on_page
 
-            # 2. 尝试自动填充用户名和密码
-            try:
-                page.wait_for_selector(username_sel, timeout=5000)
-                page.fill(username_sel, username)
-            except Exception:
-                pass
+            # 通知前端：即将开始手动登录
+            reporter.report_event(
+                task_id, "manual_login_ready",
+                "表单将自动填充，请在浏览器中手动完成验证码并登录",
+                account_id,
+            )
 
-            try:
-                page.wait_for_selector(password_sel, timeout=5000)
-                page.fill(password_sel, password)
-            except Exception:
-                pass
+            result = _do_manual_login_on_page(
+                page, url, username, password, login_config,
+                website_id, account_id, stop_event=stop_event,
+            )
 
-            # 2.5 通知前端：表单已填充，等待人工完成验证码和登录
-            reporter.report_event(task_id, "manual_login_ready",
-                                  "表单已自动填充，请在浏览器中手动完成验证码并登录",
-                                  account_id)
-
-            # 3. 轮询等待用户手动完成登录
-            login_page_url = page.url
-            while (time.time() - start) < MANUAL_TIMEOUT:
-                if stop_event is not None and stop_event.is_set():
-                    reporter.report_event(task_id, "login_cancelled", "登录任务已停止", account_id)
-                    return _stopped_result(start)
-                page.wait_for_timeout(POLL_INTERVAL * 1000)
-                try:
-                    current_url = page.url
-                except Exception:
-                    break
-
-                if success_url and success_url in current_url:
-                    reporter.report_event(task_id, "login_success",
-                                          f"登录成功，当前页面：{current_url}", account_id)
-                    return {
-                        "status": "success",
-                        "message": f"登录成功，当前页面：{current_url}",
-                        "duration_ms": int((time.time() - start) * 1000),
-                    }
-                if current_url != login_page_url and current_url != url:
-                    reporter.report_event(task_id, "login_success",
-                                          f"登录成功（页面跳转），当前：{current_url}", account_id)
-                    return {
-                        "status": "success",
-                        "message": f"登录成功（页面跳转），当前：{current_url}",
-                        "duration_ms": int((time.time() - start) * 1000),
-                    }
-
-            # 超时 → 关闭浏览器
-            reporter.report_event(task_id, "login_timeout",
-                                  "手动登录超时，请确认是否已完成登录", account_id)
-            return {
-                "status": "timeout",
-                "message": "手动登录超时，请确认是否已完成登录",
-                "duration_ms": int((time.time() - start) * 1000),
-            }
+            # 根据结果上报对应事件
+            status = result["status"]
+            if status == "success":
+                reporter.report_event(
+                    task_id, "login_success",
+                    result["message"], account_id,
+                )
+            elif status == "timeout":
+                reporter.report_event(
+                    task_id, "login_timeout",
+                    "手动登录超时，请确认是否已完成登录", account_id,
+                )
+            elif status in ("failed", "cancelled"):
+                reporter.report_event(
+                    task_id, "login_failed",
+                    result["message"], account_id,
+                )
+            return result
 
         except Exception as e:
-            reporter.report_event(task_id, "login_failed",
-                                  f"登录过程异常：{str(e)}", account_id)
+            reporter.report_event(
+                task_id, "login_failed",
+                f"登录过程异常：{str(e)}", account_id,
+            )
             return {
                 "status": "failed",
                 "message": f"登录过程异常：{str(e)}",

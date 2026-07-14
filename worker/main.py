@@ -95,7 +95,8 @@ def _uninstall_autostart() -> bool:
 # 任务处理
 # ═══════════════════════════════════════════════════════════
 
-def _handle_login(msg, reporter, task_manager):
+def _submit_task(msg, reporter, task_manager, run_func, task_kind="login"):
+    """通用任务提交：执行 run_func 并通过 reporter 回报结果。"""
     task_id = msg["task_id"]
     account_id = msg.get("account_id")
 
@@ -104,88 +105,58 @@ def _handle_login(msg, reporter, task_manager):
             result = {"status": "failed", "message": "任务已停止", "duration_ms": 0}
         else:
             try:
-                result = run_auto_login(
-                    task_id=task_id,
-                    url=msg["url"],
-                    username=msg["username"],
-                    password=msg["password"],
-                    login_type=msg.get("login_type", "form"),
-                    login_config=msg.get("login_config") or {},
-                    website_id=msg.get("website_id"),
-                    account_id=account_id,
-                    stop_event=stop_event,
-                )
+                result = run_func(msg, stop_event, account_id, task_id)
             except Exception as e:
                 result = {"status": "failed", "message": f"浏览器任务启动失败：{e}", "duration_ms": 0}
         reporter.report_result(task_id, account_id, result)
 
-    if not task_manager.run_login(task_id, account_id, _runner):
-        reporter.report_result(task_id, account_id, {
-            "status": "failed",
-            "message": "该账号已有任务在运行",
-            "duration_ms": 0,
-        })
-
-
-def _handle_manual_login(msg, reporter, task_manager):
-    task_id = msg["task_id"]
-    account_id = msg.get("account_id")
-
-    def _runner(stop_event):
-        if stop_event.is_set():
-            result = {"status": "failed", "message": "任务已停止", "duration_ms": 0}
-        else:
-            try:
-                result = run_manual_login(
-                    task_id=task_id,
-                    url=msg["url"],
-                    username=msg["username"],
-                    password=msg["password"],
-                    login_config=msg.get("login_config") or {},
-                    website_id=msg.get("website_id"),
-                    account_id=account_id,
-                    stop_event=stop_event,
-                )
-            except Exception as e:
-                result = {"status": "failed", "message": f"浏览器任务启动失败：{e}", "duration_ms": 0}
-        reporter.report_result(task_id, account_id, result)
-
-    if not task_manager.run_login(task_id, account_id, _runner):
-        reporter.report_result(task_id, account_id, {
-            "status": "failed",
-            "message": "该账号已有任务在运行",
-            "duration_ms": 0,
-        })
-
-
-def _handle_order_check(msg, reporter, task_manager):
-    task_id = msg["task_id"]
-    account_id = msg.get("account_id")
-
-    def _runner(stop_event):
-        try:
-            result = run_order_check(
-                task_id=task_id,
-                website_id=msg.get("website_id"),
-                account_id=account_id,
-                url=msg.get("url"),
-                username=msg.get("username"),
-                password=msg.get("password"),
-                login_type=msg.get("login_type", "form"),
-                login_config=msg.get("login_config") or {},
-                stop_event=stop_event,
-            )
-        except Exception as e:
-            result = {"status": "failed", "message": f"浏览器任务启动失败：{e}", "duration_ms": 0}
-        reporter.report_result(task_id, account_id, result)
-
-    started = task_manager.start_order_check(task_id, account_id, _runner)
+    started = task_manager.run_login(task_id, account_id, _runner) \
+        if task_kind == "login" \
+        else task_manager.start_order_check(task_id, account_id, _runner)
     if not started:
         reporter.report_result(task_id, account_id, {
             "status": "failed",
             "message": "该账号已有任务在运行",
             "duration_ms": 0,
         })
+
+
+def _handle_login(msg, reporter, task_manager):
+    def run(msg, stop_event, account_id, task_id):
+        return run_auto_login(
+            task_id=task_id, url=msg["url"],
+            username=msg["username"], password=msg["password"],
+            login_type=msg.get("login_type", "form"),
+            login_config=msg.get("login_config") or {},
+            website_id=msg.get("website_id"), account_id=account_id,
+            stop_event=stop_event,
+        )
+    _submit_task(msg, reporter, task_manager, run)
+
+
+def _handle_manual_login(msg, reporter, task_manager):
+    def run(msg, stop_event, account_id, task_id):
+        return run_manual_login(
+            task_id=task_id, url=msg["url"],
+            username=msg["username"], password=msg["password"],
+            login_config=msg.get("login_config") or {},
+            website_id=msg.get("website_id"), account_id=account_id,
+            stop_event=stop_event,
+        )
+    _submit_task(msg, reporter, task_manager, run)
+
+
+def _handle_order_check(msg, reporter, task_manager):
+    def run(msg, stop_event, account_id, task_id):
+        return run_order_check(
+            task_id=task_id, website_id=msg.get("website_id"),
+            account_id=account_id, url=msg.get("url"),
+            username=msg.get("username"), password=msg.get("password"),
+            login_type=msg.get("login_type", "form"),
+            login_config=msg.get("login_config") or {},
+            stop_event=stop_event,
+        )
+    _submit_task(msg, reporter, task_manager, run, task_kind="order_check")
 
 
 async def _dispatch_message(msg, reporter, task_manager):

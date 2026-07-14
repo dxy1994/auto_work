@@ -9,6 +9,7 @@ RustFS，下次启动时从 RustFS 下载恢复。实现跨机器的登录态共
 import os
 import tempfile
 import zipfile
+from typing import Optional
 
 import config
 
@@ -49,6 +50,32 @@ def _get_client():
         return None
     except Exception as e:
         print(f"[StorageSync] S3 client 初始化失败: {e}")
+        return None
+
+
+def download_file(object_key: str, suffix: str = "") -> Optional[str]:
+    """从 RustFS 下载单个文件到临时目录，返回临时文件路径；失败返回 None。
+
+    调用方负责在使用完毕后删除临时文件。
+    """
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        client.head_object(Bucket=config.STORAGE_BUCKET, Key=object_key)
+    except Exception:
+        print(f"[StorageSync] RustFS 中无对象: {object_key}")
+        return None
+
+    tmp_path = tempfile.mktemp(suffix=suffix)
+    try:
+        client.download_file(config.STORAGE_BUCKET, object_key, tmp_path)
+        print(f"[StorageSync] ✅ 从 RustFS 下载: {object_key} → {tmp_path}")
+        return tmp_path
+    except Exception as e:
+        print(f"[StorageSync] ❌ 下载文件失败 {object_key}: {e}")
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
         return None
 
 
