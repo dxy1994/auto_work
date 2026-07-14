@@ -43,6 +43,7 @@ frontend/dist/
 # IDE
 # ================================
 .idea/
+.worktrees/
 *.iml
 .vscode/
 *.swp
