@@ -24,6 +24,7 @@ from reporter import Reporter, set_reporter
 from task_manager import TaskManager
 from automation.browser import run_auto_login, run_manual_login
 from automation.order_monitor import run_order_check
+from trade.runtime_status import runtime_status
 
 
 # ═══════════════════════════════════════════════════════════
@@ -184,7 +185,7 @@ async def _dispatch_message(msg, reporter, task_manager):
 async def _heartbeat(client):
     while True:
         await asyncio.sleep(config.HEARTBEAT_INTERVAL)
-        await client.send({"type": "heartbeat"})
+        await client.send({"type": "heartbeat", "runtime": runtime_status.snapshot()})
 
 
 async def _connect_once(task_manager):

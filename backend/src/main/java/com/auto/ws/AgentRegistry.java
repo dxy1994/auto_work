@@ -2,6 +2,7 @@ package com.auto.ws;
 
 import com.auto.entity.Machine;
 import com.auto.service.MachineService;
+import com.auto.trade.WorkerRuntimeStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,6 +44,8 @@ public class AgentRegistry {
     private final Map<String, CompletableFuture<Map<String, Object>>> loginFutures = new ConcurrentHashMap<>();
     /** 已结束任务号隔离期，防止客户端立即复用后被迟到结果污染。 */
     private final Map<String, Long> retiredTaskIds = new ConcurrentHashMap<>();
+    /** machine_id -> Worker 最近一次游戏运行态。 */
+    private final Map<Integer, WorkerRuntimeStatus> runtimeStatuses = new ConcurrentHashMap<>();
     private static final long TASK_ID_QUARANTINE_MS = 30 * 60 * 1000L;
     private final Object taskLock = new Object();
 
@@ -113,6 +116,11 @@ public class AgentRegistry {
     }
 
     public void updateHeartbeat(int machineId) {
+        updateHeartbeat(machineId, Map.of());
+    }
+
+    @SuppressWarnings("unchecked")
+    public void updateHeartbeat(int machineId, Map<String, Object> msg) {
         Machine m = machineService.getById(machineId);
         if (m != null) {
             m.setLastHeartbeat(LocalDateTime.now());
@@ -121,6 +129,23 @@ public class AgentRegistry {
             }
             machineService.updateById(m);
         }
+        Object runtimeObj = msg.get("runtime");
+        if (runtimeObj instanceof Map<?, ?> rawRuntime) {
+            Map<String, Object> runtime = (Map<String, Object>) rawRuntime;
+            runtimeStatuses.put(machineId, new WorkerRuntimeStatus(
+                    asInt(runtime.get("game_id")),
+                    asInt(runtime.get("game_account_id")),
+                    asInt(runtime.get("region_id")),
+                    str(runtime.get("client_status")),
+                    str(runtime.get("character_name")),
+                    str(runtime.get("executor_status")),
+                    str(runtime.get("current_assignment_id")),
+                    str(runtime.get("ui_health"))));
+        }
+    }
+
+    public WorkerRuntimeStatus getRuntimeStatus(int machineId) {
+        return runtimeStatuses.get(machineId);
     }
 
     public void setMachineOffline(int machineId) {
@@ -138,6 +163,7 @@ public class AgentRegistry {
             return;
         }
         setMachineOffline(machineId);
+        runtimeStatuses.remove(machineId);
         failTasksForMachine(machineId, "worker 断线，任务中断");
     }
 

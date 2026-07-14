@@ -58,7 +58,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             case "heartbeat" -> {
                 Integer machineId = machineId(session);
                 if (machineId != null) {
-                    registry.updateHeartbeat(machineId);
+                    registry.updateHeartbeat(machineId, raw);
                 }
             }
             case "task_status" -> registry.handleTaskStatus(raw, session);
