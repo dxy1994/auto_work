@@ -9,5 +9,7 @@ public interface MachineGameService extends IService<MachineGame> {
 
     List<MachineGame> findByMachineIdActiveOrderByPriorityDesc(Integer machineId);
 
+    List<MachineGame> findByGameIdActiveOrderByPriorityDesc(Integer gameId);
+
     MachineGame findByMachineIdAndGameId(Integer machineId, Integer gameId);
 }

@@ -1,5 +1,6 @@
 package com.auto.ws;
 
+import com.auto.trade.TradeDispatchCoordinator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,10 +27,15 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
 
     private final AgentRegistry registry;
     private final ObjectMapper objectMapper;
+    private final TradeDispatchCoordinator tradeCoordinator;
 
-    public AgentWebSocketHandler(AgentRegistry registry, ObjectMapper objectMapper) {
+    public AgentWebSocketHandler(
+            AgentRegistry registry,
+            ObjectMapper objectMapper,
+            TradeDispatchCoordinator tradeCoordinator) {
         this.registry = registry;
         this.objectMapper = objectMapper;
+        this.tradeCoordinator = tradeCoordinator;
     }
 
     @Override
@@ -65,6 +71,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             case "task_result" -> registry.handleTaskResult(raw, session);
             case "task_event" -> registry.forwardEventToFrontend(raw);
             case "captcha_required" -> registry.forwardCaptchaRequired(raw);
+            case "trade_offer_decision" -> handleTradeDecision(session, raw);
+            case "trade_status" -> handleTradeStatus(session, raw);
             default -> log.info("[Agent] 未知上行消息类型: {}", type);
         }
     }
@@ -86,5 +94,43 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
     private Integer machineId(WebSocketSession session) {
         Object v = session.getAttributes().get(ATTR_MACHINE_ID);
         return v instanceof Integer ? (Integer) v : null;
+    }
+
+    private void handleTradeDecision(WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+            log.warn("[Trade] 忽略非当前机器会话的 offer 决策 machine_id={}", machineId);
+            return;
+        }
+        try {
+            tradeCoordinator.handleDecision(
+                    str(raw.get("assignment_id")),
+                    machineId,
+                    Boolean.TRUE.equals(raw.get("accepted")),
+                    str(raw.get("reason")));
+        } catch (IllegalStateException e) {
+            log.warn("[Trade] 忽略无效 offer 决策 machine_id={}: {}", machineId, e.getMessage());
+        }
+    }
+
+    private void handleTradeStatus(WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+            log.warn("[Trade] 忽略非当前机器会话的状态 machine_id={}", machineId);
+            return;
+        }
+        try {
+            tradeCoordinator.handleStatus(
+                    str(raw.get("assignment_id")),
+                    machineId,
+                    str(raw.get("status")),
+                    str(raw.get("message")));
+        } catch (IllegalStateException e) {
+            log.warn("[Trade] 忽略无效交易状态 machine_id={}: {}", machineId, e.getMessage());
+        }
+    }
+
+    private static String str(Object value) {
+        return value == null ? null : value.toString();
     }
 }

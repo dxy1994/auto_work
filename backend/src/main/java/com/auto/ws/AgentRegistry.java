@@ -2,6 +2,7 @@ package com.auto.ws;
 
 import com.auto.entity.Machine;
 import com.auto.service.MachineService;
+import com.auto.trade.TradeOffer;
 import com.auto.trade.WorkerRuntimeStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -148,6 +149,15 @@ public class AgentRegistry {
         return runtimeStatuses.get(machineId);
     }
 
+    public boolean isAgentOnline(int machineId) {
+        WebSocketSession session = agentConnections.get(machineId);
+        return session != null && session.isOpen();
+    }
+
+    public boolean isCurrentSession(int machineId, WebSocketSession session) {
+        return session != null && agentConnections.get(machineId) == session;
+    }
+
     public void setMachineOffline(int machineId) {
         Machine m = machineService.getById(machineId);
         if (m != null) {
@@ -279,6 +289,26 @@ public class AgentRegistry {
 
     private boolean sendToAgent(int machineId, Map<String, Object> payload) {
         return sendJson(agentConnections.get(machineId), payload);
+    }
+
+    /** 向候选 Worker 发出有时效的交易指派，尚不授权执行。 */
+    public boolean sendTradeOffer(int machineId, TradeOffer offer) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "trade_offer");
+        payload.put("assignment_id", offer.assignmentId());
+        payload.put("execution_token", offer.executionToken());
+        payload.put("lease_expires_at", offer.leaseExpiresAt().toString());
+        payload.put("order", offer.orderPayload());
+        return sendToAgent(machineId, payload);
+    }
+
+    /** Worker 接受 offer 后，使用同一不可持久化明文令牌授权开始。 */
+    public boolean sendTradeStart(int machineId, String assignmentId, String executionToken) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "trade_start");
+        payload.put("assignment_id", assignmentId);
+        payload.put("execution_token", executionToken);
+        return sendToAgent(machineId, payload);
     }
 
     /** 下发登录任务，返回可等待的 Future（agent 回 task_result 时被唤醒）。 */

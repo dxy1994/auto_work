@@ -9,6 +9,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 @Service
 public class GameAccountServiceImpl extends ServiceImpl<GameAccountMapper, GameAccount>
         implements GameAccountService {
@@ -26,5 +28,16 @@ public class GameAccountServiceImpl extends ServiceImpl<GameAccountMapper, GameA
                         .or().like(GameAccount::getNickname, keyword))
                 .orderByDesc(GameAccount::getId);
         return page(page, w);
+    }
+
+    @Override
+    public List<GameAccount> findIdleByGameAndRegion(Integer gameId, Integer regionId) {
+        return list(new LambdaQueryWrapper<GameAccount>()
+                .eq(GameAccount::getGameId, gameId)
+                .eq(GameAccount::getRegionId, regionId)
+                .eq(GameAccount::getStatus, "idle")
+                .eq(GameAccount::getIsActive, 1)
+                .isNotNull(GameAccount::getMachineId)
+                .orderByAsc(GameAccount::getId));
     }
 }

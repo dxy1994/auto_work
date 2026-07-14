@@ -22,6 +22,15 @@ public class MachineGameServiceImpl extends ServiceImpl<MachineGameMapper, Machi
     }
 
     @Override
+    public List<MachineGame> findByGameIdActiveOrderByPriorityDesc(Integer gameId) {
+        return list(new LambdaQueryWrapper<MachineGame>()
+                .eq(MachineGame::getGameId, gameId)
+                .eq(MachineGame::getIsActive, 1)
+                .orderByDesc(MachineGame::getPriority)
+                .orderByAsc(MachineGame::getMachineId));
+    }
+
+    @Override
     public MachineGame findByMachineIdAndGameId(Integer machineId, Integer gameId) {
         return getOne(new LambdaQueryWrapper<MachineGame>()
                 .eq(MachineGame::getMachineId, machineId)

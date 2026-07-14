@@ -549,7 +549,7 @@ git commit -m "feat: add two-phase worker trade gate"
 - Modify: `backend/src/main/java/com/auto/ws/AgentWebSocketHandler.java`
 - Test: `backend/src/test/java/com/auto/trade/TradeDispatchCoordinatorTest.java`
 
-- [ ] **Step 1: Write failing coordinator tests**
+- [x] **Step 1: Write failing coordinator tests**
 
 Use Mockito to mock order, assignment, event and registry dependencies. Cover these cases:
 
@@ -578,11 +578,11 @@ void staleDecisionCannotStartTrade() {
 }
 ```
 
-- [ ] **Step 2: Run and verify compilation failure**
+- [x] **Step 2: Run and verify compilation failure**
 
 Run the Maven test with `-Dtest=TradeDispatchCoordinatorTest`.
 
-- [ ] **Step 3: Implement transactional coordination**
+- [x] **Step 3: Implement transactional coordination**
 
 The coordinator must:
 
@@ -642,7 +642,7 @@ public boolean sendTradeStart(int machineId, String assignmentId, String token) 
 
 Route `trade_offer_decision` and `trade_status` from `AgentWebSocketHandler` only when the sender session is still bound to the assignment machine. Add `POST /api/trades/{orderId}/dispatch` and `GET /api/trades/{orderId}/status` for controlled phase-one validation.
 
-- [ ] **Step 4: Run coordinator and full Backend tests**
+- [x] **Step 4: Run coordinator and full Backend tests**
 
 ```bash
 cd backend
@@ -652,7 +652,7 @@ cd backend
 
 Expected: coordinator tests and full Backend test suite PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/src/main/java/com/auto/trade backend/src/main/java/com/auto/controller/TradeDispatchController.java backend/src/main/java/com/auto/service backend/src/main/java/com/auto/ws backend/src/test/java/com/auto/trade/TradeDispatchCoordinatorTest.java
