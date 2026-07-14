@@ -666,11 +666,11 @@ git commit -m "feat: coordinate two-phase trade assignment"
 - Modify: `worker/README.md`
 - Create: `docs/trade-foundation-verification.md`
 
-- [ ] **Step 1: Document the simulation boundary and protocol**
+- [x] **Step 1: Document the simulation boundary and protocol**
 
 Document that phase one intentionally stops at a simulation runner, list `trade_offer`, `trade_offer_decision`, `trade_start`, `trade_status`, and `trade_cancel`, and state that no screen capture or input dependency exists yet.
 
-- [ ] **Step 2: Run all automated verification**
+- [x] **Step 2: Run all automated verification**
 
 ```bash
 cd backend
@@ -692,14 +692,14 @@ Expected:
 - `git diff --check`: no output.
 - `git status`: only the two documentation files before final commit.
 
-- [ ] **Step 3: Commit verification documentation**
+- [x] **Step 3: Commit verification documentation**
 
 ```bash
 git add worker/README.md docs/trade-foundation-verification.md docs/superpowers/plans/2026-07-14-lineage-classic-trade-foundation.md
 git commit -m "docs: verify trade scheduling foundation"
 ```
 
-- [ ] **Step 4: Record the next plan boundaries**
+- [x] **Step 4: Record the next plan boundaries**
 
 After this plan passes, create separate implementation plans in this order:
 
