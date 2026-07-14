@@ -62,7 +62,7 @@ git commit -m "feat: define normalized marketplace order"
 - Create: `worker/tests/fixtures/itembay_order.json`
 - Create: `worker/tests/test_order_adapters.py`
 
-- [ ] **Step 1: Add fixture-driven failing tests**
+- [x] **Step 1: Add fixture-driven failing tests**
 
 Each fixture contains only extracted text keyed by `order_no`, `region`, `title`, `quantity`, `buyer`, and `status`. Test `adapter_for("itemmania")`, `adapter_for("barotem")`, and `adapter_for("itembay")`; each must return the same `NormalizedOrder` semantics and must ignore unpaid/cancelled rows.
 
@@ -74,21 +74,21 @@ def test_itemmania_paid_adena_row_is_normalized():
     assert order.asset_amount == Decimal("2500000")
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `cd worker && python3 -m unittest tests.test_order_adapters -v`  
 Expected: import failure for `orders.adapters`.
 
-- [ ] **Step 3: Implement adapters without browser dependencies**
+- [x] **Step 3: Implement adapters without browser dependencies**
 
 Define `ItemmaniaAdapter`, `BarotemAdapter`, and `ItembayAdapter`. Keep Korean number cleanup in one helper that accepts commas and `만` units. `normalize(raw)` returns `None` unless status is in that platform adapter's paid/ready allowlist. `adapter_for` accepts only the three stable platform codes and raises `ValueError` otherwise.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `cd worker && python3 -m unittest tests.test_order_adapters -v`  
 Expected: all three platform tests PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add worker/orders/adapters.py worker/tests/fixtures worker/tests/test_order_adapters.py
