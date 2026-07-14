@@ -17,7 +17,7 @@
 - Create: `worker/orders/model.py`
 - Create: `worker/tests/test_normalized_order.py`
 
-- [ ] **Step 1: Write the failing contract test**
+- [x] **Step 1: Write the failing contract test**
 
 ```python
 from decimal import Decimal
@@ -32,21 +32,21 @@ def test_wire_payload_uses_stable_protocol_fields():
     }
 ```
 
-- [ ] **Step 2: Run the test and verify it fails**
+- [x] **Step 2: Run the test and verify it fails**
 
 Run: `cd worker && python3 -m unittest tests.test_normalized_order -v`  
 Expected: import failure for `orders.model`.
 
-- [ ] **Step 3: Implement the immutable value object**
+- [x] **Step 3: Implement the immutable value object**
 
 Use a frozen dataclass, reject empty order number/buyer, reject non-Adena assets in this phase, and require `asset_amount > 0`. `to_wire()` must serialize `Decimal` as a plain decimal string and never include credentials, cookies or full page HTML.
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `cd worker && python3 -m unittest tests.test_normalized_order -v`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add worker/orders worker/tests/test_normalized_order.py
