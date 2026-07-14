@@ -58,6 +58,22 @@ class Reporter:
             "message": message,
         })
 
+    def report_trade_offer_decision(self, assignment_id, accepted, reason=""):
+        self._client.send_threadsafe({
+            "type": "trade_offer_decision",
+            "assignment_id": assignment_id,
+            "accepted": accepted,
+            "reason": reason,
+        })
+
+    def report_trade_status(self, assignment_id, status, message=""):
+        self._client.send_threadsafe({
+            "type": "trade_status",
+            "assignment_id": assignment_id,
+            "status": status,
+            "message": message,
+        })
+
     # ── 验证码交互（跨线程）──
     def report_captcha_required(self, task_id):
         with self._lock:

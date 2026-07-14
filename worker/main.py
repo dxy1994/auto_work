@@ -25,6 +25,7 @@ from task_manager import TaskManager
 from automation.browser import run_auto_login, run_manual_login
 from automation.order_monitor import run_order_check
 from trade.runtime_status import runtime_status
+from trade.task_gate import trade_task_gate
 
 
 # ═══════════════════════════════════════════════════════════
@@ -174,6 +175,44 @@ async def _dispatch_message(msg, reporter, task_manager):
         print(f"[Worker] 收到 cancel account_id={account_id}, ok={ok}")
     elif mtype == "captcha_input":
         reporter.deliver_captcha(msg.get("task_id"), msg.get("value", ""))
+    elif mtype == "trade_offer":
+        assignment_id = msg.get("assignment_id")
+        accepted, reason = trade_task_gate.offer(
+            assignment_id, msg.get("execution_token"))
+        if accepted:
+            runtime_status.update(
+                executor_status="reserved",
+                current_assignment_id=assignment_id,
+            )
+        reporter.report_trade_offer_decision(
+            assignment_id, accepted, "" if accepted else reason)
+    elif mtype == "trade_start":
+        assignment_id = msg.get("assignment_id")
+        if trade_task_gate.start(assignment_id, msg.get("execution_token")):
+            runtime_status.update(
+                executor_status="running",
+                current_assignment_id=assignment_id,
+            )
+            reporter.report_trade_status(
+                assignment_id, "started", "simulation runner started")
+            reporter.report_trade_status(
+                assignment_id, "simulation_completed", "no game input executed")
+            trade_task_gate.complete(assignment_id)
+            runtime_status.update(
+                executor_status="idle",
+                current_assignment_id=None,
+            )
+        else:
+            reporter.report_trade_status(
+                assignment_id, "start_rejected", "assignment or token mismatch")
+    elif mtype == "trade_cancel":
+        assignment_id = msg.get("assignment_id")
+        if trade_task_gate.cancel(assignment_id):
+            runtime_status.update(
+                executor_status="idle",
+                current_assignment_id=None,
+            )
+            reporter.report_trade_status(assignment_id, "cancelled")
     else:
         print(f"[Worker] 未知消息类型: {mtype}")
 
