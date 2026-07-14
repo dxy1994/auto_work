@@ -139,6 +139,19 @@ def _safe_reload_or_navigate(page, my_page_url, wait_timeout, tag):
         page.wait_for_timeout(2000)
 
 
+def _default_check_login_status(page, login_url, tag):
+    """默认登录状态检查：检测当前URL是否被重定向到登录页。
+    若当前页面 URL 前缀匹配登录页地址 → 登录已失效，返回 False。
+    """
+    if not login_url:
+        return True
+    current_url = page.url
+    if current_url.startswith(login_url):
+        print(f"[{tag}] ⚠️ 登录失效，当前在登录页: {current_url}")
+        return False
+    return True
+
+
 # ═══════════════════════════════════════════════════════════
 # 通用订单监控循环
 # ═══════════════════════════════════════════════════════════
@@ -158,6 +171,7 @@ def _generic_monitor(
     detect_order: Callable,
     refresh_goods: Optional[Callable] = None,
     post_login_check: Optional[Callable] = None,
+    check_login_status: Optional[Callable] = _default_check_login_status,
 ) -> dict:
     """
     通用订单监控循环。
@@ -169,6 +183,9 @@ def _generic_monitor(
         返回更新后的 last_up_goods_time
       post_login_check(page) -> bool
         返回 True 表示需要重新登录（如 barotem 的登录弹窗检测）
+      check_login_status(page, login_url, tag) -> bool
+        每轮检测前检查登录状态，返回 False 表示登录失效需重新登录。
+        默认为 _default_check_login_status（检测当前 URL 是否匹配登录页地址前缀）。
     """
     my_page_url = order_cfg.get("my_page_url", "")
     my_page_selector = order_cfg.get("my_page_selector", "")
@@ -181,6 +198,19 @@ def _generic_monitor(
 
     def _stopped():
         return stop_event is not None and stop_event.is_set()
+
+    def _relogin():
+        """重新登录并导航到我的页面。"""
+        lr = do_login(
+            page, login_url, username, password, login_config,
+            website_id, account_id, login_type,
+            my_page_url=my_page_url, force_login=True,
+            stop_event=stop_event,
+        )
+        if lr["status"] != "success":
+            raise Exception(f"重新登录失败: {lr['message']}")
+        page.goto(my_page_url, wait_until="commit", timeout=wait_timeout)
+        _wait_page_stable(page)
 
     print(f"[{tag}] ═══ 开始监控订单 ═══")
     print(f"[{tag}] 我的页面: {my_page_url}, 刷新间隔: {refresh_interval}s")
@@ -208,32 +238,24 @@ def _generic_monitor(
                         raise Exception(f"登录失败: {lr['message']}")
 
                 # ── 登录后站点特有检查（如 barotem 登录弹窗）──
+                did_relogin = False
                 if post_login_check:
                     need_relogin = post_login_check(page)
                     if need_relogin:
                         if not has_credentials:
                             raise Exception("检测到未登录，但未配置登录凭证")
                         print(f"[{tag}] ── 强制重新登录 ──")
-                        lr = do_login(
-                            page, login_url, username, password, login_config,
-                            website_id, account_id, login_type,
-                            my_page_url=my_page_url, force_login=True,
-                            stop_event=stop_event,
-                        )
-                        if lr["status"] != "success":
-                            raise Exception(f"重新登录失败: {lr['message']}")
-                        page.goto(my_page_url, wait_until="commit",
-                                  timeout=wait_timeout)
-                        _wait_page_stable(page)
+                        _relogin()
+                        did_relogin = True
 
-                # ── 进入"我的页面" ──
-                print(f"[{tag}] ─── 步骤1: 进入我的页面 ───")
-                page = _resolve_my_page(context, page, my_page_url,
-                                        my_page_selector, wait_timeout, tag)
-
-                # ── 等待页面稳定 ──
-                print(f"[{tag}] ─── 步骤2: 等待页面加载 ───")
-                _wait_page_stable(page)
+                # ── 进入"我的页面"（_relogin 已导航则跳过）──
+                if not did_relogin:
+                    print(f"[{tag}] ─── 步骤1: 进入我的页面 ───")
+                    page = _resolve_my_page(context, page, my_page_url,
+                                            my_page_selector, wait_timeout, tag)
+                    # ── 等待页面稳定 ──
+                    print(f"[{tag}] ─── 步骤2: 等待页面加载 ───")
+                    _wait_page_stable(page)
 
                 retry_count = 0
                 print(f"[{tag}] ✅ 登录+进入页面成功，开始循环检测 "
@@ -251,6 +273,16 @@ def _generic_monitor(
                         return _make_result("cancelled", "用户手动终止", start)
 
                     check_round += 1
+
+                    # ── 每次检测前检查登录状态 ──
+                    if check_login_status and has_credentials:
+                        try:
+                            if not check_login_status(page, login_url, tag):
+                                print(f"[{tag}] ── 检测到登录失效，重新登录 ──")
+                                _relogin()
+                        except Exception as e:
+                            print(f"[{tag}] 登录状态检查异常，触发整体重试: {e}")
+                            raise
 
                     # 检测订单
                     try:
@@ -521,6 +553,23 @@ def _barotem_post_login_check(page) -> bool:
     return False
 
 
+def _barotem_check_login_status(page, login_url, tag):
+    """barotem 登录状态检查：URL检查 + 登录弹窗检查。"""
+    if not _default_check_login_status(page, login_url, tag):
+        return False
+    # 额外检查登录弹窗（即使 URL 未变化，弹窗也可能出现）
+    try:
+        alert_el = page.query_selector("div.common_alert_check")
+        if alert_el:
+            onclick = alert_el.get_attribute("onclick") or ""
+            if "/auth/login" in onclick:
+                print(f"[{tag}] ⚠️ 检测到登录弹窗，需要重新登录")
+                return False
+    except Exception:
+        pass
+    return True
+
+
 # ═══════════════════════════════════════════════════════════
 # 业务逻辑分发
 # ═══════════════════════════════════════════════════════════
@@ -608,6 +657,7 @@ def _check_website_2(**kw) -> dict:
         tag="arotem", order_cfg=order_cfg,
         detect_order=_detect_barotem,
         post_login_check=_barotem_post_login_check,
+        check_login_status=_barotem_check_login_status,
         **kw,
     )
 
