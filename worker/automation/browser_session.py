@@ -17,7 +17,6 @@ from typing import Optional, Dict
 from patchright.async_api import async_playwright, Page, Browser, BrowserContext
 
 import config
-from automation.cookie_reader import save_from_context
 import storage_sync
 
 PLAYWRIGHT_HEADLESS = config.PLAYWRIGHT_HEADLESS
@@ -304,122 +303,30 @@ class BrowserSession:
         return self._login_result
 
     async def _check_logged_in(self) -> bool:
-        """检测是否已登录。"""
-        if not self._my_page_url:
-            return False
-        try:
-            await self._main_page.goto(self._my_page_url,
-                                       wait_until="commit",
-                                       timeout=60000)
-            await asyncio.sleep(5)
-            try:
-                await self._main_page.wait_for_load_state(
-                    "domcontentloaded", timeout=20000)
-            except Exception:
-                pass
-            try:
-                await self._main_page.wait_for_load_state(
-                    "networkidle", timeout=20000)
-            except Exception:
-                pass
-            await asyncio.sleep(2)
-
-            current_url = self._main_page.url
-            parent_path = self._my_page_url.rsplit('/', 1)[0]
-            if (self._my_page_url in current_url
-                    or current_url.startswith(parent_path)):
-                print(f"[BrowserSession:{self._account_id}] "
-                      f"已处于登录态")
-                return True
-
-            _LOGIN_KEYWORDS = ("login", "signin", "sign-in", "auth/")
-            url_lower = current_url.lower()
-            if any(kw in url_lower for kw in _LOGIN_KEYWORDS):
-                print(f"[BrowserSession:{self._account_id}] "
-                      f"未登录: {current_url}")
-                return False
-
-            return True
-        except Exception as e:
-            print(f"[BrowserSession:{self._account_id}] "
-                  f"登录态检测异常: {e}")
-            return False
+        """检测是否已登录（委托公共方法）。"""
+        from automation.login_handler import check_already_logged_in_async
+        return await check_already_logged_in_async(self._main_page, self._my_page_url)
 
     async def _do_login(self) -> dict:
-        """执行登录操作。"""
-        start_time = __import__('time').time()
-        username_sel = self._login_config.get(
-            "username_selector", "input[name='username']")
-        password_sel = self._login_config.get(
-            "password_selector", "input[name='password']")
-        submit_sel = self._login_config.get(
-            "submit_selector", "button[type='submit']")
-        success_url = self._login_config.get("success_url", "")
+        """执行登录操作（委托公共方法 login_handler.do_login_async）。
 
-        try:
-            # 导航到登录页
-            await self._main_page.goto(self._login_url,
-                                       wait_until="commit",
-                                       timeout=60000)
-            await asyncio.sleep(2)
-
-            # 填充表单
-            await self._main_page.wait_for_selector(username_sel,
-                                                    timeout=10000)
-            await self._main_page.fill(username_sel, self._username)
-            await self._main_page.wait_for_selector(password_sel,
-                                                    timeout=10000)
-            await self._main_page.fill(password_sel, self._password)
-
-            # 处理 captcha 类型
-            if self._login_type == "captcha":
-                print(f"[BrowserSession:{self._account_id}] "
-                      f"captcha 登录，等待手动完成...")
-                from reporter import get_reporter
-                reporter = get_reporter()
-                captcha_sel = self._login_config.get("captcha_selector", "")
-                captcha_input_sel = self._login_config.get(
-                    "captcha_input_selector", "")
-
-                # 这里简化处理：跳过 captcha 等待
-                # 实际中应通过 task_id 等待验证码
-                await asyncio.sleep(300)
-                current_url = self._main_page.url
-            else:
-                # 提交表单
-                before_url = self._main_page.url
-                await self._main_page.click(submit_sel)
-                try:
-                    await self._main_page.wait_for_url(
-                        lambda u: u != before_url, timeout=20000)
-                except Exception:
-                    pass
-                try:
-                    await self._main_page.wait_for_load_state(
-                        "networkidle", timeout=15000)
-                except Exception:
-                    pass
-                await asyncio.sleep(1.5)
-                current_url = self._main_page.url
-
-            # 判断结果
-            if success_url and success_url in current_url:
-                return {"status": "success",
-                        "message": f"登录成功: {current_url}",
-                        "duration_ms": 0}
-            if not success_url and current_url != self._login_url:
-                return {"status": "success",
-                        "message": f"登录成功(页面跳转): {current_url}",
-                        "duration_ms": 0}
-
-            return {"status": "failed",
-                    "message": "登录可能失败，页面未跳转",
-                    "duration_ms": 0}
-
-        except Exception as e:
-            return {"status": "failed",
-                    "message": f"登录异常: {e}",
-                    "duration_ms": 0}
+        注意：调用方（ensure_login / post_login_check）在调用本方法前
+        已确认需要登录，因此始终 force_login=True，避免 do_login_async
+        内部重复检测登录态导致跳过实际登录。
+        """
+        from automation.login_handler import do_login_async
+        return await do_login_async(
+            page=self._main_page,
+            login_url=self._login_url,
+            username=self._username,
+            password=self._password,
+            login_config=self._login_config,
+            account_id=self._account_id,
+            login_type=self._login_type,
+            my_page_url=self._my_page_url,
+            force_login=True,
+            stop_event=self._stop_event,
+        )
 
     async def get_main_page(self) -> Page:
         """获取主页面。"""
@@ -432,6 +339,9 @@ class BrowserSession:
     async def shutdown(self):
         """安全关闭浏览器并上传配置（供协调器 await）。"""
         await self._close_async()
+        # 停止可能正在播放的语音（同步 Speak 模式下无需清队列，仅做标记）
+        from automation.audio_alert import stop_speech
+        stop_speech()
 
     def release(self):
         """递减引用计数，归零时安排异步关闭。"""
@@ -453,11 +363,6 @@ class BrowserSession:
         account_id = self._account_id
         try:
             await asyncio.sleep(2)
-        except Exception:
-            pass
-        try:
-            if self._context:
-                save_from_context(self._context, account_id)
         except Exception:
             pass
         try:

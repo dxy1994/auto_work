@@ -39,6 +39,17 @@ class BarotemDetectionWorker(PageWorker):
             check_round += 1
             self._touch()
             try:
+                # ── 复用 post_login_check 检测登录弹窗 ──
+                need_relogin = await self._monitor.post_login_check(self.page)
+                if need_relogin:
+                    print(f"[{self._log_tag}] 检测到登录弹窗，复用 _do_login 重新登录")
+                    lr = await self._session._do_login()
+                    if lr["status"] != "success":
+                        raise Exception(f"重新登录失败: {lr['message']}")
+                    await self._navigate(my_page_url, "重登录后返回")
+                    await self._wait_page_stable()
+                    continue
+
                 detected, count, alert_text = await self._detect()
                 if detected:
                     print(f"[{self._log_tag}] "

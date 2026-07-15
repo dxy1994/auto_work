@@ -8,18 +8,86 @@ from .model import NormalizedOrder
 
 _NUMBER = re.compile(r"(?<![\d,])\d+(?:,\d{3})*(?:\.\d+)?")
 
+# 韩语主单位（万/亿/万亿）
+_KO_MAJOR = [
+    ('조', Decimal('1000000000000')),
+    ('억', Decimal('100000000')),
+    ('만', Decimal('10000')),
+]
+# 韩语次单位（千/百/十）
+_KO_MINOR = [
+    ('천', Decimal('1000')),
+    ('백', Decimal('100')),
+    ('십', Decimal('10')),
+]
+
+
+def _parse_ko_units(text: str) -> Decimal:
+    """
+    解析含韩语单位的数字字符串，支持分层结构。
+    例: '5천만' → 50000000, '3억5천만' → 350000000
+    """
+    text = text.replace(' ', '').replace(',', '')
+    total = Decimal('0')
+    major_acc = Decimal('0')
+    minor_acc = Decimal('0')
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch.isdigit():
+            num_str = ''
+            while i < len(text) and text[i].isdigit():
+                num_str += text[i]
+                i += 1
+            minor_acc = Decimal(num_str)
+        else:
+            matched = False
+            for unit_char, multiplier in _KO_MINOR:
+                if text[i:i + len(unit_char)] == unit_char:
+                    if minor_acc == 0:
+                        minor_acc = Decimal('1')
+                    major_acc += minor_acc * multiplier
+                    minor_acc = Decimal('0')
+                    i += len(unit_char)
+                    matched = True
+                    break
+            if not matched:
+                for unit_char, multiplier in _KO_MAJOR:
+                    if text[i:i + len(unit_char)] == unit_char:
+                        section_val = major_acc + minor_acc
+                        if section_val == 0:
+                            section_val = Decimal('1')
+                        total += section_val * multiplier
+                        major_acc = Decimal('0')
+                        minor_acc = Decimal('0')
+                        i += len(unit_char)
+                        matched = True
+                        break
+            if not matched:
+                i += 1
+    total += major_acc + minor_acc
+    return total
+
 
 def parse_korean_amount(text):
-    value = str(text or "").strip()
+    """
+    解析韩语金额文本，支持纯数字和含单位(만/억/조/천/백/십)的混合写法。
+    返回 Decimal。
+    """
+    value = str(text or "").strip().replace('원', '')
+    # 始终校验：只能有一个数字部分
     matches = _NUMBER.findall(value)
     if len(matches) != 1:
         raise ValueError("amount text must contain exactly one number")
-    try:
-        amount = Decimal(matches[0].replace(",", ""))
-    except InvalidOperation as exc:
-        raise ValueError("invalid amount") from exc
-    if "만" in value:
-        amount *= Decimal("10000")
+    # 检测是否包含韩语单位
+    has_unit = any(u for u, _ in _KO_MAJOR + _KO_MINOR if u in value)
+    if has_unit:
+        amount = _parse_ko_units(value)
+    else:
+        try:
+            amount = Decimal(matches[0].replace(",", ""))
+        except InvalidOperation as exc:
+            raise ValueError("invalid amount") from exc
     if not amount.is_finite() or amount <= 0:
         raise ValueError("amount must be positive")
     return amount
@@ -54,10 +122,6 @@ class _Adapter:
         except ValueError as e:
             self._last_reject_reason = f"标题字段缺失: {e}"
             return None
-        lowered_title = title.lower()
-        if "아덴" not in title and "adena" not in lowered_title:
-            self._last_reject_reason = f"标题不含 아덴/adena: {title[:50]}"
-            return None
         try:
             return NormalizedOrder(
                 platform=self.platform,
@@ -68,6 +132,7 @@ class _Adapter:
                 buyer_character=self._value(raw, "buyer"),
                 platform_status=status,
                 raw_title=title,
+                game_name=str(raw.get(self.fields.get("game_name", "game_name")) or "").strip()[:100],
                 **extra,
             )
         except (ValueError, KeyError) as e:
@@ -89,6 +154,7 @@ class ItemmaniaAdapter(_Adapter):
         "order_no": "order_no", "region": "server",
         "title": "product_title", "amount": "quantity",
         "buyer": "buyer_name", "status": "state",
+        "game_name": "game_name",
     }
 
 

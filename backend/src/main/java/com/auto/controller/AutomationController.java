@@ -1,140 +1,36 @@
 package com.auto.controller;
 
 import com.auto.common.ApiException;
-import com.auto.common.PageRequests;
 import com.auto.entity.Account;
-import com.auto.entity.LoginLog;
 import com.auto.entity.Website;
 import com.auto.service.AccountService;
 import com.auto.service.CryptoService;
-import com.auto.service.LoginLogService;
 import com.auto.service.WebsiteService;
 import com.auto.ws.AgentRegistry;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
- * 自动登录控制面：解密密码、选取在线 agent、经 WebSocket 下发任务并汇聚结果。
- *
- * <p>对应原 Python routers/automation.py。真正的浏览器自动化在 worker 上执行。
+ * 自动化控制面：订单查询、交易等任务的分发与状态查询。
  */
 @RestController
 @RequestMapping("/api/automation")
 public class AutomationController {
 
-    /** 登录任务等待 agent 回报的超时（秒）。 */
-    private static final int AUTO_LOGIN_TIMEOUT = 180;
-    private static final int MANUAL_LOGIN_TIMEOUT = 330;
-
     private final WebsiteService websiteService;
     private final AccountService accountService;
-    private final LoginLogService loginLogService;
     private final CryptoService crypto;
     private final AgentRegistry registry;
 
     public AutomationController(WebsiteService websiteService, AccountService accountService,
-                                LoginLogService loginLogService, CryptoService crypto,
+                                CryptoService crypto,
                                 AgentRegistry registry) {
         this.websiteService = websiteService;
         this.accountService = accountService;
-        this.loginLogService = loginLogService;
         this.crypto = crypto;
         this.registry = registry;
-    }
-
-    // ── 触发登录 ────────────────────────────────────────────────
-
-    @PostMapping("/login")
-    public Map<String, Object> triggerLogin(
-            @RequestParam(name = "website_id") Integer websiteId,
-            @RequestParam(name = "account_id") Integer accountId,
-            @RequestParam(name = "task_id", required = false) String taskId,
-            @RequestParam(name = "machine_id", required = false) Integer machineId) {
-        Website website = websiteService.getById(websiteId);
-        if (website == null) throw ApiException.notFound("网站不存在");
-        Account account = accountService.getById(accountId);
-        if (account == null) throw ApiException.notFound("账号不存在");
-        validateLoginTarget(websiteId, website, account);
-
-        Integer target = registry.pickAgent(machineId);
-        if (target == null) {
-            throw ApiException.unavailable("无在线 agent，请先启动至少一个 worker");
-        }
-
-        String plainPassword = crypto.decrypt(account.getPassword());
-        if (taskId == null || taskId.isBlank()) {
-            taskId = websiteId + "_" + accountId + "_" + (System.currentTimeMillis() / 1000L);
-        }
-
-        boolean isManual = "captcha".equals(website.getLoginType());
-        CompletableFuture<Map<String, Object>> fut;
-        try {
-            fut = registry.dispatchLogin(
-                    target, taskId, isManual, website.getUrl(), account.getUsername(), plainPassword,
-                    website.getLoginType(), website.getLoginConfig(), websiteId, accountId);
-        } catch (IllegalStateException e) {
-            throw ApiException.conflict(e.getMessage());
-        }
-
-        int timeout = isManual ? MANUAL_LOGIN_TIMEOUT : AUTO_LOGIN_TIMEOUT;
-        Map<String, Object> result;
-        try {
-            result = fut.get(timeout, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            registry.dispatchCancel(target, accountId);
-            registry.cleanupLoginTask(taskId);
-            result = new LinkedHashMap<>();
-            result.put("status", "failed");
-            result.put("message", "任务超时未返回，请检查 worker 状态");
-            result.put("duration_ms", timeout * 1000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            registry.dispatchCancel(target, accountId);
-            registry.cleanupLoginTask(taskId);
-            result = new LinkedHashMap<>();
-            result.put("status", "failed");
-            result.put("message", "请求已中断，任务终止信号已发送");
-            result.put("duration_ms", 0);
-        } catch (Exception e) {
-            registry.cleanupLoginTask(taskId);
-            result = new LinkedHashMap<>();
-            result.put("status", "failed");
-            result.put("message", "任务执行异常，请查看服务端与 worker 日志");
-            result.put("duration_ms", 0);
-        }
-
-        LoginLog logEntry = new LoginLog();
-        logEntry.setWebsiteId(websiteId);
-        logEntry.setAccountId(accountId);
-        logEntry.setStatus(String.valueOf(result.getOrDefault("status", "failed")));
-        Object msg = result.get("message");
-        logEntry.setMessage(msg == null ? "" : msg.toString());
-        Object dur = result.get("duration_ms");
-        if (dur instanceof Number n) {
-            logEntry.setDurationMs(n.intValue());
-        }
-        loginLogService.save(logEntry);
-
-        Map<String, Object> resp = new LinkedHashMap<>();
-        resp.put("task_id", taskId);
-        resp.putAll(result);
-        return resp;
-    }
-
-    // ── 登录日志 ────────────────────────────────────────────────
-
-    @GetMapping("/logs")
-    public List<LoginLog> getLoginLogs(
-            @RequestParam(name = "website_id", required = false) Integer websiteId,
-            @RequestParam(name = "account_id", required = false) Integer accountId,
-            @RequestParam(name = "limit", defaultValue = "50") int limit) {
-        return loginLogService.search(websiteId, accountId, PageRequests.limit(limit));
     }
 
     // ── 订单查询与提醒 ──────────────────────────────────────────
@@ -203,19 +99,12 @@ public class AutomationController {
         return resp;
     }
 
-    private void validateLoginTarget(Integer websiteId, Website website, Account account) {
-        if (!websiteId.equals(account.getWebsiteId())) {
-            throw ApiException.badRequest("账号不属于指定网站");
-        }
-        validateActiveTarget(website, account);
-    }
-
     private void validateActiveTarget(Website website, Account account) {
         if (!Integer.valueOf(1).equals(website.getIsActive())) {
-            throw ApiException.conflict("网站已停用，不能执行登录");
+            throw ApiException.conflict("网站已停用");
         }
         if (!Integer.valueOf(1).equals(account.getIsActive())) {
-            throw ApiException.conflict("账号已停用，不能执行登录");
+            throw ApiException.conflict("账号已停用");
         }
     }
 }

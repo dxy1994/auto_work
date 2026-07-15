@@ -47,7 +47,6 @@
       </el-table-column>
       <el-table-column label="操作" width="320" align="center">
         <template #default="{ row }">
-          <!-- <el-button size="small" type="success" @click="handleLogin(row)">自动登录</el-button> -->
           <template v-if="getCheckStatus(row.id) === 'running' || getCheckStatus(row.id) === 'stopping'">
             <el-button size="small" type="danger" :loading="cancellingId === row.id" @click="handleCancelCheck(row)">
               终止查询
@@ -108,7 +107,7 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getAccounts, createAccount, updateAccount, deleteAccount, getAllWebsites, triggerLogin, orderCheck, getOrderCheckStatus, cancelOrderCheck } from '../api'
+import { getAccounts, createAccount, updateAccount, deleteAccount, getAllWebsites, orderCheck, getOrderCheckStatus, cancelOrderCheck } from '../api'
 
 const allWebsites = ref([])
 const list = ref([])
@@ -122,7 +121,6 @@ const isEdit = ref(false)
 const editId = ref(null)
 const formRef = ref(null)
 
-const loginLoading = ref(false)
 const orderCheckingId = ref(null)
 const cancellingId = ref(null)
 
@@ -231,30 +229,6 @@ async function handleDelete(id) {
   await deleteAccount(id)
   ElMessage.success('删除成功')
   fetchList()
-}
-
-// ── 自动登录 ──
-async function handleLogin(row) {
-  loginLoading.value = true
-  try {
-    const w = allWebsites.value.find(s => s.id === row.website_id)
-    const isCaptcha = w?.login_type === 'captcha'
-    if (isCaptcha) {
-      ElMessage.info('浏览器正在打开，请在浏览器窗口中完成验证码校验并手动登录，登录后浏览器将保持打开')
-    }
-    const res = await triggerLogin(row.website_id, row.id)
-    if (res.status === 'success') {
-      ElMessage.success('登录成功，浏览器保持打开，您可以继续操作')
-    } else if (res.status === 'timeout') {
-      ElMessage.warning('登录超时，请确认是否已完成登录')
-    } else {
-      ElMessage.warning('登录结果: ' + (res.message || res.status))
-    }
-  } catch (e) {
-    ElMessage.error('自动登录失败: ' + e.message)
-  } finally {
-    loginLoading.value = false
-  }
 }
 
 // ── 订单查询 ──

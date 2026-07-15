@@ -20,8 +20,7 @@ import java.util.Set;
  * Agent 接入 WebSocket 处理器（/api/agent/ws）。
  *
  * <p>对应原 Python routers/agent.py 的 agent_ws：处理 worker 的
- * register / heartbeat / task_status / task_result / task_event /
- * captcha_required 上行消息。
+ * register / heartbeat / task_status / task_result 上行消息。
  */
 @Component
 public class AgentWebSocketHandler extends TextWebSocketHandler {
@@ -81,8 +80,6 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             }
             case "task_status" -> registry.handleTaskStatus(raw, session);
             case "task_result" -> registry.handleTaskResult(raw, session);
-            case "task_event" -> registry.forwardEventToFrontend(raw);
-            case "captcha_required" -> registry.forwardCaptchaRequired(raw);
             case "trade_offer_decision" -> handleTradeDecision(session, raw);
             case "trade_status" -> handleTradeStatus(session, raw);
             case "order_detected" -> handleOrderDetected(session, raw);

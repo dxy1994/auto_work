@@ -1,12 +1,14 @@
 package com.auto.trade;
 
 import com.auto.entity.Account;
+import com.auto.entity.Game;
 import com.auto.entity.GameItemOrder;
 import com.auto.entity.GameRegion;
 import com.auto.entity.TradeEvent;
 import com.auto.service.AccountService;
 import com.auto.service.GameItemOrderService;
 import com.auto.service.GameRegionService;
+import com.auto.service.GameService;
 import com.auto.service.TradeEventService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -25,16 +27,19 @@ public class MarketplaceOrderIngestionService {
     private final GameRegionService regionService;
     private final GameItemOrderService orderService;
     private final TradeEventService eventService;
+    private final GameService gameService;
 
     public MarketplaceOrderIngestionService(
             AccountService accountService,
             GameRegionService regionService,
             GameItemOrderService orderService,
-            TradeEventService eventService) {
+            TradeEventService eventService,
+            GameService gameService) {
         this.accountService = accountService;
         this.regionService = regionService;
         this.orderService = orderService;
         this.eventService = eventService;
+        this.gameService = gameService;
     }
 
     @Transactional
@@ -50,12 +55,32 @@ public class MarketplaceOrderIngestionService {
         }
 
         Map<String, Object> config = account.getExtraFields();
-        int gameId = intValue(config == null ? null : config.get("trade_game_id"), "未配置交易游戏");
-        int regionId = resolveRegionId(config, message.regionExternalKey());
-        GameRegion region = regionService.getById(regionId);
-        if (region == null || !Integer.valueOf(1).equals(region.getIsActive())
-                || !Integer.valueOf(gameId).equals(region.getGameId())) {
-            throw new IllegalStateException("区服映射无效或不属于配置游戏");
+
+        // 配置校验 → 容错模式：优先从账号配置取，缺失时按 gameName/regionExternalKey 自动匹配
+        Integer gameId = resolveGameId(config, message);
+        Integer regionId = null;
+        if (gameId != null && gameId != -1) {
+            regionId = resolveRegionId(config, message.regionExternalKey(), gameId);
+        } else {
+            regionId = -1;
+        }
+
+        StringBuilder configError = new StringBuilder();
+        if (gameId == null || gameId == -1) {
+            configError.append("未配置交易游戏");
+            gameId = -1;
+        }
+        if (regionId == null || regionId == -1) {
+            if (!configError.isEmpty()) configError.append("; ");
+            configError.append("未匹配到区服");
+            regionId = -1;
+        }
+        if (gameId == -1 && regionId == -1) {
+            // 两者都失败，尝试进一步的 gameName 匹配
+            String gn = message.gameName();
+            if (gn != null && !gn.isEmpty()) {
+                configError.append(" (gameName=").append(gn).append(")");
+            }
         }
 
         boolean supported = "adena".equals(message.assetType());
@@ -69,7 +94,13 @@ public class MarketplaceOrderIngestionService {
         order.setCustomerName(message.buyerCharacter());
         order.setAssetType(message.assetType());
         order.setAssetAmount(message.assetAmount());
-        order.setDeliveryStatus(supported ? "waiting_assignment" : "suspended");
+        if (configError.isEmpty()) {
+            order.setDeliveryStatus(supported ? "waiting_assignment" : "suspended");
+        } else {
+            order.setDeliveryStatus("suspended");
+            order.setLastErrorCode("CONFIG_MISSING");
+            order.setLastErrorMessage(configError.toString());
+        }
         order.setRemark(message.rawTitle());
         if (message.platformOrderTime() != null
                 && !message.platformOrderTime().isEmpty()) {
@@ -90,7 +121,7 @@ public class MarketplaceOrderIngestionService {
                 && !message.platformItemType().isEmpty()) {
             order.setPlatformItemType(message.platformItemType());
         }
-        if (!supported) {
+        if (!supported && configError.isEmpty()) {
             order.setLastErrorCode("UNSUPPORTED_ASSET");
             order.setLastErrorMessage("第一阶段只支持 Adena");
         }
@@ -120,12 +151,52 @@ public class MarketplaceOrderIngestionService {
         return orderService.findExistingSourceOrderNos(websiteId, sourceOrderNos);
     }
 
-    private int resolveRegionId(Map<String, Object> config, String externalKey) {
-        Object rawMap = config == null ? null : config.get("trade_region_map");
-        if (!(rawMap instanceof Map<?, ?> regionMap)) {
-            throw new IllegalStateException("未配置平台区服映射");
+    /**
+     * 解析 gameId：优先从账号配置 trade_game_id 取，
+     * 缺失时按 gameName 匹配 games 表（name/code LIKE）。
+     * 返回 -1 表示未匹配到。
+     */
+    private Integer resolveGameId(Map<String, Object> config, OrderDetectedMessage message) {
+        // 1. 账号配置优先
+        if (config != null && config.get("trade_game_id") instanceof Number num) {
+            try {
+                return intValue(num, "");
+            } catch (IllegalStateException ignored) { }
         }
-        return intValue(regionMap.get(externalKey), "未找到平台区服映射: " + externalKey);
+        // 2. 按 gameName 自动匹配
+        String name = message.gameName();
+        if (name != null && !name.isEmpty()) {
+            Game game = gameService.findByName(name);
+            if (game != null) {
+                return game.getId();
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 解析 regionId：优先从账号配置 trade_region_map 取，
+     * 缺失时按 externalKey 匹配 game_regions（code/name LIKE，限定 gameId）。
+     * 返回 -1 表示未匹配到。
+     */
+    private Integer resolveRegionId(Map<String, Object> config, String externalKey, int gameId) {
+        // 1. 账号配置优先
+        if (config != null && config.get("trade_region_map") instanceof Map<?, ?> regionMap) {
+            Object val = regionMap.get(externalKey);
+            if (val != null) {
+                try {
+                    return intValue(val, "");
+                } catch (IllegalStateException ignored) { }
+            }
+        }
+        // 2. 按 externalKey 自动匹配 game_regions 表
+        if (gameId != -1) {
+            GameRegion region = regionService.findByGameIdAndCode(gameId, externalKey);
+            if (region != null) {
+                return region.getId();
+            }
+        }
+        return -1;
     }
 
     private int intValue(Object value, String message) {

@@ -36,4 +36,11 @@ public class GameServiceImpl extends ServiceImpl<GameMapper, Game> implements Ga
     public Game findByCode(String code) {
         return getOne(new LambdaQueryWrapper<Game>().eq(Game::getCode, code), false);
     }
+
+    @Override
+    public Game findByName(String name) {
+        return getOne(new LambdaQueryWrapper<Game>()
+                .eq(Game::getIsActive, 1)
+                .like(Game::getName, name), false);
+    }
 }

@@ -2,12 +2,18 @@
 提醒音频播放模块。
 
 提供统一的音频提醒接口，支持三种播放方式（按优先级回退）：
-  1. pyttsx3 文字转语音
-  2. RustFS 对象存储或本地音频文件
-  3. 系统蜂鸣
+  1. win32com SAPI.SpVoice 文字转语音（同步模式，阻塞调用线程）
+  2. RustFS 对象存储或本地音频文件（守护线程播放）
+  3. 系统蜂鸣（守护线程播放）
 
 公共方法：
   - play_alert_audio(audio_path=None, text=None): 播放提醒音频
+  - stop_speech(): 停止当前正在播放的语音（供 shutdown 调用）
+
+设计决策（同步 Speak）：
+  - Speak() 在调用线程上同步阻塞，确保播报期间调用方循环不会继续迭代入队新消息
+  - 浏览器关闭 → 循环退出 → 没有新 Speak 调用 → 语音自然停止
+  - 避免了 AudioThread 与 captcha 循环生命周期脱节导致关闭后仍播报的问题
 """
 
 import os
@@ -21,13 +27,78 @@ import storage_sync
 # 项目根目录（worker 的上一级），用于解析可选的自定义音频文件
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# ── 全局 SAPI.SpVoice（懒初始化，仅在调用线程上使用）──
+_voice = None
+_voice_lock = threading.Lock()
+
+
+def _init_voice():
+    """懒初始化 SAPI.SpVoice + COM。调用方必须持有 _voice_lock。"""
+    global _voice
+    if _voice is not None:
+        return _voice
+
+    import pythoncom
+    pythoncom.CoInitialize()
+
+    from win32com.client import Dispatch
+    _voice = Dispatch("SAPI.SpVoice")
+    print("[Audio] SAPI.SpVoice 初始化成功")
+    return _voice
+
+
+def _play_tts(text: str) -> bool:
+    """
+    同步播放 TTS 文字转语音。
+    在调用线程上阻塞直到播报完成，确保播报期间调用方不会入队新消息。
+    """
+    try:
+        from win32com.client import Dispatch  # noqa: F401  确认库可用
+    except Exception as e:
+        print(f"[Audio] win32com 不可用: {e}")
+        return False
+
+    with _voice_lock:
+        voice = _init_voice()
+
+    try:
+        print(f"[Audio] 开始播报: {text[:30]}{'...' if len(text) > 30 else ''}")
+        voice.Speak(text)  # 同步阻塞，播放完毕才返回
+        print(f"[Audio] 播报完成: {text[:30]}{'...' if len(text) > 30 else ''}")
+        return True
+    except Exception as e:
+        print(f"[Audio] 播报异常: {e}")
+        # 尝试重新初始化语音引擎
+        with _voice_lock:
+            global _voice
+            try:
+                from win32com.client import Dispatch
+                _voice = Dispatch("SAPI.SpVoice")
+                print("[Audio] SpVoice 重新初始化成功")
+            except Exception as re:
+                print(f"[Audio] SpVoice 重新初始化失败: {re}")
+                _voice = None
+        return False
+
+
+def stop_speech():
+    """
+    尝试停止当前正在播放的语音（供 shutdown 调用）。
+    注意：同步 Speak() 阻塞期间无法从同一线程中断，
+    本方法仅尝试让下一次 Speak 调用被略过。
+    """
+    # 同步模式下，Speak 阻塞时无法中断。
+    # 但 shutdown 调用 stop_speech 后，captcha 循环已退出，
+    # 不会再触发新的 Speak，语音自然停止。
+    print("[Audio] stop_speech 调用（同步模式下无需额外操作）")
+
 
 def play_alert_audio(audio_path: Optional[str] = None, text: Optional[str] = None) -> bool:
     """
     播放提醒音频的公共方法，其他模块可直接调用。
 
     优先级：
-      1. 如果 text 有值 → pyttsx3 文字转语音播放
+      1. 如果 text 有值 → SAPI.SpVoice 同步文字转语音播放
       2. 如果 audio_path 有效 → 从 RustFS 下载（uploads/ 前缀）或播放本地文件
       3. 否则 → 系统蜂鸣（Windows winsound / 终端 \\a）
 
@@ -40,7 +111,7 @@ def play_alert_audio(audio_path: Optional[str] = None, text: Optional[str] = Non
     返回:
         bool: True 表示成功播放（含回退），False 表示所有方式均失败
     """
-    # ── 1. 尝试文字转语音 ──
+    # ── 1. 尝试文字转语音（同步阻塞）──
     if text:
         if _play_tts(text):
             return True
@@ -79,6 +150,7 @@ def _play_audio_file(file_path: str, is_temp: bool = False) -> bool:
     """
     播放音频文件，尝试多种后端。
     所有方案均放入守护线程，确保阻塞式播放不会被 executor 回收 kill 掉。
+    不再在调用线程上 sleep，避免阻塞 asyncio 事件循环。
 
     参数:
         file_path: 音频文件本地路径
@@ -99,7 +171,6 @@ def _play_audio_file(file_path: str, is_temp: bool = False) -> bool:
 
         t = threading.Thread(target=_pygame_play, daemon=True)
         t.start()
-        time.sleep(0.3)
         print(f"[Audio] pygame 播放中: {file_path}")
         return True
     except Exception as e:
@@ -122,7 +193,6 @@ def _play_audio_file(file_path: str, is_temp: bool = False) -> bool:
 
         t = threading.Thread(target=_wmplayer_play, daemon=True)
         t.start()
-        time.sleep(0.3)
         print(f"[Audio] WMPlayer 播放中: {file_path}")
         return True
     except Exception as e:
@@ -145,40 +215,19 @@ def _cleanup_temp(file_path: str):
 
 
 def _play_system_beep() -> bool:
-    """系统蜂鸣回退"""
-    try:
-        import winsound
-        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
-        time.sleep(0.3)
-        winsound.Beep(1000, 500)
-        time.sleep(0.1)
-        winsound.Beep(1200, 500)
-        time.sleep(0.1)
-        winsound.Beep(1000, 500)
-        return True
-    except ImportError:
-        print("\a" * 3)
-        return True
-
-
-def _play_tts(text: str) -> bool:
-    """
-    使用 pyttsx3 将文字转为语音并播放。
-    放入守护线程执行，避免阻塞主流程。
-    """
-    try:
-        import pyttsx3
-
-        def _tts_speak():
-            engine = pyttsx3.init()
-            engine.say(text)
-            engine.runAndWait()
-
-        t = threading.Thread(target=_tts_speak, daemon=True)
-        t.start()
-        time.sleep(0.3)
-        print(f"[Audio] pyttsx3 播放中: {text[:30]}{'...' if len(text) > 30 else ''}")
-        return True
-    except Exception as e:
-        print(f"[Audio] pyttsx3 不可用: {e}")
-        return False
+    """系统蜂鸣回退（在守护线程中执行，避免阻塞调用线程）。"""
+    def _beep():
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            time.sleep(0.3)
+            winsound.Beep(1000, 500)
+            time.sleep(0.1)
+            winsound.Beep(1200, 500)
+            time.sleep(0.1)
+            winsound.Beep(1000, 500)
+        except ImportError:
+            print("\a" * 3)
+    t = threading.Thread(target=_beep, daemon=True)
+    t.start()
+    return True

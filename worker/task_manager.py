@@ -28,10 +28,6 @@ class TaskManager:
             info["status"] = "stopping"
             return True
 
-    def run_login(self, task_id, account_id, runner) -> bool:
-        """启动登录任务；同一账号存在任意任务时返回 False。"""
-        return self._start_task(task_id, account_id, "login", runner)
-
     def cancel_all(self, join_timeout=5.0) -> int:
         """停止当前连接创建的所有任务，并有限等待线程清理。"""
         with self._lock:

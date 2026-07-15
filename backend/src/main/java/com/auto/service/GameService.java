@@ -14,4 +14,6 @@ public interface GameService extends IService<Game> {
     List<Game> findAllActiveOrdered();
 
     Game findByCode(String code);
+
+    Game findByName(String name);
 }

@@ -13,7 +13,16 @@ class NormalizedOrder:
     asset_amount: Decimal
     buyer_character: str
     platform_status: str
+
+
+
+
+
+
+
+    
     raw_title: str = ""
+    game_name: str = ""
     platform_order_time: str = ""
     platform_price: Decimal = Decimal("0")
     platform_item_type: str = ""
@@ -41,6 +50,7 @@ class NormalizedOrder:
             raise ValueError("asset_amount must be positive")
         object.__setattr__(self, "asset_amount", amount)
         object.__setattr__(self, "raw_title", str(self.raw_title or "").strip()[:256])
+        object.__setattr__(self, "game_name", str(self.game_name or "").strip()[:100])
 
     def to_wire(self):
         return {
@@ -52,6 +62,7 @@ class NormalizedOrder:
             "buyer_character": self.buyer_character,
             "platform_status": self.platform_status,
             "raw_title": self.raw_title,
+            "game_name": self.game_name,
             "platform_order_time": self.platform_order_time or "",
             "platform_price": format(self.platform_price, "f") if self.platform_price else "0",
             "platform_item_type": self.platform_item_type or "",

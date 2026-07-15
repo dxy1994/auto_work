@@ -25,17 +25,6 @@ export const createAccount = (data) => request.post('/accounts', data)
 export const updateAccount = (id, data) => request.put(`/accounts/${id}`, data)
 export const deleteAccount = (id) => request.delete(`/accounts/${id}`)
 
-// ── 自动登录 ──────────────────────────────────────────────
-export const triggerLogin = (websiteId, accountId, taskId = null) => {
-  const params = { website_id: websiteId, account_id: accountId }
-  if (taskId) params.task_id = taskId
-  return request.post('/automation/login', null, {
-    params,
-    timeout: 360000,  // 验证码手动登录最多 5 分钟
-  })
-}
-export const getLoginLogs = (params) => request.get('/automation/logs', { params })
-
 // ── 订单查询与提醒 ────────────────────────────────────────
 export const orderCheck = (accountId) =>
   request.post('/automation/order-check', null, {

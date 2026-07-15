@@ -87,6 +87,7 @@ class BaseOrderMonitor:
         self._reported_order_ids: set = set()
         self._consecutive_extraction_fails = 0
         self._known_order_statuses: dict = {}  # order_no → status
+        self._active_temp_pages: set = set()  # 正在使用的临时页面 id
         # ── 浏览器会话 ──
         self._session: Optional[BrowserSession] = None
 
@@ -134,6 +135,11 @@ class BaseOrderMonitor:
             return 0
 
         self._consecutive_extraction_fails = 0
+
+        # ── 检测到订单即播报（与是否已上报无关） ──
+        play_alert_audio(
+            text=f"{self.tag}账号{self.account_id} "
+                 f"检测到{len(orders)}个订单")
 
         # ── 检测订单状态变更 ──
         for o in orders:
@@ -392,7 +398,13 @@ class BaseOrderMonitor:
                     # 先按顺序初始化所有 Worker 页面，再清理多余页面
                     for w in workers:
                         await w.init_page()
-                    await self._session.close_unclaimed_pages()
+                    await self._close_non_worker_pages(workers)
+
+                    # 重新选取一个 worker 页面作为 main_page 引用
+                    # （原 main_page 若未被 worker 使用则已关闭）
+                    main_page = workers[0]._page
+                    self._session._main_page = main_page
+
                     print(f"[{self._log_tag}] {len(workers)} 个 Worker 页面已就绪, "
                           f"context.pages={len(self._session._context.pages)}")
 
@@ -455,9 +467,47 @@ class BaseOrderMonitor:
         finally:
             await worker.stop()
 
+    async def _close_non_worker_pages(self, workers: List[PageWorker]):
+        """关闭所有非 Worker 持有的页面（包括 main_page 和多余的恢复页面）。"""
+        if not self._session or not self._session._context:
+            return
+        worker_page_ids = {id(w._page) for w in workers if w._page}
+        for p in list(self._session._context.pages):
+            if id(p) in worker_page_ids:
+                continue
+            try:
+                url = p.url
+            except Exception:
+                url = "unknown"
+            print(f"[{self._log_tag}] 关闭非 Worker 页面: {url}")
+            try:
+                await p.close()
+            except Exception:
+                pass
+
+    async def _cleanup_stray_pages(self, workers: List[PageWorker]):
+        """清理非 Worker 持有的多余页面（防止运行期间页面累积）。"""
+        if not self._session or not self._session._context:
+            return
+        worker_page_ids = {id(w._page) for w in workers if w._page}
+        # 也跳过正在使用的临时页面（如详情页抓取中）
+        active_ids = worker_page_ids | self._active_temp_pages
+        for p in list(self._session._context.pages):
+            if id(p) in active_ids:
+                continue
+            try:
+                url = p.url
+            except Exception:
+                url = "unknown"
+            print(f"[{self._log_tag}] 周期性清理多余页面: {url}")
+            try:
+                await p.close()
+            except Exception:
+                pass
+
     async def _health_monitor(self, workers: List[PageWorker],
                               health_interval: int = 30):
-        """监控 Worker 心跳，检测卡死的 Worker。"""
+        """监控 Worker 心跳，检测卡死的 Worker；同时周期性清理多余页面。"""
         timeout = health_interval * 2
         while not self._stopped():
             await asyncio.sleep(health_interval)
@@ -467,6 +517,9 @@ class BaseOrderMonitor:
                 if idle > timeout:
                     print(f"[{self._log_tag}] ⚠️ {w._name} "
                           f"超时无响应 ({int(idle)}s)")
+
+            # 周期性清理多余的非 Worker 页面
+            await self._cleanup_stray_pages(workers)
 
 
 # ═══════════════════════════════════════════════════════════

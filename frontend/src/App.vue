@@ -22,10 +22,6 @@
           <el-icon><User /></el-icon>
           <span>账号管理</span>
         </el-menu-item>
-        <el-menu-item index="/login">
-          <el-icon><Promotion /></el-icon>
-          <span>快速登录</span>
-        </el-menu-item>
         <el-menu-item index="/schedules">
           <el-icon><Clock /></el-icon>
           <span>子功能配置管理</span>

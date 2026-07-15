@@ -14,15 +14,13 @@ import org.springframework.web.socket.WebSocketSession;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Agent 运行时注册表（进程内内存态）。
  *
  * <p>对应原 Python routers/agent.py 的模块级映射与派发函数：维护 machine ↔ ws、
- * task ↔ machine、account ↔ 任务镜像、以及 /login 等待的 Future，并向 worker 派发
- * login / manual_login / order_check / cancel / captcha_input。
+ * task ↔ machine、account ↔ 任务镜像。
  */
 @Component
 public class AgentRegistry {
@@ -31,18 +29,14 @@ public class AgentRegistry {
 
     /** machine_id -> WebSocket 会话。 */
     private final Map<Integer, WebSocketSession> agentConnections = new ConcurrentHashMap<>();
-    /** 前端验证码 WebSocket：task_id -> 会话。 */
-    private final Map<String, WebSocketSession> captchaConnections = new ConcurrentHashMap<>();
     /** task_id -> machine_id。 */
     private final Map<String, Integer> taskToMachine = new ConcurrentHashMap<>();
     /** task_id -> 派发时的具体 Agent 会话，用于拒绝旧连接迟到结果。 */
     private final Map<String, WebSocketSession> taskToAgentSession = new ConcurrentHashMap<>();
     /** account_id -> 任务镜像。 */
     private final Map<Integer, TaskInfo> accountTasks = new ConcurrentHashMap<>();
-    /** account_id -> task_id，用于登录和订单任务统一防重。 */
+    /** account_id -> task_id，用于订单任务统一防重。 */
     private final Map<Integer, String> accountTaskIds = new ConcurrentHashMap<>();
-    /** task_id -> Future（/login 等待 agent 回 task_result）。 */
-    private final Map<String, CompletableFuture<Map<String, Object>>> loginFutures = new ConcurrentHashMap<>();
     /** 已结束任务号隔离期，防止客户端立即复用后被迟到结果污染。 */
     private final Map<String, Long> retiredTaskIds = new ConcurrentHashMap<>();
     /** machine_id -> Worker 最近一次游戏运行态。 */
@@ -69,14 +63,6 @@ public class AgentRegistry {
     // ═══════════════════════════════════════════════════════════
     // 会话生命周期
     // ═══════════════════════════════════════════════════════════
-
-    public boolean registerCaptcha(String taskId, WebSocketSession session) {
-        return captchaConnections.putIfAbsent(taskId, session) == null;
-    }
-
-    public void removeCaptcha(String taskId, WebSocketSession session) {
-        captchaConnections.remove(taskId, session);
-    }
 
     /** 处理 register：按 mac upsert machines，置在线并刷新心跳，返回 machine_id。 */
     public Integer handleRegister(Map<String, Object> msg) {
@@ -181,14 +167,6 @@ public class AgentRegistry {
         taskToMachine.forEach((taskId, boundMachineId) -> {
             if (boundMachineId != null && boundMachineId == machineId
                     && taskToMachine.remove(taskId, boundMachineId)) {
-                CompletableFuture<Map<String, Object>> fut = loginFutures.remove(taskId);
-                if (fut != null && !fut.isDone()) {
-                    Map<String, Object> r = new LinkedHashMap<>();
-                    r.put("status", "failed");
-                    r.put("message", message);
-                    r.put("duration_ms", 0);
-                    fut.complete(r);
-                }
                 taskToAgentSession.remove(taskId);
                 retireTaskId(taskId);
                 releaseAccountTask(taskId);
@@ -225,14 +203,6 @@ public class AgentRegistry {
             return;
         }
         Integer accountId = asInt(msg.get("account_id"));
-        Object resultObj = msg.get("result");
-        Map<String, Object> result = resultObj instanceof Map ? (Map<String, Object>) resultObj
-                : new LinkedHashMap<>();
-
-        CompletableFuture<Map<String, Object>> fut = loginFutures.remove(taskId);
-        if (fut != null && !fut.isDone()) {
-            fut.complete(result);
-        }
         if (accountId != null) {
             TaskInfo info = accountTasks.get(accountId);
             if (info != null && info.taskId != null && info.taskId.equals(taskId)) {
@@ -244,32 +214,6 @@ public class AgentRegistry {
         taskToAgentSession.remove(taskId, session);
         retireTaskId(taskId);
         releaseAccountTask(taskId);
-    }
-
-    /** 把 worker 通用事件转成前端验证码 WS 约定格式并转发。 */
-    public void forwardEventToFrontend(Map<String, Object> msg) {
-        String taskId = str(msg.get("task_id"));
-        WebSocketSession ws = captchaConnections.get(taskId);
-        if (ws == null) {
-            return;
-        }
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("type", msg.get("event"));
-        payload.put("task_id", taskId);
-        payload.put("message", msg.getOrDefault("message", ""));
-        sendJson(ws, payload);
-    }
-
-    public void forwardCaptchaRequired(Map<String, Object> msg) {
-        String taskId = str(msg.get("task_id"));
-        WebSocketSession ws = captchaConnections.get(taskId);
-        if (ws == null) {
-            return;
-        }
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("type", "captcha_required");
-        payload.put("task_id", taskId);
-        sendJson(ws, payload);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -311,38 +255,6 @@ public class AgentRegistry {
         return sendToAgent(machineId, payload);
     }
 
-    /** 下发登录任务，返回可等待的 Future（agent 回 task_result 时被唤醒）。 */
-    public CompletableFuture<Map<String, Object>> dispatchLogin(
-            int machineId, String taskId, boolean manual, String url, String username,
-            String password, String loginType, Map<String, Object> loginConfig,
-            Integer websiteId, Integer accountId) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("type", manual ? "manual_login" : "login");
-        payload.put("task_id", taskId);
-        payload.put("website_id", websiteId);
-        payload.put("account_id", accountId);
-        payload.put("url", url);
-        payload.put("username", username);
-        payload.put("password", password);
-        payload.put("login_type", loginType);
-        payload.put("login_config", loginConfig != null ? loginConfig : Map.of());
-
-        synchronized (taskLock) {
-            reserveTask(machineId, taskId, accountId);
-            CompletableFuture<Map<String, Object>> fut = new CompletableFuture<>();
-            if (loginFutures.putIfAbsent(taskId, fut) != null) {
-                releaseTask(taskId, accountId);
-                throw new IllegalStateException("任务编号已存在");
-            }
-            if (!sendToAgent(machineId, payload)) {
-                loginFutures.remove(taskId, fut);
-                releaseTask(taskId, accountId);
-                throw new IllegalStateException("发送任务到 agent 失败");
-            }
-            return fut;
-        }
-    }
-
     /** 下发订单监控任务（fire-and-forget），并在镜像表登记。 */
     public void dispatchOrderCheck(
             int machineId, String taskId, String url, String username, String password,
@@ -379,36 +291,10 @@ public class AgentRegistry {
         }
     }
 
-    /** 登录等待超时或调用方中断时释放内存态，避免后续任务被永久占用。 */
-    public void cleanupLoginTask(String taskId) {
-        synchronized (taskLock) {
-            CompletableFuture<Map<String, Object>> future = loginFutures.remove(taskId);
-            if (future != null) {
-                future.cancel(false);
-            }
-            taskToMachine.remove(taskId);
-            taskToAgentSession.remove(taskId);
-            retireTaskId(taskId);
-            releaseAccountTask(taskId);
-        }
-    }
-
     public boolean dispatchCancel(int machineId, int accountId) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "cancel");
         payload.put("account_id", accountId);
-        return sendToAgent(machineId, payload);
-    }
-
-    public boolean sendCaptchaInput(String taskId, String value) {
-        Integer machineId = taskToMachine.get(taskId);
-        if (machineId == null) {
-            return false;
-        }
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("type", "captcha_input");
-        payload.put("task_id", taskId);
-        payload.put("value", value);
         return sendToAgent(machineId, payload);
     }
 

@@ -13,6 +13,7 @@ public record OrderDetectedMessage(
         String buyerCharacter,
         String platformStatus,
         String rawTitle,
+        String gameName,
         String platformOrderTime,
         BigDecimal platformPrice,
         String platformItemType) {
@@ -34,6 +35,7 @@ public record OrderDetectedMessage(
         buyerCharacter = bounded(required(buyerCharacter, "buyer_character"), 100, "buyer_character");
         platformStatus = bounded(required(platformStatus, "platform_status"), 32, "platform_status");
         rawTitle = bounded(rawTitle == null ? "" : rawTitle.trim(), 256, "raw_title");
+        gameName = bounded(gameName == null ? "" : gameName.trim(), 100, "game_name");
         platformOrderTime = bounded(platformOrderTime == null ? "" : platformOrderTime.trim(), 32, "platform_order_time");
         platformItemType = bounded(platformItemType == null ? "" : platformItemType.trim(), 32, "platform_item_type");
     }

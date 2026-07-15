@@ -8,10 +8,21 @@ EXE 附加命令：
   auto-worker.exe --uninstall    取消开机自启
 """
 import asyncio
+import builtins
 import json
 import os
 import subprocess
 import sys
+from datetime import datetime
+
+# ── 全局 print 拦截器：所有 print() 自动带时间戳 ──
+_original_print = builtins.print
+
+def _ts_print(*args, **kwargs):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _original_print(f"[{ts}]", *args, **kwargs)
+
+builtins.print = _ts_print
 
 # 让 worker 目录内模块可平铺导入（与 backend 风格一致）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,7 +33,6 @@ import config
 from agent_client import AgentClient
 from reporter import Reporter, set_reporter
 from task_manager import TaskManager
-from automation.browser import run_auto_login, run_manual_login
 from automation.order_monitor import run_order_check
 from trade.runtime_status import runtime_status
 from trade.task_gate import trade_task_gate
@@ -97,7 +107,7 @@ def _uninstall_autostart() -> bool:
 # 任务处理
 # ═══════════════════════════════════════════════════════════
 
-def _submit_task(msg, reporter, task_manager, run_func, task_kind="login"):
+def _submit_task(msg, reporter, task_manager, run_func):
     """通用任务提交：执行 run_func 并通过 reporter 回报结果。"""
     task_id = msg["task_id"]
     account_id = msg.get("account_id")
@@ -115,40 +125,13 @@ def _submit_task(msg, reporter, task_manager, run_func, task_kind="login"):
                 result = {"status": "failed", "message": f"浏览器任务启动失败：{e}", "duration_ms": 0}
         reporter.report_result(task_id, account_id, result)
 
-    started = task_manager.run_login(task_id, account_id, _runner) \
-        if task_kind == "login" \
-        else task_manager.start_order_check(task_id, account_id, _runner)
+    started = task_manager.start_order_check(task_id, account_id, _runner)
     if not started:
         reporter.report_result(task_id, account_id, {
             "status": "failed",
             "message": "该账号已有任务在运行",
             "duration_ms": 0,
         })
-
-
-def _handle_login(msg, reporter, task_manager):
-    def run(msg, stop_event, account_id, task_id):
-        return run_auto_login(
-            task_id=task_id, url=msg["url"],
-            username=msg["username"], password=msg["password"],
-            login_type=msg.get("login_type", "form"),
-            login_config=msg.get("login_config") or {},
-            website_id=msg.get("website_id"), account_id=account_id,
-            stop_event=stop_event,
-        )
-    _submit_task(msg, reporter, task_manager, run)
-
-
-def _handle_manual_login(msg, reporter, task_manager):
-    def run(msg, stop_event, account_id, task_id):
-        return run_manual_login(
-            task_id=task_id, url=msg["url"],
-            username=msg["username"], password=msg["password"],
-            login_config=msg.get("login_config") or {},
-            website_id=msg.get("website_id"), account_id=account_id,
-            stop_event=stop_event,
-        )
-    _submit_task(msg, reporter, task_manager, run)
 
 
 def _handle_order_check(msg, reporter, task_manager):
@@ -161,23 +144,17 @@ def _handle_order_check(msg, reporter, task_manager):
             login_config=msg.get("login_config") or {},
             stop_event=stop_event,
         )
-    _submit_task(msg, reporter, task_manager, run, task_kind="order_check")
+    _submit_task(msg, reporter, task_manager, run)
 
 
 async def _dispatch_message(msg, reporter, task_manager):
     mtype = msg.get("type")
-    if mtype == "login":
-        _handle_login(msg, reporter, task_manager)
-    elif mtype == "manual_login":
-        _handle_manual_login(msg, reporter, task_manager)
-    elif mtype == "order_check":
+    if mtype == "order_check":
         _handle_order_check(msg, reporter, task_manager)
     elif mtype == "cancel":
         account_id = msg.get("account_id")
         ok = task_manager.cancel(account_id)
         print(f"[Worker] 收到 cancel account_id={account_id}, ok={ok}")
-    elif mtype == "captcha_input":
-        reporter.deliver_captcha(msg.get("task_id"), msg.get("value", ""))
     elif mtype == "orders_check_result":
         reporter.deliver_orders_check_result(
             msg.get("request_id"), msg.get("existing_ids", []))

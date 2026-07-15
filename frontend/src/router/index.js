@@ -18,12 +18,6 @@ const routes = [
     meta: { title: '账号管理' },
   },
   {
-    path: '/login',
-    name: 'LoginPanel',
-    component: () => import('../views/LoginPanel.vue'),
-    meta: { title: '快速登录' },
-  },
-  {
     path: '/schedules',
     name: 'ScheduleManagement',
     component: () => import('../views/ScheduleManagement.vue'),
