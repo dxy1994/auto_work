@@ -14,8 +14,6 @@ spring:
       max-lifetime: 3600000
   jackson:
     property-naming-strategy: SNAKE_CASE
-    serialization:
-      write-dates-as-timestamps: false
     default-property-inclusion: always
   servlet:
     multipart:
@@ -23,6 +21,7 @@ spring:
       max-request-size: 20MB
 
 mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
   global-config:
     banner: false
     db-config:
@@ -49,4 +48,3 @@ app:
 logging:
   level:
     root: INFO
-    org.hibernate.SQL: WARN

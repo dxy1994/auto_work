@@ -14,6 +14,9 @@ class NormalizedOrder:
     buyer_character: str
     platform_status: str
     raw_title: str = ""
+    platform_order_time: str = ""
+    platform_price: Decimal = Decimal("0")
+    platform_item_type: str = ""
 
     def __post_init__(self):
         for field_name in (
@@ -49,4 +52,7 @@ class NormalizedOrder:
             "buyer_character": self.buyer_character,
             "platform_status": self.platform_status,
             "raw_title": self.raw_title,
+            "platform_order_time": self.platform_order_time or "",
+            "platform_price": format(self.platform_price, "f") if self.platform_price else "0",
+            "platform_item_type": self.platform_item_type or "",
         }

@@ -26,6 +26,9 @@ class NormalizedOrderTest(unittest.TestCase):
             "buyer_character": "구매자",
             "platform_status": "paid",
             "raw_title": "아덴01",
+            "platform_order_time": "",
+            "platform_price": "0",
+            "platform_item_type": "",
         })
 
     def test_rejects_non_adena_asset_in_first_phase(self):

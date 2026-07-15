@@ -4,7 +4,7 @@ import com.auto.entity.CookiesStore;
 import com.auto.mapper.CookiesStoreMapper;
 import com.auto.service.CookiesStoreService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 @Service

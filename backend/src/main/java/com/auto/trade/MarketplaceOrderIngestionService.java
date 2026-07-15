@@ -12,7 +12,9 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /** 将 Worker 订单观察幂等写入总控订单域。 */
@@ -69,6 +71,25 @@ public class MarketplaceOrderIngestionService {
         order.setAssetAmount(message.assetAmount());
         order.setDeliveryStatus(supported ? "waiting_assignment" : "suspended");
         order.setRemark(message.rawTitle());
+        if (message.platformOrderTime() != null
+                && !message.platformOrderTime().isEmpty()) {
+            try {
+                order.setPlatformOrderTime(
+                        java.time.LocalDateTime.parse(
+                                message.platformOrderTime(),
+                                java.time.format.DateTimeFormatter.ofPattern(
+                                        "MM-dd HH:mm")));
+            } catch (Exception ignore) {
+                // 解析失败忽略，保留为空
+            }
+        }
+        if (message.platformPrice() != null) {
+            order.setPlatformPrice(message.platformPrice());
+        }
+        if (message.platformItemType() != null
+                && !message.platformItemType().isEmpty()) {
+            order.setPlatformItemType(message.platformItemType());
+        }
         if (!supported) {
             order.setLastErrorCode("UNSUPPORTED_ASSET");
             order.setLastErrorMessage("第一阶段只支持 Adena");
@@ -92,6 +113,11 @@ public class MarketplaceOrderIngestionService {
         event.setMessage("machine=" + machineId + ", platform=" + message.platform());
         eventService.save(event);
         return order;
+    }
+
+    /** 批量查重：返回已存在于 DB 的 source_order_no 集合，供 Worker 端预过滤。 */
+    public Set<String> findExistingSourceOrderNos(int websiteId, List<String> sourceOrderNos) {
+        return orderService.findExistingSourceOrderNos(websiteId, sourceOrderNos);
     }
 
     private int resolveRegionId(Map<String, Object> config, String externalKey) {

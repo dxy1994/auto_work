@@ -12,7 +12,10 @@ public record OrderDetectedMessage(
         BigDecimal assetAmount,
         String buyerCharacter,
         String platformStatus,
-        String rawTitle) {
+        String rawTitle,
+        String platformOrderTime,
+        BigDecimal platformPrice,
+        String platformItemType) {
 
     private static final Set<String> PLATFORMS = Set.of("itemmania", "barotem", "itembay");
 
@@ -31,6 +34,8 @@ public record OrderDetectedMessage(
         buyerCharacter = bounded(required(buyerCharacter, "buyer_character"), 100, "buyer_character");
         platformStatus = bounded(required(platformStatus, "platform_status"), 32, "platform_status");
         rawTitle = bounded(rawTitle == null ? "" : rawTitle.trim(), 256, "raw_title");
+        platformOrderTime = bounded(platformOrderTime == null ? "" : platformOrderTime.trim(), 32, "platform_order_time");
+        platformItemType = bounded(platformItemType == null ? "" : platformItemType.trim(), 32, "platform_item_type");
     }
 
     private static String required(String value, String field) {

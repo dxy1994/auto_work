@@ -7,8 +7,13 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class GameItemOrderServiceImpl extends ServiceImpl<GameItemOrderMapper, GameItemOrder>
@@ -30,6 +35,20 @@ public class GameItemOrderServiceImpl extends ServiceImpl<GameItemOrderMapper, G
         return getOne(new LambdaQueryWrapper<GameItemOrder>()
                 .eq(GameItemOrder::getWebsiteId, websiteId)
                 .eq(GameItemOrder::getSourceOrderNo, sourceOrderNo), false);
+    }
+
+    @Override
+    public Set<String> findExistingSourceOrderNos(Integer websiteId, List<String> sourceOrderNos) {
+        if (sourceOrderNos == null || sourceOrderNos.isEmpty()) {
+            return Collections.emptySet();
+        }
+        List<GameItemOrder> list = list(new LambdaQueryWrapper<GameItemOrder>()
+                .select(GameItemOrder::getSourceOrderNo)
+                .eq(GameItemOrder::getWebsiteId, websiteId)
+                .in(GameItemOrder::getSourceOrderNo, sourceOrderNos));
+        return list.stream()
+                .map(GameItemOrder::getSourceOrderNo)
+                .collect(Collectors.toSet());
     }
 
     @Override

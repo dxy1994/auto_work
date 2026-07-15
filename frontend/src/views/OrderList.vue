@@ -212,6 +212,12 @@
         <el-table-column prop="subtotal" label="小计" width="80" align="right">
           <template #default="{ row }">{{ Number(row.subtotal || 0).toFixed(2) }}</template>
         </el-table-column>
+        <el-table-column label="进货价" width="80" align="right">
+          <template #default="{ row }">{{ row.purchase_price != null ? Number(row.purchase_price).toFixed(2) : '-' }}</template>
+        </el-table-column>
+        <el-table-column label="出货价" width="80" align="right">
+          <template #default="{ row }">{{ row.selling_price != null ? Number(row.selling_price).toFixed(2) : '-' }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="80" align="center">
           <template #default="{ row }">
             <el-tag :type="detailStatusType(row.status)" size="small">{{ detailStatusLabel(row.status) }}</el-tag>

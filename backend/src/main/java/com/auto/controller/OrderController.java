@@ -6,12 +6,15 @@ import com.auto.entity.GameItem;
 import com.auto.entity.GameItemOrder;
 import com.auto.entity.GameItemOrderDetail;
 import com.auto.entity.GameRegion;
+import com.auto.entity.GameRegionItem;
 import com.auto.service.GameItemOrderDetailService;
 import com.auto.service.GameItemOrderService;
 import com.auto.service.GameItemService;
+import com.auto.service.GameRegionItemService;
 import com.auto.service.GameRegionService;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
@@ -41,15 +44,18 @@ public class OrderController {
     private final GameItemOrderDetailService detailService;
     private final GameItemService itemService;
     private final GameRegionService regionService;
+    private final GameRegionItemService inventoryService;
     private final ObjectMapper objectMapper;
 
     public OrderController(GameItemOrderService orderService, GameItemOrderDetailService detailService,
                            GameItemService itemService, GameRegionService regionService,
+                           GameRegionItemService inventoryService,
                            ObjectMapper objectMapper) {
         this.orderService = orderService;
         this.detailService = detailService;
         this.itemService = itemService;
         this.regionService = regionService;
+        this.inventoryService = inventoryService;
         this.objectMapper = objectMapper;
     }
 
@@ -131,6 +137,8 @@ public class OrderController {
             int qty = d.quantity != null ? d.quantity : 1;
             BigDecimal unitPrice = d.unitPrice != null ? d.unitPrice
                     : (item.getPrice() != null ? item.getPrice() : BigDecimal.ZERO);
+            // 从大区物品库存获取进货价/出货价快照
+            GameRegionItem inventory = findInventory(payload.regionId, d.itemId);
             GameItemOrderDetail detail = new GameItemOrderDetail();
             detail.setOrderId(order.getId());
             detail.setItemId(d.itemId);
@@ -139,6 +147,10 @@ public class OrderController {
             detail.setQuantity(qty);
             detail.setUnitPrice(unitPrice);
             detail.setSubtotal(unitPrice.multiply(BigDecimal.valueOf(qty)));
+            if (inventory != null) {
+                detail.setPurchasePrice(inventory.getPurchasePrice());
+                detail.setSellingPrice(inventory.getSellingPrice());
+            }
             detail.setRemark(d.remark);
             detailService.save(detail);
         }
@@ -208,6 +220,7 @@ public class OrderController {
         int qty = payload.quantity != null ? payload.quantity : 1;
         BigDecimal unitPrice = payload.unitPrice != null ? payload.unitPrice
                 : (item.getPrice() != null ? item.getPrice() : BigDecimal.ZERO);
+        GameRegionItem inventory = findInventory(o.getRegionId(), payload.itemId);
         GameItemOrderDetail detail = new GameItemOrderDetail();
         detail.setOrderId(orderId);
         detail.setItemId(payload.itemId);
@@ -216,6 +229,10 @@ public class OrderController {
         detail.setQuantity(qty);
         detail.setUnitPrice(unitPrice);
         detail.setSubtotal(unitPrice.multiply(BigDecimal.valueOf(qty)));
+        if (inventory != null) {
+            detail.setPurchasePrice(inventory.getPurchasePrice());
+            detail.setSellingPrice(inventory.getSellingPrice());
+        }
         detail.setRemark(payload.remark);
         detailService.save(detail);
         recalculateOrderTotal(o);
@@ -298,6 +315,13 @@ public class OrderController {
         if (payload.unitPrice != null && payload.unitPrice.signum() < 0) {
             throw ApiException.badRequest("物品单价不能小于 0");
         }
+    }
+
+    private GameRegionItem findInventory(Integer regionId, Integer itemId) {
+        return inventoryService.getOne(new LambdaQueryWrapper<GameRegionItem>()
+                .eq(GameRegionItem::getRegionId, regionId)
+                .eq(GameRegionItem::getItemId, itemId)
+                .eq(GameRegionItem::getIsActive, 1), false);
     }
 
     /** 创建订单入参（主表 + 明细）。 */

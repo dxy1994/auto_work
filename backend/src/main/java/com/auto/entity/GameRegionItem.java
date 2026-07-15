@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /** 大区物品库存（region_id + item_id 唯一）。 */
@@ -26,6 +27,18 @@ public class GameRegionItem {
     private Integer itemId;
 
     private Integer stock = 0;
+
+    private BigDecimal purchasePrice = BigDecimal.ZERO;
+
+    private BigDecimal sellingPrice = BigDecimal.ZERO;
+
+    private BigDecimal minSellingPrice = BigDecimal.ZERO;
+
+    private BigDecimal maxSellingPrice = BigDecimal.ZERO;
+
+    private BigDecimal maxFluctuation;
+
+    private BigDecimal maxFluctuationRate;
 
     private Integer isActive = 1;
 

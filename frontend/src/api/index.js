@@ -90,6 +90,7 @@ export const deleteGameItem = (id) => request.delete(`/game-items/${id}`)
 export const getRegionInventories = (params) => request.get('/region-inventories', { params })
 export const getAllRegionInventories = (params) => request.get('/region-inventories/all', { params })
 export const updateRegionInventory = (id, data) => request.put(`/region-inventories/${id}`, data)
+export const updateRegionInventoryBatch = (data) => request.put('/region-inventories/batch/update', data)
 
 // ── 中控平台：机器管理 ────────────────────────────────────
 export const getMachines = (params) => request.get('/machines', { params })

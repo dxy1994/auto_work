@@ -27,6 +27,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<Map<String, Object>> handleApi(ApiException ex) {
+        log.warn("业务异常 [{}]: {}", ex.getStatus().value(), ex.getMessage());
         return ResponseEntity.status(ex.getStatus())
                 .body(Map.of("detail", ex.getMessage()));
     }
@@ -35,11 +36,13 @@ public class GlobalExceptionHandler {
             MethodArgumentTypeMismatchException.class, HttpMessageNotReadableException.class,
             ServletRequestBindingException.class, MultipartException.class})
     public ResponseEntity<Map<String, Object>> handleBadRequest(Exception ex) {
+        log.warn("请求参数格式错误: {}", ex.getMessage());
         return ResponseEntity.badRequest().body(Map.of("detail", "请求参数格式错误"));
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<Map<String, Object>> handleUploadTooLarge(MaxUploadSizeExceededException ex) {
+        log.warn("上传文件超过允许大小: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
                 .body(Map.of("detail", "上传文件超过允许大小"));
     }

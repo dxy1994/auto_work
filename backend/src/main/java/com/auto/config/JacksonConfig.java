@@ -1,11 +1,12 @@
 package com.auto.config;
 
-import com.fasterxml.jackson.databind.cfg.CoercionAction;
-import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
-import com.fasterxml.jackson.databind.type.LogicalType;
-import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
+
+import org.springframework.boot.jackson.autoconfigure.JsonMapperBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import tools.jackson.databind.cfg.CoercionAction;
+import tools.jackson.databind.cfg.CoercionInputShape;
+import tools.jackson.databind.type.LogicalType;
 
 /**
  * Jackson 定制：允许布尔值反序列化为整型字段。
@@ -16,9 +17,8 @@ import org.springframework.context.annotation.Configuration;
 public class JacksonConfig {
 
     @Bean
-    public Jackson2ObjectMapperBuilderCustomizer booleanToIntegerCoercion() {
-        return builder -> builder.postConfigurer(mapper ->
-                mapper.coercionConfigFor(LogicalType.Integer)
-                        .setCoercion(CoercionInputShape.Boolean, CoercionAction.TryConvert));
+    public JsonMapperBuilderCustomizer booleanToIntegerCoercion() {
+        return builder -> builder.withCoercionConfig(LogicalType.Integer,
+                config -> config.setCoercion(CoercionInputShape.Boolean, CoercionAction.TryConvert));
     }
 }

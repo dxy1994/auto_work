@@ -4,7 +4,7 @@ import com.auto.entity.WebsiteSchedule;
 import com.auto.mapper.WebsiteScheduleMapper;
 import com.auto.service.WebsiteScheduleService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 import java.util.List;

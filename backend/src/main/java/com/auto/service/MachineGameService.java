@@ -1,7 +1,7 @@
 package com.auto.service;
 
 import com.auto.entity.MachineGame;
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 
 import java.util.List;
 

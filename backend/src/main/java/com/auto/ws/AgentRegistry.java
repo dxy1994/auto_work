@@ -4,7 +4,7 @@ import com.auto.entity.Machine;
 import com.auto.service.MachineService;
 import com.auto.trade.TradeOffer;
 import com.auto.trade.WorkerRuntimeStatus;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;

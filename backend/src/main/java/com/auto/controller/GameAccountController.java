@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 /** 游戏账号管理。 */
@@ -29,7 +30,7 @@ public class GameAccountController {
             @RequestParam(name = "game_id", required = false) Integer gameId,
             @RequestParam(name = "region_id", required = false) Integer regionId,
             @RequestParam(name = "machine_id", required = false) Integer machineId,
-            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "status", required = false) List<String> status,
             @RequestParam(name = "keyword", required = false) String keyword,
             @RequestParam(name = "page", defaultValue = "1") int page,
             @RequestParam(name = "page_size", defaultValue = "20") int pageSize) {
@@ -61,7 +62,7 @@ public class GameAccountController {
     public GameAccount update(@PathVariable Integer accountId, @RequestBody GameAccount payload) {
         GameAccount a = gameAccountService.getById(accountId);
         if (a == null) throw ApiException.notFound("游戏账号不存在");
-        if (payload.getRegionId() != null) a.setRegionId(payload.getRegionId());
+        a.setRegionId(payload.getRegionId());
         if (payload.getMachineId() != null) a.setMachineId(payload.getMachineId());
         if (payload.getAccountName() != null) a.setAccountName(payload.getAccountName());
         if (payload.getAccountNo() != null) a.setAccountNo(payload.getAccountNo());

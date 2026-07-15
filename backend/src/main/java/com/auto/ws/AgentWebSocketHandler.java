@@ -3,7 +3,7 @@ package com.auto.ws;
 import com.auto.trade.TradeDispatchCoordinator;
 import com.auto.trade.MarketplaceOrderIngestionService;
 import com.auto.trade.OrderDetectedMessage;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -12,7 +12,9 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Agent 接入 WebSocket 处理器（/api/agent/ws）。
@@ -84,6 +86,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             case "trade_offer_decision" -> handleTradeDecision(session, raw);
             case "trade_status" -> handleTradeStatus(session, raw);
             case "order_detected" -> handleOrderDetected(session, raw);
+            case "check_orders" -> handleCheckOrders(session, raw);
             default -> log.info("[Agent] 未知上行消息类型: {}", type);
         }
     }
@@ -143,6 +146,36 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
 
     private static String str(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleCheckOrders(WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+            return;
+        }
+        Integer websiteId = asInt(raw.get("website_id"));
+        Object nosObj = raw.get("source_order_nos");
+        String requestId = str(raw.get("request_id"));
+        if (websiteId == null || !(nosObj instanceof List<?>) || requestId == null) {
+            log.warn("[Order] check_orders 参数不完整 machine_id={}", machineId);
+            return;
+        }
+        List<String> sourceOrderNos = ((List<?>) nosObj).stream()
+                .map(Object::toString)
+                .toList();
+        Set<String> existing = orderIngestionService.findExistingSourceOrderNos(
+                websiteId, sourceOrderNos);
+        try {
+            Map<String, Object> resp = Map.of(
+                    "type", "orders_check_result",
+                    "request_id", requestId,
+                    "existing_ids", existing);
+            session.sendMessage(new TextMessage(
+                    objectMapper.writeValueAsString(resp)));
+        } catch (Exception e) {
+            log.warn("[Order] 查重响应发送失败: {}", e.getMessage());
+        }
     }
 
     @SuppressWarnings("unchecked")

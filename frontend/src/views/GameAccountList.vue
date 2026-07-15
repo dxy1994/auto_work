@@ -7,7 +7,7 @@
       <el-select v-model="filterRegionId" placeholder="选择大区" clearable style="width: 140px" @change="handleSearch">
         <el-option v-for="r in regionList" :key="r.id" :label="r.name" :value="r.id" />
       </el-select>
-      <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 120px" @change="handleSearch">
+      <el-select v-model="filterStatus" placeholder="全部状态" clearable multiple collapse-tags style="width: 200px" @change="handleSearch">
         <el-option label="空闲" value="idle" />
         <el-option label="使用中" value="in_use" />
         <el-option label="锁定" value="locked" />
@@ -119,7 +119,7 @@ const pageSize = 20
 const keyword = ref('')
 const filterGameId = ref(null)
 const filterRegionId = ref(null)
-const filterStatus = ref('')
+const filterStatus = ref([])
 const loading = ref(false)
 
 const gameNameMap = computed(() => Object.fromEntries(gameList.value.map(g => [g.id, g.name])))
@@ -133,7 +133,7 @@ async function fetchList() {
     const params = { page: page.value, page_size: pageSize, keyword: keyword.value }
     if (filterGameId.value) params.game_id = filterGameId.value
     if (filterRegionId.value) params.region_id = filterRegionId.value
-    if (filterStatus.value) params.status = filterStatus.value
+    if (filterStatus.value && filterStatus.value.length) params.status = filterStatus.value.join(',')
     const res = await getGameAccounts(params)
     list.value = res.items; total.value = res.total
   } finally { loading.value = false }

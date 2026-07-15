@@ -92,8 +92,8 @@
         </el-form-item>
         <el-form-item label="类型">
           <el-radio-group v-model="form.is_bundle">
-            <el-radio :value="false">单品</el-radio>
-            <el-radio :value="true">套装</el-radio>
+            <el-radio :value="0">单品</el-radio>
+            <el-radio :value="1">套装</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="分类">
@@ -211,7 +211,7 @@ const rules = {
 }
 
 const defaultForm = () => ({
-  game_id: null, name: '', code: '', image: '', is_bundle: false,
+  game_id: null, name: '', code: '', image: '', is_bundle: 0,
   category: '', price: 0, sort_order: 0, remark: '',
 })
 const form = reactive(defaultForm())
@@ -250,7 +250,7 @@ function openItemDialog(row = null, parentId = null) {
   } else {
     imageFileList.value = []
   }
-  const base = row ? { ...row, is_bundle: !!row.is_bundle } : { ...defaultForm(), game_id: filterGameId.value, code: genItemCode() }
+  const base = row ? { ...row, is_bundle: row.is_bundle ? 1 : 0 } : { ...defaultForm(), game_id: filterGameId.value, code: genItemCode() }
   if (parentId) base.parent_id = parentId
   else if (!row) base.parent_id = null
   Object.assign(form, base)

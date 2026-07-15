@@ -36,7 +36,11 @@ def save_from_context(context, account_id: int) -> bool:
         print(f"[CookieReader] ✅ 保存 {len(cookies)} 个 Cookie → {path}")
         return True
     except Exception as e:
-        print(f"[CookieReader] ❌ 保存 Cookie 失败: {e}")
+        err_msg = str(e)
+        if "Event loop is closed" in err_msg or "already stopped" in err_msg:
+            print(f"[CookieReader] ⚠️ 保存 Cookie 跳过（浏览器已关闭）")
+        else:
+            print(f"[CookieReader] ❌ 保存 Cookie 失败: {e}")
         return False
 
 

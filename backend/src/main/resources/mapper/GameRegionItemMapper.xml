@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.auto.mapper.GameRegionItemMapper">
+
+    <sql id="joinSelect">
+        select inv.id as id, inv.game_id as game_id, inv.region_id as region_id,
+        r.name as region_name,
+        inv.item_id as item_id, item.name as item_name, item.code as item_code,
+        item.image as item_image, inv.stock as stock,
+        inv.purchase_price as purchase_price, inv.selling_price as selling_price,
+        inv.min_selling_price as min_selling_price, inv.max_selling_price as max_selling_price,
+        inv.max_fluctuation as max_fluctuation, inv.max_fluctuation_rate as max_fluctuation_rate,
+        inv.is_active as is_active,
+        inv.created_at as created_at, inv.updated_at as updated_at
+        from game_region_items inv
+        join game_items item on inv.item_id = item.id
+        join game_regions r on inv.region_id = r.id
+        where inv.is_active = 1 and item.is_active = 1
+        and (#{gameId} is null or inv.game_id = #{gameId})
+        and (#{regionId} is null or inv.region_id = #{regionId})
+    </sql>
+
+    <!-- 分页联表查询库存（含物品信息），返回 snake_case 键的 Map -->
+    <select id="searchWithItem" resultType="map">
+        <include refid="joinSelect"/>
+        <if test="itemId != null"> and inv.item_id = #{itemId} </if>
+        <if test="hasStock != null">
+            <choose>
+                <when test="hasStock == 1"> and inv.stock &gt; 0 </when>
+                <when test="hasStock == 0"> and inv.stock = 0 </when>
+            </choose>
+        </if>
+        <if test="keyword != null"> and item.name like concat('%', #{keyword}, '%') </if>
+        order by item.sort_order asc, item.id desc
+    </select>
+
+    <select id="findAllWithItem" resultType="map">
+        <include refid="joinSelect"/>
+        order by item.sort_order asc, item.id desc
+    </select>
+
+</mapper>

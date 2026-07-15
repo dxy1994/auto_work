@@ -3,7 +3,7 @@ package com.auto.service.impl;
 import com.auto.entity.TradeEvent;
 import com.auto.mapper.TradeEventMapper;
 import com.auto.service.TradeEventService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 @Service

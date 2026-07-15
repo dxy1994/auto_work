@@ -7,6 +7,7 @@
 一个 worker 进程只有一条总控连接，故使用模块级单例。
 """
 import threading
+import uuid
 from typing import Optional
 
 _current: Optional["Reporter"] = None
@@ -29,6 +30,8 @@ class Reporter:
         self._lock = threading.Lock()
         self._captcha_values: dict = {}
         self._captcha_events: dict = {}
+        self._order_check_events: dict = {}
+        self._order_check_results: dict = {}
 
     # ── 状态上报 ──
     def report_status(self, task_id, status, message="", account_id=None):
@@ -80,6 +83,43 @@ class Reporter:
             "account_id": account_id,
             "order": order.to_wire(),
         })
+
+    # ── 订单查重（跨线程请求-响应）──
+
+    def check_existing_orders(self, website_id, source_order_nos, timeout=5):
+        """批量查重：向总控查询哪些 source_order_no 已入库，返回集合。
+        超时或失败返回空集（fail-open，保证不会漏单）。"""
+        if not source_order_nos:
+            return set()
+        request_id = str(uuid.uuid4())[:8]
+        ev = threading.Event()
+        with self._lock:
+            self._order_check_events[request_id] = ev
+        try:
+            self._client.send_threadsafe({
+                "type": "check_orders",
+                "website_id": website_id,
+                "source_order_nos": list(source_order_nos),
+                "request_id": request_id,
+            })
+        except Exception as e:
+            print(f"[Reporter] 查重请求发送失败: {e}")
+            with self._lock:
+                self._order_check_events.pop(request_id, None)
+            return set()
+        got = ev.wait(timeout)
+        with self._lock:
+            result = self._order_check_results.pop(request_id, set()) if got else set()
+            self._order_check_events.pop(request_id, None)
+        return result
+
+    def deliver_orders_check_result(self, request_id, existing_ids):
+        """由 WS 接收循环调用：交付总控返回的查重结果。"""
+        with self._lock:
+            self._order_check_results[request_id] = set(existing_ids or [])
+            ev = self._order_check_events.get(request_id)
+        if ev:
+            ev.set()
 
     # ── 验证码交互（跨线程）──
     def report_captcha_required(self, task_id):

@@ -59,6 +59,7 @@ class _Adapter:
 
 class ItemmaniaAdapter(_Adapter):
     platform = "itemmania"
+    ready_statuses = frozenset(("paid", "ready", "trading"))
     fields = {
         "order_no": "order_no", "region": "server",
         "title": "product_title", "amount": "quantity",

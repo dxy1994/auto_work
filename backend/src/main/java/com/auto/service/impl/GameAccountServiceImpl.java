@@ -6,7 +6,7 @@ import com.auto.service.GameAccountService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -17,13 +17,13 @@ public class GameAccountServiceImpl extends ServiceImpl<GameAccountMapper, GameA
 
     @Override
     public IPage<GameAccount> search(Integer gameId, Integer regionId, Integer machineId,
-                                     String status, String keyword, Page<GameAccount> page) {
+                                     List<String> status, String keyword, Page<GameAccount> page) {
         LambdaQueryWrapper<GameAccount> w = new LambdaQueryWrapper<>();
         w.eq(GameAccount::getIsActive, 1)
                 .eq(gameId != null, GameAccount::getGameId, gameId)
                 .eq(regionId != null, GameAccount::getRegionId, regionId)
                 .eq(machineId != null, GameAccount::getMachineId, machineId)
-                .eq(status != null, GameAccount::getStatus, status)
+                .in(status != null && !status.isEmpty(), GameAccount::getStatus, status)
                 .and(keyword != null, q -> q.like(GameAccount::getAccountName, keyword)
                         .or().like(GameAccount::getNickname, keyword))
                 .orderByDesc(GameAccount::getId);

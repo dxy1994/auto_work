@@ -25,7 +25,7 @@ public class GameRegion {
 
     private String code;
 
-    private Integer sortOrder = 0;
+    private Integer sortOrder;
 
     private Integer isActive = 1;
 

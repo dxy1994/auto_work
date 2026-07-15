@@ -175,6 +175,9 @@ async def _dispatch_message(msg, reporter, task_manager):
         print(f"[Worker] 收到 cancel account_id={account_id}, ok={ok}")
     elif mtype == "captcha_input":
         reporter.deliver_captcha(msg.get("task_id"), msg.get("value", ""))
+    elif mtype == "orders_check_result":
+        reporter.deliver_orders_check_result(
+            msg.get("request_id"), msg.get("existing_ids", []))
     elif mtype == "trade_offer":
         assignment_id = msg.get("assignment_id")
         accepted, reason = trade_task_gate.offer(

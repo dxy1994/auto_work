@@ -34,6 +34,10 @@ public class GameItemOrderDetail {
 
     private BigDecimal subtotal = BigDecimal.ZERO;
 
+    private BigDecimal purchasePrice;
+
+    private BigDecimal sellingPrice;
+
     /** pending / processing / completed / failed。 */
     private String status = "pending";
 
