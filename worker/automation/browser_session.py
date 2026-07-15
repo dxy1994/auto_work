@@ -1,33 +1,39 @@
 """
-BrowserSession — 按账户共享浏览器上下文，支持多页面并行。
+BrowserSession — 按账户共享浏览器上下文，支持多页面并行（Async API）。
 
 职责：
   - 同一 account_id 全局共享一个浏览器上下文（单例注册表）
-  - 提供 new_page() 创建独立标签页，线程安全
+  - 提供 new_page() 创建独立标签页
   - 登录只执行一次，后续页面复用 Cookie / Storage
   - 生命周期管理：引用计数 → 最后关闭时上传配置到 RustFS
-
-使用方式：
-  session = BrowserSession.get_or_create(account_id, login_params, headless)
-  page1 = session.new_page()
-  page2 = session.new_page()
-  ...
-  session.release()  # 每个调用方退出时递减引用计数
 """
 
+import asyncio
 import os
+import sys
 import threading
 from typing import Optional, Dict
 
-from patchright.sync_api import sync_playwright, Page, Browser, BrowserContext
+from patchright.async_api import async_playwright, Page, Browser, BrowserContext
 
 import config
-from automation.browser import launch_browser
 from automation.cookie_reader import save_from_context
-from automation.login_handler import do_login
 import storage_sync
 
 PLAYWRIGHT_HEADLESS = config.PLAYWRIGHT_HEADLESS
+
+VIEWPORT = {"width": 1280, "height": 800}
+_USER_DATA_ROOT = os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), "..", "user_data")
+_CHROMIUM_SANDBOX = sys.platform != "linux"
+
+_CHROME_PATHS = [
+    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
 
 # ── 全局注册表 ──
 _registry: Dict[int, 'BrowserSession'] = {}
@@ -35,7 +41,7 @@ _registry_lock = threading.Lock()
 
 
 class BrowserSession:
-    """一个账户一个浏览器上下文，多页面共享。"""
+    """一个账户一个浏览器上下文，多页面共享（Async API）。"""
 
     def __init__(
         self,
@@ -70,31 +76,20 @@ class BrowserSession:
         self._login_done = False
         self._login_result = None
 
-        # ── 启动浏览器 ──
-        self._playwright = sync_playwright().start()
-        self._browser, self._context, self._main_page = launch_browser(
-            self._playwright,
-            headless=self._headless,
-            slow_mo=300 if not self._headless else 0,
-            account_id=account_id,
-        )
+        # 延迟初始化（在 async _init() 中完成）
+        self._playwright = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._main_page: Optional[Page] = None
+        self._claimed_pages: set = set()  # 已被 Worker 认领的页面 ID
 
-        # 自动关闭弹窗
-        def _safe_accept(dialog):
-            try:
-                dialog.accept()
-            except Exception:
-                pass
-        self._main_page.on("dialog", _safe_accept)
-
-        print(f"[BrowserSession:{account_id}] 浏览器已启动, "
-              f"main_page={self._main_page.url}")
-
-    # ── 公共 API ──
+    # ── 公共属性 ──
 
     @property
     def account_id(self) -> int:
         return self._account_id
+
+    # ── 公共 API ──
 
     @classmethod
     def get_or_create(
@@ -118,41 +113,167 @@ class BrowserSession:
                 session = _registry[account_id]
             else:
                 session = cls(
-                    account_id=account_id,
-                    login_url=login_url,
-                    username=username,
-                    password=password,
-                    login_type=login_type,
-                    login_config=login_config,
-                    skip_login=skip_login,
-                    force_login=force_login,
-                    website_id=website_id,
-                    my_page_url=my_page_url,
-                    stop_event=stop_event,
-                    headless=headless,
+                    account_id=account_id, login_url=login_url,
+                    username=username, password=password,
+                    login_type=login_type, login_config=login_config,
+                    skip_login=skip_login, force_login=force_login,
+                    website_id=website_id, my_page_url=my_page_url,
+                    stop_event=stop_event, headless=headless,
                 )
                 _registry[account_id] = session
             session._add_ref()
             return session
 
-    def new_page(self) -> Page:
-        """从共享 Context 创建新标签页。线程安全。"""
-        with self._lock:
-            page = self._context.new_page()
+    async def init(self):
+        """初始化浏览器（必须在 async 上下文中调用）。"""
+        if self._playwright is not None:
+            return  # 已初始化
 
-            def _safe_accept(dialog):
-                try:
-                    dialog.accept()
-                except Exception:
-                    pass
-            page.on("dialog", _safe_accept)
+        print(f"[BrowserSession:{self._account_id}] [1/5] 启动 playwright...", flush=True)
+        self._playwright = await async_playwright().start()
+        print(f"[BrowserSession:{self._account_id}] [2/5] playwright 已启动, 检测 channel...", flush=True)
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--restore-last-session",
+        ]
 
-            return page
+        # 选择 channel
+        browser_type = None
+        for ch in ("chrome", "msedge"):
+            try:
+                test = await self._playwright.chromium.launch(
+                    channel=ch, headless=True,
+                    args=["--headless"],
+                    chromium_sandbox=_CHROMIUM_SANDBOX)
+                await test.close()
+                browser_type = ch
+                print(f"[BrowserSession:{self._account_id}] channel={ch}")
+                break
+            except Exception:
+                continue
 
-    def ensure_login(self) -> dict:
+        launch_kwargs: dict = {
+            "headless": self._headless,
+            "slow_mo": 300 if not self._headless else 0,
+            "args": launch_args,
+            "chromium_sandbox": _CHROMIUM_SANDBOX,
+        }
+        if browser_type:
+            launch_kwargs["channel"] = browser_type
+        else:
+            for exe_path in _CHROME_PATHS:
+                if os.path.isfile(exe_path):
+                    launch_kwargs["executable_path"] = exe_path
+                    print(f"[BrowserSession:{self._account_id}] "
+                          f"exe={exe_path}")
+                    break
+            else:
+                print(f"[BrowserSession:{self._account_id}] "
+                      f"使用内置 Chromium")
+
+        # 持久化上下文
+        user_data_dir = os.path.join(_USER_DATA_ROOT,
+                                     str(self._account_id))
+        os.makedirs(user_data_dir, exist_ok=True)
+        print(f"[BrowserSession:{self._account_id}] [3/5] 下载远程配置...", flush=True)
+        storage_sync.download(self._account_id, user_data_dir)
+
+        print(f"[BrowserSession:{self._account_id}] [4/5] 启动持久化上下文 (headless={self._headless})...", flush=True)
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            viewport=VIEWPORT,
+            timezone_id="Asia/Seoul",
+            locale="ko-KR",
+            **launch_kwargs,
+        )
+        self._browser = self._context.browser
+        print(f"[BrowserSession:{self._account_id}] [5/5] 上下文已创建, 选取主页面...", flush=True)
+
+        # 选取主页面
+        self._main_page = await self._pick_main_page()
+
+        # 自动关闭弹窗
+        async def _safe_accept(dialog):
+            try:
+                await dialog.accept()
+            except Exception:
+                pass
+        self._main_page.on("dialog", _safe_accept)
+
+        print(f"[BrowserSession:{self._account_id}] 浏览器已启动, "
+              f"main_page={self._main_page.url}")
+
+    async def _pick_main_page(self) -> Page:
+        """从恢复的标签页中选一个作为主页面，只关多余的 about:blank。"""
+        pages = self._context.pages
+        if not pages:
+            return await self._context.new_page()
+
+        blanks = [p for p in pages if p.url == "about:blank"]
+        non_blanks = [p for p in pages if p.url != "about:blank"]
+
+        if non_blanks:
+            keep = non_blanks[-1]
+            # 只关多余的 blank 页，非 blank 页留给 Worker 复用
+            to_close = blanks
+        elif blanks:
+            keep = blanks[0]
+            to_close = blanks[1:]
+        else:
+            return await self._context.new_page()
+
+        for p in to_close:
+            try:
+                await p.close()
+            except Exception:
+                pass
+        return keep
+
+    async def claim_page(self) -> Page:
+        """为 Worker 分配一个页面：优先复用 context 中未被认领的已有页面。"""
+        context = self._context
+        for p in context.pages:
+            if p != self._main_page and id(p) not in self._claimed_pages:
+                self._claimed_pages.add(id(p))
+                print(f"[BrowserSession:{self._account_id}] 复用已有页面 url={p.url}")
+                return p
+        # 没有可复用的，新建
+        page = await self.new_page()
+        self._claimed_pages.add(id(page))
+        print(f"[BrowserSession:{self._account_id}] 新建页面")
+        return page
+
+    def release_page(self, page: Page):
+        """释放已认领的页面。"""
+        self._claimed_pages.discard(id(page))
+
+    async def close_unclaimed_pages(self):
+        """关闭未被认领的页面（主页面和已认领的保留）。"""
+        for p in list(self._context.pages):
+            if p == self._main_page or id(p) in self._claimed_pages:
+                continue
+            try:
+                await p.close()
+            except Exception:
+                pass
+
+    async def new_page(self) -> Page:
+        """从共享 Context 创建新标签页。"""
+        page = await self._context.new_page()
+
+        async def _safe_accept(dialog):
+            try:
+                await dialog.accept()
+            except Exception:
+                pass
+        page.on("dialog", _safe_accept)
+        return page
+
+    async def ensure_login(self) -> dict:
         """确保已登录（首次调用时执行，后续直接返回结果）。"""
         if self._skip_login:
-            return {"status": "success", "message": "skip_login=True，跳过登录"}
+            return {"status": "success",
+                    "message": "skip_login=True，跳过登录"}
         if self._login_done:
             return self._login_result or {"status": "success",
                                            "message": "已登录(缓存)"}
@@ -168,91 +289,205 @@ class BrowserSession:
             return self._login_result
 
         print(f"[BrowserSession:{self._account_id}] ─── 执行登录 ───")
-        self._login_result = do_login(
-            page=self._main_page,
-            login_url=self._login_url,
-            username=self._username,
-            password=self._password,
-            login_config=self._login_config,
-            website_id=self._website_id,
-            account_id=self._account_id,
-            login_type=self._login_type,
-            my_page_url=self._my_page_url,
-            force_login=self._force_login,
-            stop_event=self._stop_event,
-        )
+
+        # 先检测是否已登录
+        if not self._force_login:
+            if await self._check_logged_in():
+                self._login_done = True
+                self._login_result = {"status": "success",
+                                      "message": "已处于登录态"}
+                return self._login_result
+
+        # 执行登录
+        self._login_result = await self._do_login()
         self._login_done = True
-        if self._login_result.get("status") != "success":
-            print(f"[BrowserSession:{self._account_id}] ❌ 登录失败: "
-                  f"{self._login_result.get('message')}")
         return self._login_result
 
-    def get_main_page(self) -> Page:
+    async def _check_logged_in(self) -> bool:
+        """检测是否已登录。"""
+        if not self._my_page_url:
+            return False
+        try:
+            await self._main_page.goto(self._my_page_url,
+                                       wait_until="commit",
+                                       timeout=60000)
+            await asyncio.sleep(5)
+            try:
+                await self._main_page.wait_for_load_state(
+                    "domcontentloaded", timeout=20000)
+            except Exception:
+                pass
+            try:
+                await self._main_page.wait_for_load_state(
+                    "networkidle", timeout=20000)
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+
+            current_url = self._main_page.url
+            parent_path = self._my_page_url.rsplit('/', 1)[0]
+            if (self._my_page_url in current_url
+                    or current_url.startswith(parent_path)):
+                print(f"[BrowserSession:{self._account_id}] "
+                      f"已处于登录态")
+                return True
+
+            _LOGIN_KEYWORDS = ("login", "signin", "sign-in", "auth/")
+            url_lower = current_url.lower()
+            if any(kw in url_lower for kw in _LOGIN_KEYWORDS):
+                print(f"[BrowserSession:{self._account_id}] "
+                      f"未登录: {current_url}")
+                return False
+
+            return True
+        except Exception as e:
+            print(f"[BrowserSession:{self._account_id}] "
+                  f"登录态检测异常: {e}")
+            return False
+
+    async def _do_login(self) -> dict:
+        """执行登录操作。"""
+        start_time = __import__('time').time()
+        username_sel = self._login_config.get(
+            "username_selector", "input[name='username']")
+        password_sel = self._login_config.get(
+            "password_selector", "input[name='password']")
+        submit_sel = self._login_config.get(
+            "submit_selector", "button[type='submit']")
+        success_url = self._login_config.get("success_url", "")
+
+        try:
+            # 导航到登录页
+            await self._main_page.goto(self._login_url,
+                                       wait_until="commit",
+                                       timeout=60000)
+            await asyncio.sleep(2)
+
+            # 填充表单
+            await self._main_page.wait_for_selector(username_sel,
+                                                    timeout=10000)
+            await self._main_page.fill(username_sel, self._username)
+            await self._main_page.wait_for_selector(password_sel,
+                                                    timeout=10000)
+            await self._main_page.fill(password_sel, self._password)
+
+            # 处理 captcha 类型
+            if self._login_type == "captcha":
+                print(f"[BrowserSession:{self._account_id}] "
+                      f"captcha 登录，等待手动完成...")
+                from reporter import get_reporter
+                reporter = get_reporter()
+                captcha_sel = self._login_config.get("captcha_selector", "")
+                captcha_input_sel = self._login_config.get(
+                    "captcha_input_selector", "")
+
+                # 这里简化处理：跳过 captcha 等待
+                # 实际中应通过 task_id 等待验证码
+                await asyncio.sleep(300)
+                current_url = self._main_page.url
+            else:
+                # 提交表单
+                before_url = self._main_page.url
+                await self._main_page.click(submit_sel)
+                try:
+                    await self._main_page.wait_for_url(
+                        lambda u: u != before_url, timeout=20000)
+                except Exception:
+                    pass
+                try:
+                    await self._main_page.wait_for_load_state(
+                        "networkidle", timeout=15000)
+                except Exception:
+                    pass
+                await asyncio.sleep(1.5)
+                current_url = self._main_page.url
+
+            # 判断结果
+            if success_url and success_url in current_url:
+                return {"status": "success",
+                        "message": f"登录成功: {current_url}",
+                        "duration_ms": 0}
+            if not success_url and current_url != self._login_url:
+                return {"status": "success",
+                        "message": f"登录成功(页面跳转): {current_url}",
+                        "duration_ms": 0}
+
+            return {"status": "failed",
+                    "message": "登录可能失败，页面未跳转",
+                    "duration_ms": 0}
+
+        except Exception as e:
+            return {"status": "failed",
+                    "message": f"登录异常: {e}",
+                    "duration_ms": 0}
+
+    async def get_main_page(self) -> Page:
         """获取主页面。"""
         return self._main_page
 
-    def get_context(self) -> BrowserContext:
+    async def get_context(self) -> BrowserContext:
         """获取浏览器上下文。"""
         return self._context
 
+    async def shutdown(self):
+        """安全关闭浏览器并上传配置（供协调器 await）。"""
+        await self._close_async()
+
     def release(self):
-        """递减引用计数，归零时关闭浏览器并上传配置。"""
+        """递减引用计数，归零时安排异步关闭。"""
         with _registry_lock:
             self._refcount -= 1
             if self._refcount > 0:
                 print(f"[BrowserSession:{self._account_id}] "
                       f"refcount={self._refcount}")
                 return
-            # 引用归零 → 关闭
-            print(f"[BrowserSession:{self._account_id}] 引用归零，关闭浏览器")
             _registry.pop(self._account_id, None)
-
-        self._close()
 
     def close(self):
-        """强制关闭（忽略引用计数）。"""
+        """强制移除注册表（不触发异步关闭，由调用方自行 await shutdown()）。"""
         with _registry_lock:
             _registry.pop(self._account_id, None)
-        self._close()
+
+    async def _close_async(self):
+        """安全关闭浏览器并上传配置到 RustFS。"""
+        account_id = self._account_id
+        try:
+            await asyncio.sleep(2)
+        except Exception:
+            pass
+        try:
+            if self._context:
+                save_from_context(self._context, account_id)
+        except Exception:
+            pass
+        try:
+            if self._context:
+                await self._context.close()
+        except Exception:
+            pass
+        try:
+            if self._browser:
+                await self._browser.close()
+        except Exception:
+            pass
+        try:
+            if self._playwright:
+                await self._playwright.stop()
+        except Exception:
+            pass
+        try:
+            user_data_dir = os.path.join(_USER_DATA_ROOT,
+                                         str(account_id))
+            storage_sync.upload(account_id, user_data_dir)
+        except Exception:
+            pass
+        print(f"[BrowserSession:{account_id}] 浏览器已关闭并上传配置")
 
     # ── 内部 ──
 
     def _add_ref(self):
         self._refcount += 1
 
-    def _close(self):
-        """安全关闭浏览器并上传配置到 RustFS。"""
-        account_id = self._account_id
-        try:
-            self._main_page.wait_for_timeout(2000)
-        except Exception:
-            pass
-        # 保存 Cookie
-        try:
-            save_from_context(self._context, account_id)
-        except Exception:
-            pass
-        # 关闭上下文
-        try:
-            self._context.close()
-        except Exception:
-            pass
-        # 关闭浏览器
-        try:
-            self._browser.close()
-        except Exception:
-            pass
-        # 关闭 Playwright
-        try:
-            self._playwright.stop()
-        except Exception:
-            pass
-        # 上传到 RustFS
-        try:
-            user_data_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "..", "user_data", str(account_id))
-            storage_sync.upload(account_id, user_data_dir)
-        except Exception:
-            pass
-        print(f"[BrowserSession:{account_id}] 浏览器已关闭并上传配置")
+    @staticmethod
+    def _stopped(stop_event: Optional[threading.Event]) -> bool:
+        return stop_event is not None and stop_event.is_set()

@@ -15,13 +15,3 @@ MONITOR_REGISTRY = {
     2: BarotemMonitor,
     3: ItembayMonitor,
 }
-"""
-站点监控模块包。
-
-每个站点子模块导出一个 get_config() 函数，返回该站点的监控配置：
-  - order_cfg: 通用监控循环所需的页面 URL、超时等配置
-  - detect_order: 订单检测回调
-  - refresh_goods: 上架刷新回调（可选）
-  - post_login_check: 登录后检查回调（可选）
-  - skip_login: 是否跳过登录流程（默认 False）
-"""

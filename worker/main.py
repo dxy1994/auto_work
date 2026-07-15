@@ -109,6 +109,9 @@ def _submit_task(msg, reporter, task_manager, run_func, task_kind="login"):
             try:
                 result = run_func(msg, stop_event, account_id, task_id)
             except Exception as e:
+                import traceback
+                print(f"[Worker] ❌ 任务执行异常 (task_id={task_id}): {e}")
+                traceback.print_exc()
                 result = {"status": "failed", "message": f"浏览器任务启动失败：{e}", "duration_ms": 0}
         reporter.report_result(task_id, account_id, result)
 

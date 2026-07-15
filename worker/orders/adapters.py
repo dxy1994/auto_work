@@ -30,24 +30,49 @@ class _Adapter:
     fields = {}
     ready_statuses = frozenset(("paid", "ready"))
 
-    def normalize(self, raw):
-        status = self._value(raw, "status").lower()
-        if status not in self.ready_statuses:
+    def __init__(self):
+        self._last_reject_reason = ""
+
+    @property
+    def last_reject_reason(self) -> str:
+        """上上次 normalize() 返回 None 的原因。"""
+        return self._last_reject_reason
+
+    def normalize(self, raw, **extra):
+        """标准化订单。extra 字段直接穿透到 NormalizedOrder（如 platform_order_time 等）。"""
+        try:
+            status = self._value(raw, "status").lower()
+        except ValueError as e:
+            self._last_reject_reason = f"状态字段缺失: {e}"
             return None
-        title = self._value(raw, "title")
+        if status not in self.ready_statuses:
+            self._last_reject_reason = (
+                f"状态 '{status}' 不在允许范围 {set(self.ready_statuses)}")
+            return None
+        try:
+            title = self._value(raw, "title")
+        except ValueError as e:
+            self._last_reject_reason = f"标题字段缺失: {e}"
+            return None
         lowered_title = title.lower()
         if "아덴" not in title and "adena" not in lowered_title:
+            self._last_reject_reason = f"标题不含 아덴/adena: {title[:50]}"
             return None
-        return NormalizedOrder(
-            platform=self.platform,
-            source_order_no=self._value(raw, "order_no"),
-            region_external_key=self._value(raw, "region"),
-            asset_type="adena",
-            asset_amount=parse_korean_amount(self._value(raw, "amount")),
-            buyer_character=self._value(raw, "buyer"),
-            platform_status=status,
-            raw_title=title,
-        )
+        try:
+            return NormalizedOrder(
+                platform=self.platform,
+                source_order_no=self._value(raw, "order_no"),
+                region_external_key=self._value(raw, "region"),
+                asset_type="adena",
+                asset_amount=parse_korean_amount(self._value(raw, "amount")),
+                buyer_character=self._value(raw, "buyer"),
+                platform_status=status,
+                raw_title=title,
+                **extra,
+            )
+        except (ValueError, KeyError) as e:
+            self._last_reject_reason = f"字段校验失败: {e}"
+            return None
 
     def _value(self, raw, semantic_name):
         source_name = self.fields[semantic_name]
