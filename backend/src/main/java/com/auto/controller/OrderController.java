@@ -129,22 +129,21 @@ public class OrderController {
         if ("completed".equals(orderStatus) || "cancelled".equals(orderStatus)) {
             throw ApiException.badRequest("订单已" + ("completed".equals(orderStatus) ? "完成" : "取消") + "，无法重新招呼");
         }
-        Integer machineId = order.getAssignedMachineId();
-        if (machineId == null) {
-            throw ApiException.badRequest("订单未分配机器，无法重新招呼");
-        }
 
-        // 查找关联的网站账户
+        // 通过 website 账户找到招呼用的 Web 端机器（非游戏交易机器）
         Integer accountId = null;
-        for (MachineAccount ma : machineAccountService.findByMachineIdActive(machineId)) {
-            Account acc = accountService.getById(ma.getAccountId());
-            if (acc != null && acc.getWebsiteId().equals(order.getWebsiteId())) {
+        Integer machineId = null;
+        for (Account acc : accountService.findAllActive()) {
+            if (!acc.getWebsiteId().equals(order.getWebsiteId())) continue;
+            for (MachineAccount ma : machineAccountService.findByAccountIdActive(acc.getId())) {
                 accountId = acc.getId();
+                machineId = ma.getMachineId();
                 break;
             }
+            if (accountId != null) break;
         }
-        if (accountId == null) {
-            throw ApiException.badRequest("该机器未关联网站账户，无法重新招呼");
+        if (accountId == null || machineId == null) {
+            throw ApiException.badRequest("未找到该网站关联的 Web 端机器，请先在机器管理中将机器绑定到对应账户");
         }
 
         // 根据网站 URL 判断平台类型

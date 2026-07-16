@@ -110,7 +110,8 @@ class PageWorker(ABC):
 
     async def _navigate(self, url: str, reason: str = "",
                         timeout: int = 15000,
-                        wait_until: str = "domcontentloaded"):
+                        wait_until: str = "domcontentloaded",
+                        skip_networkidle: bool = False):
         """导航到指定 URL，带日志。"""
         if url not in self._page.url:
             log_reason = f" ({reason})" if reason else ""
@@ -118,11 +119,12 @@ class PageWorker(ABC):
             await self._page.goto(url, wait_until=wait_until,
                                   timeout=timeout)
             await self._page.wait_for_timeout(1000)
-            try:
-                await self._page.wait_for_load_state("networkidle",
-                                                     timeout=timeout)
-            except Exception:
-                pass
+            if not skip_networkidle:
+                try:
+                    await self._page.wait_for_load_state("networkidle",
+                                                         timeout=timeout)
+                except Exception:
+                    pass
 
     async def _safe_reload_or_navigate(self, my_page_url: str,
                                        wait_timeout: int = 15000):
@@ -140,11 +142,10 @@ class PageWorker(ABC):
     async def stop(self):
         """安全停止当前 Worker 页面操作。"""
         await self.on_stop()
-        try:
-            if self._page and not self._page.is_closed():
-                await self._page.close()
-        except Exception:
-            pass
         if self._page:
-            self._session.release_page(self._page)
+            try:
+                if not self._page.is_closed():
+                    await self._page.close()
+            except Exception:
+                pass
         print(f"[{self._log_tag}] PageWorker 已停止")

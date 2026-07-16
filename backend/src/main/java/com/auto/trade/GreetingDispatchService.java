@@ -127,9 +127,17 @@ public class GreetingDispatchService {
         if (success) {
             targetStatus = "waiting_assignment";
         } else {
-            targetStatus = "suspended";
-            errorCode = "GREETING_FAILED";
-            errorMessage = message != null ? message : "招呼执行失败";
+            // 招呼执行异常时不改状态，保持 greeting 以便后续重试
+            log.warn("[Greeting] 招呼执行失败（保持greeting状态） order_id={} message={}",
+                    orderId, message);
+            TradeEvent event = new TradeEvent();
+            event.setOrderId(orderId);
+            event.setEventType("greeting_failed");
+            event.setFromStatus(order.getDeliveryStatus());
+            event.setToStatus(order.getDeliveryStatus());
+            event.setMessage(message != null ? message : "招呼执行失败");
+            eventService.save(event);
+            return;
         }
 
         String fromStatus = order.getDeliveryStatus();

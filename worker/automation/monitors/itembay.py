@@ -44,6 +44,7 @@ class ItembayDetectionWorker(PageWorker):
         check_round = 0
 
         while not self.stopped:
+            await self._session._chat_sender_pause.wait()  # chat_sender 活跃时暂停
             check_round += 1
             self._touch()
             try:
@@ -99,6 +100,7 @@ class ItembayRefreshWorker(PageWorker):
         print(f"[{self._log_tag}] 刷新就绪 (间隔={interval}s)")
 
         while not self.stopped:
+            await self._session._chat_sender_pause.wait()  # chat_sender 活跃时暂停
             self._touch()
             elapsed = (datetime.datetime.now() -
                        self._last_refresh).total_seconds()
