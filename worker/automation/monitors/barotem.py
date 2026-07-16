@@ -36,6 +36,7 @@ class BarotemDetectionWorker(PageWorker):
         check_round = 0
 
         while not self.stopped:
+            await self._session._chat_sender_pause.wait()  # chat_sender 活跃时暂停
             check_round += 1
             self._touch()
             try:

@@ -162,7 +162,7 @@ class BaseOrderMonitor:
             and o['order_no'] not in self._reported_order_ids
         ]
         if not new_orders:
-            print(f"[{self._log_tag}] 所有 {len(orders)} 个订单均已上报过")
+            # print(f"[{self._log_tag}] 所有 {len(orders)} 个订单均已上报过")
             return 0
 
         # ── 向总控批量查重，跳过已入库的订单 ──
@@ -174,7 +174,7 @@ class BaseOrderMonitor:
                 self.website_id, candidate_ids)
             if existing_ids:
                 self._reported_order_ids.update(existing_ids)
-                print(f"[{self._log_tag}] 总控已有 {len(existing_ids)} 个订单，跳过")
+                # print(f"[{self._log_tag}] 总控已有 {len(existing_ids)} 个订单，跳过")
         except Exception as e:
             print(f"[{self._log_tag}] 总控查重失败，按全部新订单处理: {e}")
             existing_ids = set()
@@ -468,7 +468,7 @@ class BaseOrderMonitor:
             await worker.stop()
 
     async def _close_non_worker_pages(self, workers: List[PageWorker]):
-        """关闭所有非 Worker 持有的页面（包括 main_page 和多余的恢复页面）。"""
+        """初始化时关闭所有非 Worker 持有的多余页面。"""
         if not self._session or not self._session._context:
             return
         worker_page_ids = {id(w._page) for w in workers if w._page}
@@ -485,29 +485,9 @@ class BaseOrderMonitor:
             except Exception:
                 pass
 
-    async def _cleanup_stray_pages(self, workers: List[PageWorker]):
-        """清理非 Worker 持有的多余页面（防止运行期间页面累积）。"""
-        if not self._session or not self._session._context:
-            return
-        worker_page_ids = {id(w._page) for w in workers if w._page}
-        # 也跳过正在使用的临时页面（如详情页抓取中）
-        active_ids = worker_page_ids | self._active_temp_pages
-        for p in list(self._session._context.pages):
-            if id(p) in active_ids:
-                continue
-            try:
-                url = p.url
-            except Exception:
-                url = "unknown"
-            print(f"[{self._log_tag}] 周期性清理多余页面: {url}")
-            try:
-                await p.close()
-            except Exception:
-                pass
-
     async def _health_monitor(self, workers: List[PageWorker],
                               health_interval: int = 30):
-        """监控 Worker 心跳，检测卡死的 Worker；同时周期性清理多余页面。"""
+        """监控 Worker 心跳，检测卡死的 Worker。"""
         timeout = health_interval * 2
         while not self._stopped():
             await asyncio.sleep(health_interval)
@@ -517,9 +497,6 @@ class BaseOrderMonitor:
                 if idle > timeout:
                     print(f"[{self._log_tag}] ⚠️ {w._name} "
                           f"超时无响应 ({int(idle)}s)")
-
-            # 周期性清理多余的非 Worker 页面
-            await self._cleanup_stray_pages(workers)
 
 
 # ═══════════════════════════════════════════════════════════

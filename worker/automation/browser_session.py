@@ -74,13 +74,14 @@ class BrowserSession:
         self._refcount = 0
         self._login_done = False
         self._login_result = None
+        self._chat_sender_count = 0  # 正在使用本会话的 chat_sender 数量
 
         # 延迟初始化（在 async _init() 中完成）
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._main_page: Optional[Page] = None
-        self._claimed_pages: set = set()  # 已被 Worker 认领的页面 ID
+        self._active_pages: set = set()  # 已被 claim_page 分配出去的页面 ID
 
     # ── 公共属性 ──
 
@@ -229,32 +230,17 @@ class BrowserSession:
         return keep
 
     async def claim_page(self) -> Page:
-        """为 Worker 分配一个页面：优先复用 context 中未被认领的已有页面。"""
+        """分配一个页面：优先复用 context 中未被占用的已有页面，否则新建。"""
         context = self._context
         for p in context.pages:
-            if p != self._main_page and id(p) not in self._claimed_pages:
-                self._claimed_pages.add(id(p))
+            if p != self._main_page and id(p) not in self._active_pages:
+                self._active_pages.add(id(p))
                 print(f"[BrowserSession:{self._account_id}] 复用已有页面 url={p.url}")
                 return p
-        # 没有可复用的，新建
         page = await self.new_page()
-        self._claimed_pages.add(id(page))
+        self._active_pages.add(id(page))
         print(f"[BrowserSession:{self._account_id}] 新建页面")
         return page
-
-    def release_page(self, page: Page):
-        """释放已认领的页面。"""
-        self._claimed_pages.discard(id(page))
-
-    async def close_unclaimed_pages(self):
-        """关闭未被认领的页面（主页面和已认领的保留）。"""
-        for p in list(self._context.pages):
-            if p == self._main_page or id(p) in self._claimed_pages:
-                continue
-            try:
-                await p.close()
-            except Exception:
-                pass
 
     async def new_page(self) -> Page:
         """从共享 Context 创建新标签页。"""
@@ -359,8 +345,22 @@ class BrowserSession:
             _registry.pop(self._account_id, None)
 
     async def _close_async(self):
-        """安全关闭浏览器并上传配置到 RustFS。"""
+        """安全关闭浏览器并上传配置到 RustFS。
+
+        如果有 chat_sender 正在使用本会话，先等待其完成再关闭。
+        """
         account_id = self._account_id
+        # 等待正在使用的 chat_sender 完成（最多等 60s）
+        for _ in range(60):
+            with self._lock:
+                if self._chat_sender_count <= 0:
+                    break
+            print(f"[BrowserSession:{account_id}] "
+                  f"等待 {self._chat_sender_count} 个 chat_sender 完成...")
+            try:
+                await asyncio.sleep(1)
+            except Exception:
+                pass
         try:
             await asyncio.sleep(2)
         except Exception:
@@ -389,6 +389,20 @@ class BrowserSession:
         print(f"[BrowserSession:{account_id}] 浏览器已关闭并上传配置")
 
     # ── 内部 ──
+
+    def acquire_chat_sender(self):
+        """标记 chat_sender 正在使用本会话。"""
+        with self._lock:
+            self._chat_sender_count += 1
+            print(f"[BrowserSession:{self._account_id}] "
+                  f"chat_sender acquire (count={self._chat_sender_count})")
+
+    def release_chat_sender(self):
+        """chat_sender 完成使用后释放。"""
+        with self._lock:
+            self._chat_sender_count = max(0, self._chat_sender_count - 1)
+            print(f"[BrowserSession:{self._account_id}] "
+                  f"chat_sender release (count={self._chat_sender_count})")
 
     def _add_ref(self):
         self._refcount += 1

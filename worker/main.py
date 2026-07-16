@@ -35,7 +35,7 @@ from reporter import Reporter, set_reporter
 from task_manager import TaskManager
 from automation.order_monitor import run_order_check
 from automation.greeting_handler import handle_greeting
-from automation.chat_sender import set_main_loop
+from automation.monitors.itemmania import set_main_loop
 from trade.runtime_status import runtime_status
 from trade.task_gate import trade_task_gate
 

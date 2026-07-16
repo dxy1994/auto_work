@@ -4,13 +4,29 @@
 流程：
   1. 接收 WS 下发的 greeting 消息
      {order_id, scripts: [{content, image_url?}, ...], chat_url, account_id}
-  2. 通过浏览器打开聊天页面，逐条发送图文
-  3. 通过 Reporter 回报 greeting_result {order_id, success, message}
+  2. 从 chat_url 域名推导 website_id，路由到对应站点模块
+  3. 通过浏览器打开聊天页面，逐条发送图文
+  4. 通过 Reporter 回报 greeting_result {order_id, success, message}
 """
 import threading
 import traceback
 
 from reporter import get_reporter
+
+# ── 域名 → website_id 映射 ──
+_DOMAIN_WEBSITE_MAP = {
+    "itemmania.com": 1,
+    "barotem.com": 2,
+    "itembay.com": 3,
+}
+
+
+def _extract_website_id(chat_url: str) -> int:
+    """从聊天页面 URL 的域名推导 website_id。"""
+    for domain, wid in _DOMAIN_WEBSITE_MAP.items():
+        if domain in chat_url:
+            return wid
+    return 0
 
 
 def handle_greeting(msg: dict, stop_event: threading.Event = None):
@@ -53,8 +69,25 @@ def handle_greeting(msg: dict, stop_event: threading.Event = None):
 
 
 def _do_greeting(order_id: int, account_id: int, chat_url: str, scripts: list):
-    """通过浏览器发送招呼消息。"""
-    from automation.chat_sender import send_web_chat
+    """根据 website_id 路由到对应站点的聊天发送器。"""
+    website_id = _extract_website_id(chat_url)
+    if website_id == 0:
+        _report(order_id, False, f"无法识别聊天 URL 对应的网站: {chat_url}")
+        return
+
+    from automation.monitors import MONITOR_REGISTRY
+    monitor_cls = MONITOR_REGISTRY.get(website_id)
+    if monitor_cls is None:
+        _report(order_id, False, f"网站 ID {website_id} 未注册")
+        return
+
+    # 从 Monitor 所在模块获取 send_web_chat 函数
+    import importlib
+    module = importlib.import_module(monitor_cls.__module__)
+    send_web_chat = getattr(module, 'send_web_chat', None)
+    if send_web_chat is None:
+        _report(order_id, False, f"网站 ID {website_id} 未实现聊天发送功能")
+        return
 
     result = send_web_chat(account_id, chat_url, scripts)
     _report(order_id, result.get("success", False),

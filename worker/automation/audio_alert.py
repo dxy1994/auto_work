@@ -2,7 +2,7 @@
 提醒音频播放模块。
 
 提供统一的音频提醒接口，支持三种播放方式（按优先级回退）：
-  1. win32com SAPI.SpVoice 文字转语音（同步模式，阻塞调用线程）
+  1. win32com SAPI.SpVoice 文字转语音（守护线程播放，不阻塞调用线程）
   2. RustFS 对象存储或本地音频文件（守护线程播放）
   3. 系统蜂鸣（守护线程播放）
 
@@ -10,10 +10,9 @@
   - play_alert_audio(audio_path=None, text=None): 播放提醒音频
   - stop_speech(): 停止当前正在播放的语音（供 shutdown 调用）
 
-设计决策（同步 Speak）：
-  - Speak() 在调用线程上同步阻塞，确保播报期间调用方循环不会继续迭代入队新消息
-  - 浏览器关闭 → 循环退出 → 没有新 Speak 调用 → 语音自然停止
-  - 避免了 AudioThread 与 captcha 循环生命周期脱节导致关闭后仍播报的问题
+设计决策：
+  - 所有播放方式均在守护线程中执行，不阻塞调用线程（尤其是 asyncio 事件循环）
+  - 浏览器关闭 → 循环退出 → 没有新调用 → 语音自然停止
 """
 
 import os
@@ -27,30 +26,11 @@ import storage_sync
 # 项目根目录（worker 的上一级），用于解析可选的自定义音频文件
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# ── 全局 SAPI.SpVoice（懒初始化，仅在调用线程上使用）──
-_voice = None
-_voice_lock = threading.Lock()
-
-
-def _init_voice():
-    """懒初始化 SAPI.SpVoice + COM。调用方必须持有 _voice_lock。"""
-    global _voice
-    if _voice is not None:
-        return _voice
-
-    import pythoncom
-    pythoncom.CoInitialize()
-
-    from win32com.client import Dispatch
-    _voice = Dispatch("SAPI.SpVoice")
-    print("[Audio] SAPI.SpVoice 初始化成功")
-    return _voice
-
 
 def _play_tts(text: str) -> bool:
     """
-    同步播放 TTS 文字转语音。
-    在调用线程上阻塞直到播报完成，确保播报期间调用方不会入队新消息。
+    在守护线程中播放 TTS 文字转语音，不阻塞调用线程。
+    每个线程独立初始化 COM + SpVoice，避免跨线程 COM 问题。
     """
     try:
         from win32com.client import Dispatch  # noqa: F401  确认库可用
@@ -58,39 +38,32 @@ def _play_tts(text: str) -> bool:
         print(f"[Audio] win32com 不可用: {e}")
         return False
 
-    with _voice_lock:
-        voice = _init_voice()
-
-    try:
-        print(f"[Audio] 开始播报: {text[:30]}{'...' if len(text) > 30 else ''}")
-        voice.Speak(text)  # 同步阻塞，播放完毕才返回
-        print(f"[Audio] 播报完成: {text[:30]}{'...' if len(text) > 30 else ''}")
-        return True
-    except Exception as e:
-        print(f"[Audio] 播报异常: {e}")
-        # 尝试重新初始化语音引擎
-        with _voice_lock:
-            global _voice
+    def _speak_in_thread():
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            from win32com.client import Dispatch
+            voice = Dispatch("SAPI.SpVoice")
+            voice.Speak(text)
+        except Exception as e:
+            print(f"[Audio] TTS 播报异常: {e}")
+        finally:
             try:
-                from win32com.client import Dispatch
-                _voice = Dispatch("SAPI.SpVoice")
-                print("[Audio] SpVoice 重新初始化成功")
-            except Exception as re:
-                print(f"[Audio] SpVoice 重新初始化失败: {re}")
-                _voice = None
-        return False
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_speak_in_thread, daemon=True)
+    t.start()
+    return True
 
 
 def stop_speech():
     """
     尝试停止当前正在播放的语音（供 shutdown 调用）。
-    注意：同步 Speak() 阻塞期间无法从同一线程中断，
-    本方法仅尝试让下一次 Speak 调用被略过。
+    守护线程模式下无法精确中断，但调用方停止后不会再入队新播报。
     """
-    # 同步模式下，Speak 阻塞时无法中断。
-    # 但 shutdown 调用 stop_speech 后，captcha 循环已退出，
-    # 不会再触发新的 Speak，语音自然停止。
-    print("[Audio] stop_speech 调用（同步模式下无需额外操作）")
+    print("[Audio] stop_speech 调用")
 
 
 def play_alert_audio(audio_path: Optional[str] = None, text: Optional[str] = None) -> bool:
@@ -111,7 +84,7 @@ def play_alert_audio(audio_path: Optional[str] = None, text: Optional[str] = Non
     返回:
         bool: True 表示成功播放（含回退），False 表示所有方式均失败
     """
-    # ── 1. 尝试文字转语音（同步阻塞）──
+    # ── 1. 尝试文字转语音（守护线程，不阻塞）──
     if text:
         if _play_tts(text):
             return True
