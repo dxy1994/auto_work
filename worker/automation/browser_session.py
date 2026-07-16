@@ -81,6 +81,10 @@ class BrowserSession:
         self._context: Optional[BrowserContext] = None
         self._main_page: Optional[Page] = None
         self._claimed_pages: set = set()  # 已被 Worker 认领的页面 ID
+        self._transient_page_ids: set = set()
+        self._transient_tasks: set = set()
+        self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._closing = False
 
     # ── 公共属性 ──
 
@@ -123,10 +127,24 @@ class BrowserSession:
             session._add_ref()
             return session
 
+    @classmethod
+    def get_existing(cls, account_id: int) -> Optional['BrowserSession']:
+        """只读获取已有会话，不改变引用计数。"""
+        with _registry_lock:
+            return _registry.get(account_id)
+
+    @property
+    def owner_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """返回创建 Playwright 的事件循环。"""
+        return self._owner_loop
+
     async def init(self):
         """初始化浏览器（必须在 async 上下文中调用）。"""
         if self._playwright is not None:
             return  # 已初始化
+
+        self._owner_loop = asyncio.get_running_loop()
+        self._closing = False
 
         print(f"[BrowserSession:{self._account_id}] [1/5] 启动 playwright...", flush=True)
         self._playwright = await async_playwright().start()
@@ -268,6 +286,33 @@ class BrowserSession:
         page.on("dialog", _safe_accept)
         return page
 
+    def track_transient_page(self, page: Page):
+        """登记聊天等短生命周期页面，避免健康检查误关闭。"""
+        self._transient_page_ids.add(id(page))
+
+    def untrack_transient_page(self, page: Page):
+        """解除短生命周期页面登记。"""
+        self._transient_page_ids.discard(id(page))
+
+    def transient_page_ids(self) -> set:
+        """返回短生命周期页面 ID 快照。"""
+        return set(self._transient_page_ids)
+
+    def begin_transient_operation(self) -> bool:
+        """登记聊天任务；会话关闭后拒绝新增浏览器操作。"""
+        if self._closing:
+            return False
+        task = asyncio.current_task()
+        if task is not None:
+            self._transient_tasks.add(task)
+        return True
+
+    def end_transient_operation(self):
+        """解除当前聊天任务登记。"""
+        task = asyncio.current_task()
+        if task is not None:
+            self._transient_tasks.discard(task)
+
     async def ensure_login(self) -> dict:
         """确保已登录（首次调用时执行，后续直接返回结果）。"""
         if self._skip_login:
@@ -361,6 +406,16 @@ class BrowserSession:
     async def _close_async(self):
         """安全关闭浏览器并上传配置到 RustFS。"""
         account_id = self._account_id
+        self._closing = True
+        current = asyncio.current_task()
+        active_tasks = [
+            task for task in self._transient_tasks
+            if task is not current and not task.done()
+        ]
+        for task in active_tasks:
+            task.cancel()
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
         try:
             await asyncio.sleep(2)
         except Exception:

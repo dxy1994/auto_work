@@ -86,8 +86,9 @@ async def _do_manual_login_on_page_async(
         pass
 
     print(f"[ManualLogin] 表单已填充，请在浏览器中手动完成验证码并登录")
-    from automation.audio_alert import play_alert_audio
-    play_alert_audio(text=f"账号{account_id}需要登录验证码，请查看浏览器")
+    from automation.audio_alert import play_alert_audio_async
+    await play_alert_audio_async(
+        text=f"账号{account_id}需要登录验证码，请查看浏览器")
 
     # 3. 轮询等待用户手动完成登录
     login_page_url = page.url
@@ -118,7 +119,8 @@ async def _do_manual_login_on_page_async(
             except Exception:
                 print("[ManualLogin] 页面已断开，停止播报")
                 break
-            play_alert_audio(text=f"账号{account_id}需要登录验证码，请查看浏览器")
+            await play_alert_audio_async(
+                text=f"账号{account_id}需要登录验证码，请查看浏览器")
             last_alert_time = now
         try:
             current_url = page.url

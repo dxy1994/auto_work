@@ -16,9 +16,12 @@
   - 避免了 AudioThread 与 captcha 循环生命周期脱节导致关闭后仍播报的问题
 """
 
+import asyncio
+import functools
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +33,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # ── 全局 SAPI.SpVoice（懒初始化，仅在调用线程上使用）──
 _voice = None
 _voice_lock = threading.Lock()
+_audio_executor = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="audio-alert")
 
 
 def _init_voice():
@@ -144,6 +149,15 @@ def play_alert_audio(audio_path: Optional[str] = None, text: Optional[str] = Non
 
     # ── 3. 回退：系统蜂鸣 ──
     return _play_system_beep()
+
+
+async def play_alert_audio_async(
+        audio_path: Optional[str] = None,
+        text: Optional[str] = None) -> bool:
+    """在专用单线程中播放提醒，避免阻塞事件循环并保持 COM 线程亲和性。"""
+    loop = asyncio.get_running_loop()
+    call = functools.partial(play_alert_audio, audio_path, text)
+    return await loop.run_in_executor(_audio_executor, call)
 
 
 def _play_audio_file(file_path: str, is_temp: bool = False) -> bool:

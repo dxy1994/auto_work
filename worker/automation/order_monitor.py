@@ -26,7 +26,7 @@ from typing import Optional, List
 from patchright.async_api import Page
 
 import config
-from automation.audio_alert import play_alert_audio
+from automation.audio_alert import play_alert_audio_async
 from automation.browser_session import BrowserSession
 from automation.page_worker import PageWorker
 from reporter import get_reporter
@@ -127,7 +127,7 @@ class BaseOrderMonitor:
             print(f"[{self._log_tag}] 表格中无订单数据 "
                   f"(连续失败{self._consecutive_extraction_fails}次)")
             if self._consecutive_extraction_fails >= 3:
-                play_alert_audio(
+                await play_alert_audio_async(
                     text=f"{self.tag}账号{self.account_id} "
                          f"信息提取连续失败{self._consecutive_extraction_fails}次，"
                          f"请检查")
@@ -137,7 +137,7 @@ class BaseOrderMonitor:
         self._consecutive_extraction_fails = 0
 
         # ── 检测到订单即播报（与是否已上报无关） ──
-        play_alert_audio(
+        await play_alert_audio_async(
             text=f"{self.tag}账号{self.account_id} "
                  f"检测到{len(orders)}个订单")
 
@@ -151,7 +151,7 @@ class BaseOrderMonitor:
             if old_state and old_state != new_state:
                 print(f"[{self._log_tag}] 📢 订单状态变更: {order_no} "
                       f"{old_state} → {new_state}")
-                play_alert_audio(
+                await play_alert_audio_async(
                     text=f"{self.tag}账号{self.account_id}: "
                          f"订单{order_no}状态变更为{new_state}")
             self._known_order_statuses[order_no] = new_state
@@ -472,8 +472,10 @@ class BaseOrderMonitor:
         if not self._session or not self._session._context:
             return
         worker_page_ids = {id(w._page) for w in workers if w._page}
+        protected_page_ids = (
+            worker_page_ids | self._session.transient_page_ids())
         for p in list(self._session._context.pages):
-            if id(p) in worker_page_ids:
+            if id(p) in protected_page_ids:
                 continue
             try:
                 url = p.url
@@ -491,7 +493,8 @@ class BaseOrderMonitor:
             return
         worker_page_ids = {id(w._page) for w in workers if w._page}
         # 也跳过正在使用的临时页面（如详情页抓取中）
-        active_ids = worker_page_ids | self._active_temp_pages
+        active_ids = (worker_page_ids | self._active_temp_pages
+                      | self._session.transient_page_ids())
         for p in list(self._session._context.pages):
             if id(p) in active_ids:
                 continue

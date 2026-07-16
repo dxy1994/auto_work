@@ -2,23 +2,12 @@
 chat_sender.py — Web 聊天发送器（ItemMania）。
 
 在浏览器中打开聊天页面，逐条发送文字和图片消息。
-从同步线程调用，通过 asyncio.run_coroutine_threadsafe() 桥接到主事件循环。
+从同步线程调用，通过 asyncio.run_coroutine_threadsafe() 投递到浏览器会话所属事件循环。
 """
 
 import asyncio
 import tempfile
 import os
-from concurrent.futures import Future
-from typing import Optional
-
-# 主事件循环引用（由 main.py 设置）
-_main_loop: Optional[asyncio.AbstractEventLoop] = None
-
-
-def set_main_loop(loop: asyncio.AbstractEventLoop):
-    """存储主事件循环引用，供跨线程调度。"""
-    global _main_loop
-    _main_loop = loop
 
 
 def send_web_chat(account_id: int, chat_url: str, scripts: list) -> dict:
@@ -32,34 +21,38 @@ def send_web_chat(account_id: int, chat_url: str, scripts: list) -> dict:
     Returns:
         {"success": bool, "message": str}
     """
-    if _main_loop is None:
-        return {"success": False, "message": "event loop 未初始化"}
+    from automation.browser_session import BrowserSession
 
-    future = asyncio.run_coroutine_threadsafe(
-        _do_send_web_chat(account_id, chat_url, scripts),
-        _main_loop,
-    )
+    session = BrowserSession.get_existing(account_id)
+    if session is None or session._context is None:
+        return {"success": False, "message": "浏览器会话未初始化"}
+    owner_loop = session.owner_loop
+    if (owner_loop is None or owner_loop.is_closed()
+            or not owner_loop.is_running()):
+        return {"success": False, "message": "浏览器事件循环不可用"}
+
+    coroutine = _do_send_web_chat(session, chat_url, scripts)
     try:
+        future = asyncio.run_coroutine_threadsafe(coroutine, owner_loop)
         return future.result(timeout=120)
     except TimeoutError:
         future.cancel()
         return {"success": False, "message": "招呼发送超时（120s）"}
     except Exception as e:
+        if not coroutine.cr_running:
+            coroutine.close()
         return {"success": False, "message": f"招呼执行异常: {e}"}
 
 
-async def _do_send_web_chat(account_id: int, chat_url: str, scripts: list) -> dict:
+async def _do_send_web_chat(session, chat_url: str, scripts: list) -> dict:
     """Async 实现：打开聊天页面 → 逐条发送 → 关闭页面。"""
-    from automation.browser_session import BrowserSession
-
-    # 获取已有浏览器会话（不上传配置，不执行登录）
-    session = BrowserSession.get_or_create(account_id=account_id)
-    if session._context is None:
-        return {"success": False, "message": "浏览器会话未初始化"}
+    if not session.begin_transient_operation():
+        return {"success": False, "message": "浏览器会话正在关闭"}
 
     page = None
     try:
         page = await session.new_page()
+        session.track_transient_page(page)
 
         # 打开聊天页面
         print(f"[ChatSender] 打开聊天页面: {chat_url}")
@@ -106,11 +99,17 @@ async def _do_send_web_chat(account_id: int, chat_url: str, scripts: list) -> di
         traceback.print_exc()
         return {"success": False, "message": f"招呼执行异常: {e}"}
     finally:
-        if page:
-            try:
-                await page.close()
-            except Exception:
-                pass
+        try:
+            if page:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                finally:
+                    session.untrack_transient_page(page)
+        finally:
+            # 即使关闭页面时再次收到取消，也必须解除任务登记。
+            session.end_transient_operation()
 
 
 async def _send_image_via_chat(page, image_url: str):

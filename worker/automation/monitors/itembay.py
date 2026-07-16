@@ -16,7 +16,7 @@ from typing import List, Tuple
 
 from automation.order_monitor import BaseOrderMonitor
 from automation.page_worker import PageWorker
-from automation.audio_alert import play_alert_audio
+from automation.audio_alert import play_alert_audio_async
 
 
 SELL_LIST_URL = (
@@ -53,7 +53,7 @@ class ItembayDetectionWorker(PageWorker):
                           f"第{check_round}轮: {alert_text}")
                     tag = self._monitor.tag
                     acct = self._monitor.account_id
-                    play_alert_audio(
+                    await play_alert_audio_async(
                         text=f"{tag}账号{acct}: {alert_text}")
                 elif check_round % 10 == 1:
                     print(f"[{self._log_tag}] "
