@@ -80,6 +80,15 @@ public class GameItemOrder {
     /** 平台物品分类-게임머니/아이템/계정（Marketplace 采集） */
     private String platformItemType;
 
+    /** 平台商品标题（Marketplace 采集） */
+    private String productTitle;
+
+    /** 上架数量（Marketplace 采集） */
+    private Integer quantity;
+
+    /** 已售数量（Marketplace 采集） */
+    private Integer saleQuantity;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

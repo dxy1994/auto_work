@@ -34,4 +34,23 @@ public class GameScriptServiceImpl extends ServiceImpl<GameScriptMapper, GameScr
                 .eq(gameId != null, GameScript::getGameId, gameId)
                 .orderByAsc(GameScript::getSortOrder));
     }
+
+    @Override
+    public GameScript findFirstByGameIdAndCategory(int gameId, String category) {
+        return getOne(new LambdaQueryWrapper<GameScript>()
+                .eq(GameScript::getGameId, gameId)
+                .eq(GameScript::getCategory, category)
+                .eq(GameScript::getIsActive, 1)
+                .orderByAsc(GameScript::getSortOrder)
+                .last("LIMIT 1"), false);
+    }
+
+    @Override
+    public List<GameScript> findAllByGameIdAndCategory(int gameId, String category) {
+        return list(new LambdaQueryWrapper<GameScript>()
+                .eq(GameScript::getGameId, gameId)
+                .eq(GameScript::getCategory, category)
+                .eq(GameScript::getIsActive, 1)
+                .orderByAsc(GameScript::getSortOrder));
+    }
 }

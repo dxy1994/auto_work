@@ -34,6 +34,7 @@ public class MachineGameServiceImpl extends ServiceImpl<MachineGameMapper, Machi
     public MachineGame findByMachineIdAndGameId(Integer machineId, Integer gameId) {
         return getOne(new LambdaQueryWrapper<MachineGame>()
                 .eq(MachineGame::getMachineId, machineId)
-                .eq(MachineGame::getGameId, gameId), false);
+                .eq(MachineGame::getGameId, gameId)
+                .eq(MachineGame::getIsActive, 1), false);
     }
 }

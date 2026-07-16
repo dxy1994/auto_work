@@ -34,6 +34,8 @@ from agent_client import AgentClient
 from reporter import Reporter, set_reporter
 from task_manager import TaskManager
 from automation.order_monitor import run_order_check
+from automation.greeting_handler import handle_greeting
+from automation.chat_sender import set_main_loop
 from trade.runtime_status import runtime_status
 from trade.task_gate import trade_task_gate
 
@@ -196,6 +198,15 @@ async def _dispatch_message(msg, reporter, task_manager):
                 current_assignment_id=None,
             )
             reporter.report_trade_status(assignment_id, "cancelled")
+    elif mtype == "greeting":
+        # 招呼指令：在新线程中执行，不阻塞 WS 接收循环
+        import threading
+        threading.Thread(
+            target=handle_greeting,
+            args=(msg,),
+            daemon=True,
+            name=f"greeting-{msg.get('order_id', 'unknown')}",
+        ).start()
     else:
         print(f"[Worker] 未知消息类型: {mtype}")
 
@@ -238,6 +249,10 @@ async def _connect_once(task_manager):
 
 
 async def _main_loop():
+    # 初始化 Web 聊天的事件循环引用
+    import asyncio as _asyncio
+    set_main_loop(_asyncio.get_running_loop())
+
     # 跨重连复用注册表；未及时退出的旧任务继续占用账号，避免新连接重复启动。
     task_manager = TaskManager(reporter=None)
     while True:

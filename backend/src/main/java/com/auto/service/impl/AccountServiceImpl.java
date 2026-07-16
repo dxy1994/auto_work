@@ -29,4 +29,9 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
                 .eq(Account::getWebsiteId, websiteId)
                 .eq(Account::getIsDefault, isDefault));
     }
+
+    @Override
+    public List<Account> findAllActive() {
+        return list(new LambdaQueryWrapper<Account>().eq(Account::getIsActive, 1));
+    }
 }

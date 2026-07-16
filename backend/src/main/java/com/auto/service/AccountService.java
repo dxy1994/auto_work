@@ -11,4 +11,6 @@ public interface AccountService extends com.baomidou.mybatisplus.spring.service.
     IPage<Account> search(Integer websiteId, Page<Account> page);
 
     List<Account> findByWebsiteIdAndIsDefault(Integer websiteId, Integer isDefault);
+
+    List<Account> findAllActive();
 }

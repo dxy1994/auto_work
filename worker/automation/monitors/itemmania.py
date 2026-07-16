@@ -567,6 +567,9 @@ class ItemmaniaMonitor(BaseOrderMonitor):
                 'platform_order_time', ''),
             platform_price=platform_price,
             platform_item_type=detail.get('item_type', ''),
+            product_title=detail.get('product_title', ''),
+            quantity=int(detail.get('quantity', '0') or '0'),
+            sale_quantity=int(detail.get('sale_quantity', '0') or '0'),
         )
         if normalized is None:
             print(f"[{self._log_tag}] 适配器拒绝订单 "

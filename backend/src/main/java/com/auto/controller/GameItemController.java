@@ -127,7 +127,6 @@ public class GameItemController {
     public void delete(@PathVariable Integer itemId) {
         GameItem item = itemService.getById(itemId);
         if (item == null) throw ApiException.notFound("物品不存在");
-        item.setIsActive(0);
-        itemService.updateById(item);
+        itemService.removeById(itemId);
     }
 }

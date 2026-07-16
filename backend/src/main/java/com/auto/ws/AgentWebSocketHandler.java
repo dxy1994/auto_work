@@ -2,6 +2,7 @@ package com.auto.ws;
 
 import com.auto.trade.TradeDispatchCoordinator;
 import com.auto.trade.MarketplaceOrderIngestionService;
+import com.auto.trade.GreetingDispatchService;
 import com.auto.trade.OrderDetectedMessage;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -33,16 +34,19 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final TradeDispatchCoordinator tradeCoordinator;
     private final MarketplaceOrderIngestionService orderIngestionService;
+    private final GreetingDispatchService greetingDispatchService;
 
     public AgentWebSocketHandler(
             AgentRegistry registry,
             ObjectMapper objectMapper,
             TradeDispatchCoordinator tradeCoordinator,
-            MarketplaceOrderIngestionService orderIngestionService) {
+            MarketplaceOrderIngestionService orderIngestionService,
+            GreetingDispatchService greetingDispatchService) {
         this.registry = registry;
         this.objectMapper = objectMapper;
         this.tradeCoordinator = tradeCoordinator;
         this.orderIngestionService = orderIngestionService;
+        this.greetingDispatchService = greetingDispatchService;
     }
 
     @Override
@@ -63,28 +67,33 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         if (type == null) {
             return;
         }
-        switch (type) {
-            case "register" -> {
-                Integer machineId = registry.handleRegister(raw);
-                session.getAttributes().put(ATTR_MACHINE_ID, machineId);
-                registry.bindAgent(machineId, session);
-                Map<String, Object> ack = Map.of("type", "registered", "machine_id", machineId);
-                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(ack)));
-                log.info("[Agent] 机器已注册并上线 machine_id={} mac={}", machineId, raw.get("mac"));
-            }
-            case "heartbeat" -> {
-                Integer machineId = machineId(session);
-                if (machineId != null) {
-                    registry.updateHeartbeat(machineId, raw);
+        try {
+            switch (type) {
+                case "register" -> {
+                    Integer machineId = registry.handleRegister(raw);
+                    session.getAttributes().put(ATTR_MACHINE_ID, machineId);
+                    registry.bindAgent(machineId, session);
+                    Map<String, Object> ack = Map.of("type", "registered", "machine_id", machineId);
+                    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(ack)));
+                    log.info("[Agent] 机器已注册并上线 machine_id={} mac={}", machineId, raw.get("mac"));
                 }
+                case "heartbeat" -> {
+                    Integer machineId = machineId(session);
+                    if (machineId != null) {
+                        registry.updateHeartbeat(machineId, raw);
+                    }
+                }
+                case "task_status" -> registry.handleTaskStatus(raw, session);
+                case "task_result" -> registry.handleTaskResult(raw, session);
+                case "trade_offer_decision" -> handleTradeDecision(session, raw);
+                case "trade_status" -> handleTradeStatus(session, raw);
+                case "order_detected" -> handleOrderDetected(session, raw);
+                case "check_orders" -> handleCheckOrders(session, raw);
+                case "greeting_result" -> handleGreetingResult(raw);
+                default -> log.info("[Agent] 未知上行消息类型: {}", type);
             }
-            case "task_status" -> registry.handleTaskStatus(raw, session);
-            case "task_result" -> registry.handleTaskResult(raw, session);
-            case "trade_offer_decision" -> handleTradeDecision(session, raw);
-            case "trade_status" -> handleTradeStatus(session, raw);
-            case "order_detected" -> handleOrderDetected(session, raw);
-            case "check_orders" -> handleCheckOrders(session, raw);
-            default -> log.info("[Agent] 未知上行消息类型: {}", type);
+        } catch (Exception e) {
+            log.error("[Agent] 处理上行消息异常 type={}: {}", type, e.getMessage(), e);
         }
     }
 
@@ -192,8 +201,23 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             OrderDetectedMessage message = objectMapper.convertValue(
                     (Map<String, Object>) order, OrderDetectedMessage.class);
             orderIngestionService.ingest(machineId, accountId, message);
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            log.warn("[Order] 订单观察校验失败 machine_id={}: {}", machineId, e.getMessage());
+        } catch (Exception e) {
+            log.warn("[Order] 订单观察处理失败 machine_id={}: {}", machineId, e.getMessage());
+        }
+    }
+
+    private void handleGreetingResult(Map<String, Object> raw) {
+        Integer orderId = asInt(raw.get("order_id"));
+        Boolean success = raw.get("success") instanceof Boolean b ? b : false;
+        String message = str(raw.get("message"));
+        if (orderId == null) {
+            log.warn("[Greeting] greeting_result 缺少 order_id");
+            return;
+        }
+        try {
+            greetingDispatchService.handleResult(orderId, success, message);
+        } catch (Exception e) {
+            log.error("[Greeting] 处理招呼回馈异常 order_id={}: {}", orderId, e.getMessage(), e);
         }
     }
 

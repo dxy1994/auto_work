@@ -17,33 +17,41 @@
     </div>
 
     <el-table :data="list" border stripe v-loading="loading" row-key="id">
-      <el-table-column type="expand">
-        <template #default="{ row }">
-          <div v-if="row.is_bundle" class="expand-area">
-            <div class="expand-title">套装子物品：</div>
-            <el-table :data="row._children || []" border size="small" v-loading="row._childrenLoading">
-              <el-table-column prop="code" label="编码" width="120" />
-              <el-table-column prop="name" label="名称" min-width="150" />
-              <el-table-column label="图片" width="80">
-                <template #default="{ row: child }">
-                  <el-image v-if="child.image" :src="child.image" :preview-src-list="[child.image]" style="width:40px;height:40px" fit="cover" />
-                </template>
-              </el-table-column>
-              <el-table-column prop="price" label="价格" width="90" align="right" />
-              <el-table-column label="操作" width="120">
-                <template #default="{ row: child }">
-                  <el-button size="small" link type="primary" @click="openItemDialog(child)">编辑</el-button>
-                  <el-popconfirm title="确认删除？" @confirm="handleDeleteItem(child.id)">
-                    <template #reference><el-button size="small" link type="danger">删除</el-button></template>
-                  </el-popconfirm>
-                </template>
-              </el-table-column>
-            </el-table>
-            <el-button size="small" type="primary" style="margin-top:8px" @click="openChildSelect(row)">+ 选择已有物品</el-button>
-          </div>
-          <el-empty v-else description="非套装，无子物品" :image-size="40" />
-        </template>
-      </el-table-column>
+      <!-- 展开套装子物品 -->
+    <el-table-column width="50" align="center">
+      <template #default="{ row }">
+        <el-icon v-if="row.is_bundle" class="expand-icon" :class="{ expanded: expandedRows.has(row.id) }" @click="toggleExpand(row)">
+          <ArrowRight />
+        </el-icon>
+      </template>
+    </el-table-column>
+    <!-- 展开行（套装子物品） -->
+    <template v-for="row in list" :key="'expanded-' + row.id">
+      <tr v-if="expandedRows.has(row.id)">
+        <td :colspan="10" class="expand-area">
+          <div class="expand-title">套装子物品：</div>
+          <el-table :data="row._children || []" border size="small" v-loading="row._childrenLoading">
+            <el-table-column prop="code" label="编码" width="120" />
+            <el-table-column prop="name" label="名称" min-width="150" />
+            <el-table-column label="图片" width="80">
+              <template #default="{ row: child }">
+                <el-image v-if="child.image" :src="child.image" :preview-src-list="[child.image]" style="width:40px;height:40px" fit="cover" />
+              </template>
+            </el-table-column>
+            <el-table-column prop="price" label="价格" width="90" align="right" />
+            <el-table-column label="操作" width="120">
+              <template #default="{ row: child }">
+                <el-button size="small" link type="primary" @click="openItemDialog(child)">编辑</el-button>
+                <el-popconfirm title="确认删除？" @confirm="handleDeleteItem(child.id)">
+                  <template #reference><el-button size="small" link type="danger">删除</el-button></template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-button size="small" type="primary" style="margin-top:8px" @click="openChildSelect(row)">+ 选择已有物品</el-button>
+        </td>
+      </tr>
+    </template>
       <el-table-column prop="code" label="编码" width="120" />
       <el-table-column prop="name" label="物品名称" min-width="150" />
       <el-table-column label="所属游戏" width="100">
@@ -155,6 +163,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { ArrowRight } from '@element-plus/icons-vue'
 import { getAllGames, getGameItems, getAllItems, getBundleChildren, createGameItem, updateGameItem, deleteGameItem, uploadFile } from '../api'
 
 const gameList = ref([])
@@ -186,6 +195,20 @@ async function fetchList() {
 }
 
 function handleSearch() { page.value = 1; fetchList() }
+
+// ── 手动展开控制 ──
+const expandedRows = ref(new Set())
+
+async function toggleExpand(row) {
+  if (expandedRows.value.has(row.id)) {
+    expandedRows.value.delete(row.id)
+  } else {
+    expandedRows.value.add(row.id)
+    await loadChildren(row)
+  }
+  // 触发响应式更新
+  expandedRows.value = new Set(expandedRows.value)
+}
 
 // 展开行时加载子物品
 async function loadChildren(row) {
@@ -349,4 +372,7 @@ onMounted(async () => {
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 .expand-area { padding: 12px 20px; }
 .expand-title { font-weight: 600; margin-bottom: 8px; color: #606266; }
+.expand-icon { cursor: pointer; transition: transform 0.2s; color: #909399; font-size: 14px; }
+.expand-icon.expanded { transform: rotate(90deg); }
+.expand-icon:hover { color: #409eff; }
 </style>

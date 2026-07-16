@@ -83,7 +83,6 @@ public class GameAccountController {
     public void delete(@PathVariable Integer accountId) {
         GameAccount a = gameAccountService.getById(accountId);
         if (a == null) throw ApiException.notFound("游戏账号不存在");
-        a.setIsActive(0);
-        gameAccountService.updateById(a);
+        gameAccountService.removeById(accountId);
     }
 }

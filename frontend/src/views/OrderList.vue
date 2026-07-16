@@ -20,31 +20,40 @@
     </div>
 
     <el-table :data="list" border stripe v-loading="loading">
-      <el-table-column prop="order_no" label="订单号" width="200" />
-      <el-table-column label="游戏" width="110">
+      <el-table-column prop="order_no" label="订单号" width="160" show-overflow-tooltip />
+      <el-table-column label="来源" width="80">
+        <template #default="{ row }">{{ websiteNameMap[row.website_id] || row.website_id || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="游戏" width="80">
         <template #default="{ row }">{{ gameNameMap[row.game_id] || row.game_id }}</template>
       </el-table-column>
-      <el-table-column label="大区" width="110">
-        <template #default="{ row }">{{ regionNameMap[row.region_id] || row.region_id }}</template>
+      <el-table-column prop="product_title" label="商品标题" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.product_title || row.remark || '-' }}</template>
       </el-table-column>
-      <el-table-column prop="customer_name" label="客户" width="100" />
-      <el-table-column prop="total_amount" label="总金额" width="100" align="right">
-        <template #default="{ row }">{{ Number(row.total_amount || 0).toFixed(2) }}</template>
+      <el-table-column prop="buyer_character" label="买家" width="90" show-overflow-tooltip />
+      <el-table-column prop="platform_price" label="平台售价" width="110" align="right">
+        <template #default="{ row }">
+          <span v-if="row.platform_price">₩ {{ Number(row.platform_price).toLocaleString() }}</span>
+          <span v-else>-</span>
+        </template>
       </el-table-column>
-      <el-table-column label="状态" width="90" align="center">
+      <el-table-column label="状态" width="80" align="center">
         <template #default="{ row }">
           <el-tag :type="orderStatusType(row.status)" size="small">{{ orderStatusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="分配机器" width="140">
-        <template #default="{ row }">{{ machineNameMap[row.assigned_machine_id] || '-' }}</template>
+      <el-table-column label="交付" width="90" align="center">
+        <template #default="{ row }">
+          <el-tag :type="deliveryStatusType(row.delivery_status)" size="small">{{ deliveryStatusLabel(row.delivery_status) }}</el-tag>
+        </template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="170" />
-      <el-table-column label="操作" width="250" fixed="right">
+      <el-table-column prop="created_at" label="创建时间" width="150" />
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click="openDetailDrawer(row)">明细</el-button>
           <el-button size="small" link type="primary" @click="openEditDialog(row)">编辑</el-button>
           <el-button size="small" link type="success" v-if="row.status === 'pending'" @click="openAssignDialog(row)">分配</el-button>
+          <el-button size="small" link type="warning" v-if="row.delivery_status === 'greeting' && row.status !== 'completed' && row.status !== 'cancelled'" @click="handleRowReGreeting(row)">重新招呼</el-button>
           <el-popconfirm title="确认删除？" @confirm="handleDeleteOrder(row.id)" v-if="row.status === 'pending' || row.status === 'cancelled'">
             <template #reference><el-button size="small" link type="danger">删除</el-button></template>
           </el-popconfirm>
@@ -176,21 +185,56 @@
     </el-dialog>
 
     <!-- 订单明细抽屉（子表联动） -->
-    <el-drawer v-model="detailDrawerVisible" :title="`订单明细 - ${currentOrder?.order_no || ''}`" size="650px" destroy-on-close>
-      <div class="detail-info">
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="订单号">{{ currentOrder?.order_no }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="orderStatusType(currentOrder?.status)" size="small">{{ orderStatusLabel(currentOrder?.status) }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="游戏">{{ gameNameMap[currentOrder?.game_id] }}</el-descriptions-item>
-          <el-descriptions-item label="大区">{{ regionNameMap[currentOrder?.region_id] }}</el-descriptions-item>
-          <el-descriptions-item label="客户">{{ currentOrder?.customer_name || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="总金额">¥ {{ Number(currentOrder?.total_amount || 0).toFixed(2) }}</el-descriptions-item>
-        </el-descriptions>
-      </div>
+    <el-drawer v-model="detailDrawerVisible" :title="`订单明细 - ${currentOrder?.order_no || ''}`" size="700px" destroy-on-close>
+      <!-- 平台信息 -->
+      <el-descriptions :column="2" border size="small" title="平台信息" class="detail-section">
+        <el-descriptions-item label="来源平台">{{ websiteNameMap[currentOrder?.website_id] || currentOrder?.website_id || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="平台订单号">{{ currentOrder?.source_order_no || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="平台下单时间">{{ currentOrder?.platform_order_time || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="平台分类">
+          <el-tag size="small" v-if="currentOrder?.platform_item_type">{{ currentOrder.platform_item_type }}</el-tag>
+          <span v-else>-</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="商品标题" :span="2">{{ currentOrder?.product_title || currentOrder?.remark || '-' }}</el-descriptions-item>
+      </el-descriptions>
+
+      <!-- 交易信息 -->
+      <el-descriptions :column="3" border size="small" title="交易信息" class="detail-section">
+        <el-descriptions-item label="平台售价">₩ {{ currentOrder?.platform_price ? Number(currentOrder.platform_price).toLocaleString() : '-' }}</el-descriptions-item>
+        <el-descriptions-item label="上架数量">{{ currentOrder?.quantity || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="已售数量">{{ currentOrder?.sale_quantity || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="买家角色">{{ currentOrder?.buyer_character || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="交付资产">{{ currentOrder?.asset_type }} × {{ currentOrder?.asset_amount || 0 }}</el-descriptions-item>
+        <el-descriptions-item label="交付状态">
+          <el-tag :type="deliveryStatusType(currentOrder?.delivery_status)" size="small">{{ deliveryStatusLabel(currentOrder?.delivery_status) }}</el-tag>
+        </el-descriptions-item>
+      </el-descriptions>
+
+      <!-- 订单信息 -->
+      <el-descriptions :column="2" border size="small" title="订单信息" class="detail-section">
+        <el-descriptions-item label="游戏">{{ gameNameMap[currentOrder?.game_id] || currentOrder?.game_id }}</el-descriptions-item>
+        <el-descriptions-item label="大区">{{ regionNameMap[currentOrder?.region_id] || currentOrder?.region_id }}</el-descriptions-item>
+        <el-descriptions-item label="状态">
+          <el-tag :type="orderStatusType(currentOrder?.status)" size="small">{{ orderStatusLabel(currentOrder?.status) }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="总金额">¥ {{ Number(currentOrder?.total_amount || 0).toFixed(2) }}</el-descriptions-item>
+        <el-descriptions-item label="客户">{{ currentOrder?.customer_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="联系方式">{{ currentOrder?.customer_contact || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="分配机器">{{ machineNameMap[currentOrder?.assigned_machine_id] || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="备注">{{ currentOrder?.remark || '-' }}</el-descriptions-item>
+        <el-descriptions-item v-if="currentOrder?.last_error_code" label="异常编码" :span="2">
+          <el-tag type="danger" size="small">{{ currentOrder.last_error_code }}</el-tag>
+          <span style="margin-left:8px">{{ currentOrder.last_error_message || '' }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="创建时间" :span="2">{{ currentOrder?.created_at }}</el-descriptions-item>
+      </el-descriptions>
 
       <el-divider>明细列表</el-divider>
+      <div v-if="currentOrder?.delivery_status === 'greeting' && currentOrder?.status !== 'completed' && currentOrder?.status !== 'cancelled'" style="margin-bottom:8px">
+        <el-button type="warning" size="small" :loading="reGreetingLoading" @click="handleReGreeting">
+          <el-icon><RefreshRight /></el-icon> 重新招呼
+        </el-button>
+      </div>
       <div v-if="currentOrder?.status === 'pending'" class="detail-toolbar">
         <el-select v-model="addDetailItemId" placeholder="选择物品添加" filterable style="width: 200px">
           <el-option v-for="i in itemOptions" :key="i.id" :label="`${i.name} (${i.code})`" :value="i.id" />
@@ -238,16 +282,18 @@
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import { RefreshRight } from '@element-plus/icons-vue'
 import {
-  getAllGames, getAllRegions, getAllMachines, getAllItems,
+  getAllGames, getAllRegions, getAllMachines, getAllItems, getAllWebsites,
   getOrders, getOrder, createOrder, updateOrder, deleteOrder,
-  addOrderDetail, deleteOrderDetail,
+  addOrderDetail, deleteOrderDetail, reGreeting,
 } from '../api'
 
 const gameList = ref([])
 const allRegions = ref([])
 const machineList = ref([])
 const allItems = ref([])
+const websiteList = ref([])
 const list = ref([])
 const total = ref(0)
 const page = ref(1)
@@ -260,11 +306,14 @@ const loading = ref(false)
 const gameNameMap = computed(() => Object.fromEntries(gameList.value.map(g => [g.id, g.name])))
 const regionNameMap = computed(() => Object.fromEntries(allRegions.value.map(r => [r.id, r.name])))
 const machineNameMap = computed(() => Object.fromEntries(machineList.value.map(m => [m.id, m.name || m.mac_address])))
+const websiteNameMap = computed(() => Object.fromEntries(websiteList.value.map(w => [w.id, w.name])))
 
 function orderStatusLabel(s) { return { pending: '待分配', assigned: '已分配', processing: '处理中', completed: '已完成', cancelled: '已取消' }[s] || s }
 function orderStatusType(s) { return { pending: 'warning', assigned: 'primary', processing: '', completed: 'success', cancelled: 'info' }[s] || '' }
 function detailStatusLabel(s) { return { pending: '待处理', processing: '处理中', completed: '已完成', failed: '失败' }[s] || s }
 function detailStatusType(s) { return { pending: 'warning', processing: '', completed: 'success', failed: 'danger' }[s] || '' }
+function deliveryStatusLabel(s) { return { greeting: '待招呼', detected: '待分配', waiting_assignment: '等待指派', assigned: '已指派', delivering: '交付中', delivered: '已交付', suspended: '已挂起', failed: '失败' }[s] || s || '待分配' }
+function deliveryStatusType(s) { return { greeting: 'warning', detected: 'info', waiting_assignment: 'warning', assigned: 'primary', delivering: '', delivered: 'success', suspended: 'danger', failed: 'danger' }[s] || 'info' }
 
 async function fetchList() {
   loading.value = true
@@ -402,11 +451,35 @@ async function handleDeleteDetail(detailId) {
   } catch (e) { ElMessage.error(e.message) }
 }
 
+// ── 重新招呼 ──
+const reGreetingLoading = ref(false)
+
+async function handleReGreeting() {
+  reGreetingLoading.value = true
+  try {
+    const res = await reGreeting(currentOrder.value.id)
+    ElMessage.success(res.message || '已重新触发招呼')
+    // 刷新订单详情
+    const orderRes = await getOrder(currentOrder.value.id)
+    detailList.value = orderRes.details || []; currentOrder.value = orderRes; fetchList()
+  } catch (e) { ElMessage.error(e.message) }
+  finally { reGreetingLoading.value = false }
+}
+
+async function handleRowReGreeting(row) {
+  try {
+    const res = await reGreeting(row.id)
+    ElMessage.success(res.message || '已重新触发招呼')
+    fetchList()
+  } catch (e) { ElMessage.error(e.message) }
+}
+
 onMounted(async () => {
   gameList.value = await getAllGames()
   allRegions.value = await getAllRegions()
   machineList.value = await getAllMachines()
   allItems.value = await getAllItems()
+  websiteList.value = await getAllWebsites()
   fetchList()
 })
 </script>
@@ -419,4 +492,5 @@ onMounted(async () => {
 .detail-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
 .total-line { text-align: right; font-weight: 600; font-size: 15px; margin-top: 12px; color: #e6a23c; }
 .detail-info { margin-bottom: 8px; }
+.detail-section { margin-bottom: 16px; }
 </style>

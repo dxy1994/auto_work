@@ -10,6 +10,9 @@ import com.auto.service.GameItemOrderService;
 import com.auto.service.GameRegionService;
 import com.auto.service.GameService;
 import com.auto.service.TradeEventService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,23 +26,28 @@ import java.util.UUID;
 @Service
 public class MarketplaceOrderIngestionService {
 
+    private static final Logger log = LoggerFactory.getLogger(MarketplaceOrderIngestionService.class);
+
     private final AccountService accountService;
     private final GameRegionService regionService;
     private final GameItemOrderService orderService;
     private final TradeEventService eventService;
     private final GameService gameService;
+    private final GreetingDispatchService greetingDispatchService;
 
     public MarketplaceOrderIngestionService(
             AccountService accountService,
             GameRegionService regionService,
             GameItemOrderService orderService,
             TradeEventService eventService,
-            GameService gameService) {
+            GameService gameService,
+            GreetingDispatchService greetingDispatchService) {
         this.accountService = accountService;
         this.regionService = regionService;
         this.orderService = orderService;
         this.eventService = eventService;
         this.gameService = gameService;
+        this.greetingDispatchService = greetingDispatchService;
     }
 
     @Transactional
@@ -94,14 +102,23 @@ public class MarketplaceOrderIngestionService {
         order.setCustomerName(message.buyerCharacter());
         order.setAssetType(message.assetType());
         order.setAssetAmount(message.assetAmount());
-        if (configError.isEmpty()) {
-            order.setDeliveryStatus(supported ? "waiting_assignment" : "suspended");
+        boolean isNormal = configError.isEmpty() && supported;
+        if (isNormal) {
+            order.setDeliveryStatus("greeting");
+        } else if (configError.isEmpty()) {
+            // 资产不支持
+            order.setDeliveryStatus("suspended");
+            order.setLastErrorCode("UNSUPPORTED_ASSET");
+            order.setLastErrorMessage("第一阶段只支持 Adena");
         } else {
             order.setDeliveryStatus("suspended");
             order.setLastErrorCode("CONFIG_MISSING");
             order.setLastErrorMessage(configError.toString());
         }
         order.setRemark(message.rawTitle());
+        order.setProductTitle(message.productTitle());
+        order.setQuantity(message.quantity());
+        order.setSaleQuantity(message.saleQuantity());
         if (message.platformOrderTime() != null
                 && !message.platformOrderTime().isEmpty()) {
             try {
@@ -121,10 +138,6 @@ public class MarketplaceOrderIngestionService {
                 && !message.platformItemType().isEmpty()) {
             order.setPlatformItemType(message.platformItemType());
         }
-        if (!supported && configError.isEmpty()) {
-            order.setLastErrorCode("UNSUPPORTED_ASSET");
-            order.setLastErrorMessage("第一阶段只支持 Adena");
-        }
 
         try {
             orderService.save(order);
@@ -135,6 +148,10 @@ public class MarketplaceOrderIngestionService {
                 return raced;
             }
             throw race;
+        } catch (DataIntegrityViolationException e) {
+            log.warn("[Order] 订单入库失败(数据完整性) account={} sourceOrderNo={}: {}",
+                    accountId, message.sourceOrderNo(), e.getMessage());
+            return null;
         }
         TradeEvent event = new TradeEvent();
         event.setOrderId(order.getId());
@@ -143,6 +160,22 @@ public class MarketplaceOrderIngestionService {
         event.setToStatus(order.getDeliveryStatus());
         event.setMessage("machine=" + machineId + ", platform=" + message.platform());
         eventService.save(event);
+
+        // 正常订单：异步派发招呼指令
+        if (isNormal) {
+            final int finalGameId = gameId;
+            final int finalRegionId = regionId;
+            final int finalOrderId = order.getId();
+            final int finalWebsiteId = account.getWebsiteId();
+            final int finalAccountId = accountId;
+            final String finalSourceOrderNo = message.sourceOrderNo();
+            final String finalPlatform = message.platform();
+            new Thread(() -> greetingDispatchService.dispatch(
+                    machineId, finalOrderId, finalGameId, finalRegionId,
+                    finalWebsiteId, finalAccountId, finalSourceOrderNo, finalPlatform),
+                    "greeting-dispatch-" + finalOrderId).start();
+        }
+
         return order;
     }
 
@@ -166,7 +199,7 @@ public class MarketplaceOrderIngestionService {
         // 2. 按 gameName 自动匹配
         String name = message.gameName();
         if (name != null && !name.isEmpty()) {
-            Game game = gameService.findByName(name);
+            Game game = gameService.findByCode(name);
             if (game != null) {
                 return game.getId();
             }

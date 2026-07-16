@@ -80,7 +80,6 @@ public class WebsiteController {
     public void delete(@PathVariable Integer id) {
         Website w = websiteService.getById(id);
         if (w == null) throw ApiException.notFound("网站不存在");
-        w.setIsActive(0);
-        websiteService.updateById(w);
+        websiteService.removeById(id);
     }
 }

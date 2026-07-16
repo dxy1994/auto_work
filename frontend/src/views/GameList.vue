@@ -135,6 +135,12 @@
             <el-table-column prop="title" label="标题" min-width="140" />
             <el-table-column prop="category" label="分类" width="100" />
             <el-table-column prop="content" label="内容" min-width="200" show-overflow-tooltip />
+            <el-table-column label="图片" width="70">
+              <template #default="{ row }">
+                <el-image v-if="row.image_url" :src="row.image_url" :preview-src-list="[row.image_url]" style="width:36px;height:36px" fit="cover" />
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="sort_order" label="排序" width="60" align="center" />
             <el-table-column label="操作" width="150">
               <template #default="{ row }">
@@ -161,15 +167,16 @@
             <el-table-column prop="title" label="标题" min-width="130" />
             <el-table-column prop="category" label="分类" width="90" />
             <el-table-column prop="content" label="内容" min-width="160" show-overflow-tooltip />
-            <el-table-column label="位置图片" width="80">
+            <el-table-column label="图片" width="80">
               <template #default="{ row }">
-                <el-image v-if="row.position_image" :src="row.position_image" :preview-src-list="[row.position_image]" style="width:40px;height:40px" fit="cover" />
+                <el-image v-if="row.image_url" :src="row.image_url" :preview-src-list="[row.image_url]" style="width:40px;height:40px" fit="cover" />
                 <span v-else>-</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="150">
+            <el-table-column label="操作" width="210">
               <template #default="{ row }">
                 <el-button size="small" link type="primary" @click="openRegionScriptEdit(row)">编辑</el-button>
+                <el-button size="small" link type="success" @click="copyRegionScript(row)">复制</el-button>
                 <el-popconfirm title="确认删除？" @confirm="handleDeleteRegionScript(row.id)">
                   <template #reference><el-button size="small" link type="danger">删除</el-button></template>
                 </el-popconfirm>
@@ -195,6 +202,21 @@
           </el-form-item>
           <el-form-item label="内容" prop="content">
             <el-input v-model="scriptForm.content" type="textarea" rows="4" placeholder="话术内容..." />
+          </el-form-item>
+          <el-form-item label="图片">
+            <el-upload
+              :auto-upload="false"
+              :limit="1"
+              accept="image/*"
+              :on-change="handleScriptImageChange"
+              :on-remove="handleScriptImageRemove"
+              :file-list="scriptImageFileList"
+              list-type="picture"
+            >
+              <el-button size="small" type="primary">选择图片</el-button>
+              <template #tip><div class="el-upload__tip">支持 jpg/png/gif/webp</div></template>
+            </el-upload>
+            <el-input v-if="scriptForm.image_url" v-model="scriptForm.image_url" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
           </el-form-item>
           <el-form-item label="排序">
             <el-input-number v-model="scriptForm.sort_order" :min="0" :max="999" />
@@ -228,7 +250,7 @@
           <el-form-item label="内容" prop="content">
             <el-input v-model="regionScriptForm.content" type="textarea" rows="4" />
           </el-form-item>
-          <el-form-item label="位置图片">
+          <el-form-item label="图片">
             <el-upload
               :auto-upload="false"
               :limit="1"
@@ -241,7 +263,7 @@
               <el-button size="small" type="primary">选择图片</el-button>
               <template #tip><div class="el-upload__tip">支持 jpg/png/gif/webp</div></template>
             </el-upload>
-            <el-input v-if="regionScriptForm.position_image" v-model="regionScriptForm.position_image" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
+            <el-input v-if="regionScriptForm.image_url" v-model="regionScriptForm.image_url" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
           </el-form-item>
           <el-form-item label="排序">
             <el-input-number v-model="regionScriptForm.sort_order" :min="0" :max="999" />
@@ -487,13 +509,34 @@ const scriptSubmitting = ref(false)
 const scriptFormRef = ref(null)
 const scriptRules = {
   title: [{ required: true, message: '请输入标题', trigger: 'blur' }],
-  content: [{ required: true, message: '请输入内容', trigger: 'blur' }],
+  content: [{ required: false, message: '请输入内容', trigger: 'blur' }],
 }
-const defaultScriptForm = () => ({ title: '', content: '', category: '', sort_order: 0 })
+const defaultScriptForm = () => ({ title: '', content: '', image_url: '', category: '', sort_order: 0 })
 const scriptForm = reactive(defaultScriptForm())
+
+// 游戏话术图片上传
+const scriptImageFileList = ref([])
+const scriptImageFile = ref(null)
+
+function handleScriptImageChange(file) {
+  scriptImageFile.value = file.raw
+  scriptImageFileList.value = [file]
+}
+
+function handleScriptImageRemove() {
+  scriptImageFile.value = null
+  scriptImageFileList.value = []
+  scriptForm.image_url = ''
+}
 
 function openScriptEdit(row = null) {
   scriptIsEdit.value = !!row; scriptEditId.value = row?.id ?? null
+  scriptImageFile.value = null
+  if (row?.image_url) {
+    scriptImageFileList.value = [{ name: row.image_url.split('/').pop() || 'image.png', url: row.image_url }]
+  } else {
+    scriptImageFileList.value = []
+  }
   Object.assign(scriptForm, row ? { ...row } : defaultScriptForm())
   scriptEditVisible.value = true
 }
@@ -501,6 +544,11 @@ function openScriptEdit(row = null) {
 async function handleScriptSubmit() {
   await scriptFormRef.value?.validate(); scriptSubmitting.value = true
   try {
+    // 先上传图片文件
+    if (scriptImageFile.value) {
+      const res = await uploadFile(scriptImageFile.value)
+      if (res.code === 0) scriptForm.image_url = res.url
+    }
     if (scriptIsEdit.value) { await updateGameScript(scriptEditId.value, { ...scriptForm }); ElMessage.success('更新成功') }
     else { await createGameScript({ ...scriptForm, game_id: scriptGame.value.id }); ElMessage.success('添加成功') }
     scriptEditVisible.value = false; fetchGameScripts()
@@ -519,12 +567,12 @@ const regionScriptSubmitting = ref(false)
 const regionScriptFormRef = ref(null)
 const regionScriptRules = {
   title: [{ required: true, message: '请输入标题', trigger: 'blur' }],
-  content: [{ required: true, message: '请输入内容', trigger: 'blur' }],
+  content: [{ required: false, message: '请输入内容', trigger: 'blur' }],
 }
-const defaultRegionScriptForm = () => ({ title: '', content: '', position_image: '', game_script_id: null, category: '', sort_order: 0 })
+const defaultRegionScriptForm = () => ({ title: '', content: '', image_url: '', game_script_id: null, category: '', sort_order: 0 })
 const regionScriptForm = reactive(defaultRegionScriptForm())
 
-// 位置图片上传
+// 图片上传
 const regionScriptImageFileList = ref([])
 const regionScriptImageFile = ref(null)
 
@@ -536,14 +584,14 @@ function handleRegionScriptImageChange(file) {
 function handleRegionScriptImageRemove() {
   regionScriptImageFile.value = null
   regionScriptImageFileList.value = []
-  regionScriptForm.position_image = ''
+  regionScriptForm.image_url = ''
 }
 
 function openRegionScriptEdit(row = null) {
   regionScriptIsEdit.value = !!row; regionScriptEditId.value = row?.id ?? null
   regionScriptImageFile.value = null
-  if (row?.position_image) {
-    regionScriptImageFileList.value = [{ name: row.position_image.split('/').pop() || 'image.png', url: row.position_image }]
+  if (row?.image_url) {
+    regionScriptImageFileList.value = [{ name: row.image_url.split('/').pop() || 'image.png', url: row.image_url }]
   } else {
     regionScriptImageFileList.value = []
   }
@@ -554,10 +602,10 @@ function openRegionScriptEdit(row = null) {
 async function handleRegionScriptSubmit() {
   await regionScriptFormRef.value?.validate(); regionScriptSubmitting.value = true
   try {
-    // 先上传位置图片文件
+    // 先上传图片文件
     if (regionScriptImageFile.value) {
       const res = await uploadFile(regionScriptImageFile.value)
-      if (res.code === 0) regionScriptForm.position_image = res.url
+      if (res.code === 0) regionScriptForm.image_url = res.url
     }
     if (regionScriptIsEdit.value) { await updateRegionScript(regionScriptEditId.value, { ...regionScriptForm }); ElMessage.success('更新成功') }
     else { await createRegionScript({ ...regionScriptForm, region_id: scriptRegionId.value }); ElMessage.success('添加成功') }
@@ -567,6 +615,11 @@ async function handleRegionScriptSubmit() {
 
 async function handleDeleteRegionScript(id) {
   try { await deleteRegionScript(id); ElMessage.success('已删除'); fetchRegionScripts() } catch (e) { ElMessage.error(e.message) }
+}
+
+function copyRegionScript(row) {
+  openRegionScriptEdit({ ...row, id: null })
+  regionScriptIsEdit.value = false
 }
 
 onMounted(fetchList)

@@ -24,6 +24,7 @@ export const getAccount = (id) => request.get(`/accounts/${id}`)
 export const createAccount = (data) => request.post('/accounts', data)
 export const updateAccount = (id, data) => request.put(`/accounts/${id}`, data)
 export const deleteAccount = (id) => request.delete(`/accounts/${id}`)
+export const getAllAccounts = () => request.get('/accounts/all')
 
 // ── 订单查询与提醒 ────────────────────────────────────────
 export const orderCheck = (accountId) =>
@@ -95,6 +96,11 @@ export const addMachineGame = (machineId, data) => request.post(`/machines/${mac
 export const updateMachineGame = (mgId, data) => request.put(`/machines/games/${mgId}`, data)
 export const removeMachineGame = (mgId) => request.delete(`/machines/games/${mgId}`)
 
+// ── 中控平台：机器关联账户 ────────────────────────────────
+export const getMachineAccounts = (machineId) => request.get(`/machines/${machineId}/accounts`)
+export const addMachineAccount = (machineId, data) => request.post(`/machines/${machineId}/accounts`, data)
+export const removeMachineAccount = (maId) => request.delete(`/machines/accounts/${maId}`)
+
 // ── 中控平台：游戏账号 ────────────────────────────────────
 export const getGameAccounts = (params) => request.get('/game-accounts', { params })
 export const getGameAccount = (id) => request.get(`/game-accounts/${id}`)
@@ -108,6 +114,7 @@ export const getOrder = (id) => request.get(`/orders/${id}`)
 export const createOrder = (data) => request.post('/orders', data)
 export const updateOrder = (id, data) => request.put(`/orders/${id}`, data)
 export const deleteOrder = (id) => request.delete(`/orders/${id}`)
+export const reGreeting = (orderId) => request.post(`/orders/${orderId}/re-greeting`)
 export const addOrderDetail = (orderId, data) => request.post(`/orders/${orderId}/details`, data)
 export const updateOrderDetail = (detailId, data) => request.put(`/orders/details/${detailId}`, data)
 export const deleteOrderDetail = (detailId) => request.delete(`/orders/details/${detailId}`)

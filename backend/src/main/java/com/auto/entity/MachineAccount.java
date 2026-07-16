@@ -10,30 +10,18 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-/** 大区话术。 */
-@TableName("region_scripts")
+/** 机器关联网站账户。 */
+@TableName("machine_accounts")
 @Getter
 @Setter
-public class RegionScript {
+public class MachineAccount {
 
     @TableId(type = IdType.AUTO)
     private Integer id;
 
-    private Integer regionId;
+    private Integer machineId;
 
-    /** 关联游戏话术ID。 */
-    private Integer gameScriptId;
-
-    private String title;
-
-    private String content;
-
-    /** 图片URL。 */
-    private String imageUrl;
-
-    private String category;
-
-    private Integer sortOrder = 0;
+    private Integer accountId;
 
     private Integer isActive = 1;
 

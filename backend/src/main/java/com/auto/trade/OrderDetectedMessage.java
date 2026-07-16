@@ -16,7 +16,10 @@ public record OrderDetectedMessage(
         String gameName,
         String platformOrderTime,
         BigDecimal platformPrice,
-        String platformItemType) {
+        String platformItemType,
+        String productTitle,
+        Integer quantity,
+        Integer saleQuantity) {
 
     private static final Set<String> PLATFORMS = Set.of("itemmania", "barotem", "itembay");
 
@@ -38,6 +41,9 @@ public record OrderDetectedMessage(
         gameName = bounded(gameName == null ? "" : gameName.trim(), 100, "game_name");
         platformOrderTime = bounded(platformOrderTime == null ? "" : platformOrderTime.trim(), 32, "platform_order_time");
         platformItemType = bounded(platformItemType == null ? "" : platformItemType.trim(), 32, "platform_item_type");
+        productTitle = bounded(productTitle == null ? "" : productTitle.trim(), 500, "product_title");
+        quantity = quantity == null ? 1 : quantity;
+        saleQuantity = saleQuantity == null ? 1 : saleQuantity;
     }
 
     private static String required(String value, String field) {

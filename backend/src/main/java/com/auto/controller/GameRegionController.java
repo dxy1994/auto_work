@@ -99,7 +99,6 @@ public class GameRegionController {
     public void delete(@PathVariable Integer regionId) {
         GameRegion r = regionService.getById(regionId);
         if (r == null) throw ApiException.notFound("大区不存在");
-        r.setIsActive(0);
-        regionService.updateById(r);
+        regionService.removeById(regionId);
     }
 }

@@ -2,16 +2,23 @@ package com.auto.controller;
 
 import com.auto.common.ApiException;
 import com.auto.common.PageRequests;
+import com.auto.entity.Account;
 import com.auto.entity.GameItem;
 import com.auto.entity.GameItemOrder;
 import com.auto.entity.GameItemOrderDetail;
 import com.auto.entity.GameRegion;
 import com.auto.entity.GameRegionItem;
+import com.auto.entity.MachineAccount;
+import com.auto.entity.Website;
+import com.auto.service.AccountService;
 import com.auto.service.GameItemOrderDetailService;
 import com.auto.service.GameItemOrderService;
 import com.auto.service.GameItemService;
 import com.auto.service.GameRegionItemService;
 import com.auto.service.GameRegionService;
+import com.auto.service.MachineAccountService;
+import com.auto.service.WebsiteService;
+import com.auto.trade.GreetingDispatchService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import tools.jackson.databind.ObjectMapper;
@@ -45,17 +52,29 @@ public class OrderController {
     private final GameItemService itemService;
     private final GameRegionService regionService;
     private final GameRegionItemService inventoryService;
+    private final GreetingDispatchService greetingDispatchService;
+    private final AccountService accountService;
+    private final MachineAccountService machineAccountService;
+    private final WebsiteService websiteService;
     private final ObjectMapper objectMapper;
 
     public OrderController(GameItemOrderService orderService, GameItemOrderDetailService detailService,
                            GameItemService itemService, GameRegionService regionService,
                            GameRegionItemService inventoryService,
+                           GreetingDispatchService greetingDispatchService,
+                           AccountService accountService,
+                           MachineAccountService machineAccountService,
+                           WebsiteService websiteService,
                            ObjectMapper objectMapper) {
         this.orderService = orderService;
         this.detailService = detailService;
         this.itemService = itemService;
         this.regionService = regionService;
         this.inventoryService = inventoryService;
+        this.greetingDispatchService = greetingDispatchService;
+        this.accountService = accountService;
+        this.machineAccountService = machineAccountService;
+        this.websiteService = websiteService;
         this.objectMapper = objectMapper;
     }
 
@@ -95,6 +114,68 @@ public class OrderController {
         GameItemOrder o = orderService.getById(orderId);
         if (o == null) throw ApiException.notFound("订单不存在");
         return toFullMap(o, detailService.findByOrderIdOrderById(orderId));
+    }
+
+    /** 重新招呼：适用于订单交付状态为 greeting 且总订单未完成/未取消。 */
+    @PostMapping("/{orderId}/re-greeting")
+    public Map<String, Object> reGreeting(@PathVariable Integer orderId) {
+        GameItemOrder order = orderService.getById(orderId);
+        if (order == null) throw ApiException.notFound("订单不存在");
+
+        if (!"greeting".equals(order.getDeliveryStatus())) {
+            throw ApiException.badRequest("当前交付状态不是待招呼，无法重新招呼");
+        }
+        String orderStatus = order.getStatus();
+        if ("completed".equals(orderStatus) || "cancelled".equals(orderStatus)) {
+            throw ApiException.badRequest("订单已" + ("completed".equals(orderStatus) ? "完成" : "取消") + "，无法重新招呼");
+        }
+        Integer machineId = order.getAssignedMachineId();
+        if (machineId == null) {
+            throw ApiException.badRequest("订单未分配机器，无法重新招呼");
+        }
+
+        // 查找关联的网站账户
+        Integer accountId = null;
+        for (MachineAccount ma : machineAccountService.findByMachineIdActive(machineId)) {
+            Account acc = accountService.getById(ma.getAccountId());
+            if (acc != null && acc.getWebsiteId().equals(order.getWebsiteId())) {
+                accountId = acc.getId();
+                break;
+            }
+        }
+        if (accountId == null) {
+            throw ApiException.badRequest("该机器未关联网站账户，无法重新招呼");
+        }
+
+        // 根据网站 URL 判断平台类型
+        Website website = websiteService.getById(order.getWebsiteId());
+        String platform = "";
+        if (website != null && website.getUrl() != null) {
+            String url = website.getUrl();
+            if (url.contains("itemmania")) platform = "itemmania";
+            else if (url.contains("itembay")) platform = "itembay";
+            else if (url.contains("barotem")) platform = "barotem";
+        }
+
+        // 异步派发招呼
+        final int finalMachineId = machineId;
+        final int finalAccountId = accountId;
+        final int finalOrderId = order.getId();
+        final int finalGameId = order.getGameId() != null ? order.getGameId() : -1;
+        final int finalRegionId = order.getRegionId() != null ? order.getRegionId() : -1;
+        final int finalWebsiteId = order.getWebsiteId();
+        final String finalSourceOrderNo = order.getSourceOrderNo() != null ? order.getSourceOrderNo() : "";
+        final String finalPlatform = platform;
+
+        new Thread(() -> greetingDispatchService.dispatch(
+                finalMachineId, finalOrderId, finalGameId, finalRegionId,
+                finalWebsiteId, finalAccountId, finalSourceOrderNo, finalPlatform),
+                "re-greeting-dispatch-" + finalOrderId).start();
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("status", "started");
+        resp.put("message", "已重新触发招呼");
+        return resp;
     }
 
     @PostMapping

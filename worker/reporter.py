@@ -82,6 +82,14 @@ class Reporter:
             "order": order.to_wire(),
         })
 
+    def report_greeting_result(self, order_id, success, message=""):
+        self._client.send_threadsafe({
+            "type": "greeting_result",
+            "order_id": order_id,
+            "success": success,
+            "message": message,
+        })
+
     # ── 订单查重（跨线程请求-响应）──
 
     def check_existing_orders(self, website_id, source_order_nos, timeout=5):

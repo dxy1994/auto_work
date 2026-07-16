@@ -255,6 +255,21 @@ public class AgentRegistry {
         return sendToAgent(machineId, payload);
     }
 
+    /** 下发招呼指令给指定机器。 */
+    public boolean sendGreeting(int machineId, int orderId, int websiteId, int accountId,
+                                java.util.List<java.util.Map<String, Object>> scripts, String chatUrl) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "greeting");
+        payload.put("order_id", orderId);
+        payload.put("scripts", scripts);
+        payload.put("website_id", websiteId);
+        payload.put("account_id", accountId);
+        if (chatUrl != null) {
+            payload.put("chat_url", chatUrl);
+        }
+        return sendToAgent(machineId, payload);
+    }
+
     /** 下发订单监控任务（fire-and-forget），并在镜像表登记。 */
     public void dispatchOrderCheck(
             int machineId, String taskId, String url, String username, String password,

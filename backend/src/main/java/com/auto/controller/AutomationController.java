@@ -2,14 +2,17 @@ package com.auto.controller;
 
 import com.auto.common.ApiException;
 import com.auto.entity.Account;
+import com.auto.entity.MachineAccount;
 import com.auto.entity.Website;
 import com.auto.service.AccountService;
 import com.auto.service.CryptoService;
+import com.auto.service.MachineAccountService;
 import com.auto.service.WebsiteService;
 import com.auto.ws.AgentRegistry;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -21,14 +24,17 @@ public class AutomationController {
 
     private final WebsiteService websiteService;
     private final AccountService accountService;
+    private final MachineAccountService machineAccountService;
     private final CryptoService crypto;
     private final AgentRegistry registry;
 
     public AutomationController(WebsiteService websiteService, AccountService accountService,
+                                MachineAccountService machineAccountService,
                                 CryptoService crypto,
                                 AgentRegistry registry) {
         this.websiteService = websiteService;
         this.accountService = accountService;
+        this.machineAccountService = machineAccountService;
         this.crypto = crypto;
         this.registry = registry;
     }
@@ -45,9 +51,38 @@ public class AutomationController {
         if (website == null) throw ApiException.notFound("网站不存在");
         validateActiveTarget(website, account);
 
-        Integer target = registry.pickAgent(machineId);
-        if (target == null) {
-            throw ApiException.unavailable("无在线 agent，请先启动至少一个 worker");
+        // 查询该账户关联的所有机器
+        List<MachineAccount> associations = machineAccountService.findByAccountIdActive(accountId);
+        if (associations.isEmpty()) {
+            throw ApiException.badRequest("该账号未关联任何机器，请先在机器管理中绑定");
+        }
+
+        // 确定目标机器
+        Integer target;
+        if (machineId != null) {
+            // 指定了机器：验证该机器是否已在关联列表中
+            boolean matched = associations.stream()
+                    .anyMatch(ma -> ma.getMachineId().equals(machineId));
+            if (!matched) {
+                throw ApiException.badRequest("该账号未关联指定机器（machine_id=" + machineId + "）");
+            }
+            target = registry.pickAgent(machineId);
+            if (target == null) {
+                throw ApiException.unavailable("指定的机器不在线");
+            }
+        } else {
+            // 未指定：从关联的机器中选第一个在线的
+            target = null;
+            for (MachineAccount ma : associations) {
+                Integer mid = registry.pickAgent(ma.getMachineId());
+                if (mid != null) {
+                    target = mid;
+                    break;
+                }
+            }
+            if (target == null) {
+                throw ApiException.unavailable("该账号关联的机器均不在线，请先启动至少一个 worker");
+            }
         }
 
         String plainPassword = crypto.decrypt(account.getPassword());

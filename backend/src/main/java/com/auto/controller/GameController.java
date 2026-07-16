@@ -76,7 +76,6 @@ public class GameController {
     public void delete(@PathVariable Integer id) {
         Game g = gameService.getById(id);
         if (g == null) throw ApiException.notFound("游戏不存在");
-        g.setIsActive(0);
-        gameService.updateById(g);
+        gameService.removeById(id);
     }
 }

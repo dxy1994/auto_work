@@ -35,6 +35,11 @@ public class AccountController {
         return Map.of("total", result.getTotal(), "items", result.getRecords());
     }
 
+    @GetMapping("/all")
+    public List<Account> listAll() {
+        return accountService.findAllActive();
+    }
+
     @GetMapping("/{id}")
     public Account get(@PathVariable Integer id) {
         Account a = accountService.getById(id);
@@ -92,8 +97,7 @@ public class AccountController {
     public void delete(@PathVariable Integer id) {
         Account a = accountService.getById(id);
         if (a == null) throw ApiException.notFound("账号不存在");
-        a.setIsActive(0);
-        accountService.updateById(a);
+        accountService.removeById(id);
     }
 
     /** 取消同网站其他默认账号（excludeId 可为 null）。 */

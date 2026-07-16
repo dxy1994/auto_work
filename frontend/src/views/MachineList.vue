@@ -20,6 +20,11 @@
       <el-table-column prop="mac_address" label="MAC地址" width="160" />
       <el-table-column prop="ip_address" label="IP地址" width="140" />
       <el-table-column prop="hostname" label="主机名" width="130" />
+      <el-table-column label="类型" width="90" align="center">
+        <template #default="{ row }">
+          <el-tag :type="typeTagType(row.type)" size="small">{{ typeLabel(row.type) }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="80" align="center">
         <template #default="{ row }">
           <el-tag :type="statusTagType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
@@ -27,10 +32,11 @@
       </el-table-column>
       <el-table-column prop="last_heartbeat" label="最后心跳" width="170" />
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="380" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openMachineDialog(row)">编辑</el-button>
-          <el-button size="small" type="success" @click="openGamesDrawer(row)">关联游戏</el-button>
+          <el-button v-if="row.type !== 'account'" size="small" type="success" @click="openGamesDrawer(row)">关联游戏</el-button>
+          <el-button v-if="row.type !== 'game'" size="small" type="warning" @click="openAccountsDrawer(row)">关联账户</el-button>
           <el-popconfirm title="确认删除？" @confirm="handleDeleteMachine(row.id)">
             <template #reference><el-button size="small" type="danger">删除</el-button></template>
           </el-popconfirm>
@@ -110,6 +116,34 @@
         </template>
       </el-dialog>
     </el-drawer>
+
+    <!-- 关联账户抽屉 -->
+    <el-drawer v-model="accountsDrawerVisible" :title="`关联账户 - ${currentMachine?.name || currentMachine?.mac_address || ''}`" size="550px" destroy-on-close>
+      <div class="games-toolbar">
+        <el-select v-model="newAccountId" placeholder="选择账户" style="width: 280px" filterable>
+          <el-option v-for="a in allAccounts" :key="a.id" :label="`${websiteNameMap[a.website_id] || ''} - ${a.label} (${a.username})`" :value="a.id" />
+        </el-select>
+        <el-button type="primary" size="small" @click="handleAddAccount" :disabled="!newAccountId">添加</el-button>
+      </div>
+      <el-table :data="machineAccounts" border stripe size="small">
+        <el-table-column label="网站" min-width="100">
+          <template #default="{ row }">{{ websiteNameMap[row.website_id] || row.website_id }}</template>
+        </el-table-column>
+        <el-table-column label="标签" min-width="80">
+          <template #default="{ row }">{{ accountMap[row.account_id]?.label || '' }}</template>
+        </el-table-column>
+        <el-table-column label="用户名" min-width="100">
+          <template #default="{ row }">{{ accountMap[row.account_id]?.username || '' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="80">
+          <template #default="{ row }">
+            <el-popconfirm title="确认移除？" @confirm="handleRemoveAccount(row.id)">
+              <template #reference><el-button size="small" link type="danger">移除</el-button></template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-drawer>
   </div>
 </template>
 
@@ -119,7 +153,8 @@ import { ElMessage } from 'element-plus'
 import {
   getMachines, createMachine, updateMachine, deleteMachine,
   getMachineGames, addMachineGame, updateMachineGame, removeMachineGame,
-  getAllGames,
+  getMachineAccounts, addMachineAccount, removeMachineAccount,
+  getAllGames, getAllAccounts, getAllWebsites,
 } from '../api'
 
 const list = ref([])
@@ -130,10 +165,16 @@ const keyword = ref('')
 const filterStatus = ref('')
 const loading = ref(false)
 const allGames = ref([])
+const allAccounts = ref([])
+const allWebsitesData = ref([])
+const websiteNameMap = computed(() => Object.fromEntries(allWebsitesData.value.map(w => [w.id, w.name])))
+const accountMap = computed(() => Object.fromEntries(allAccounts.value.map(a => [a.id, a])))
 const gameNameMap = computed(() => Object.fromEntries(allGames.value.map(g => [g.id, g.name])))
 
 function statusLabel(s) { return { online: '在线', offline: '离线', busy: '忙碌', disabled: '禁用' }[s] || s }
 function statusTagType(s) { return { online: 'success', offline: 'info', busy: 'warning', disabled: 'danger' }[s] || '' }
+function typeLabel(t) { return { game: '游戏', account: '账户' }[t] || '未绑定' }
+function typeTagType(t) { return { game: '', account: 'warning' }[t] || 'info' }
 
 async function fetchList() {
   loading.value = true
@@ -197,7 +238,40 @@ async function handleUpdateGameCfg() {
   catch (e) { ElMessage.error(e.message) }
 }
 
-onMounted(async () => { allGames.value = await getAllGames(); fetchList() })
+// ── 关联账户 ──
+const accountsDrawerVisible = ref(false)
+const machineAccounts = ref([])
+const newAccountId = ref(null)
+
+async function openAccountsDrawer(machine) {
+  currentMachine.value = machine; accountsDrawerVisible.value = true; await fetchMachineAccounts()
+}
+async function fetchMachineAccounts() {
+  if (!currentMachine.value) return
+  const mas = await getMachineAccounts(currentMachine.value.id)
+  // 将 account 信息合并到每条记录中，方便表格展示
+  machineAccounts.value = mas.map(ma => ({
+    ...ma,
+    website_id: accountMap.value[ma.account_id]?.website_id || null,
+  }))
+}
+async function handleAddAccount() {
+  try {
+    await addMachineAccount(currentMachine.value.id, { account_id: newAccountId.value })
+    ElMessage.success('已添加'); newAccountId.value = null; fetchMachineAccounts()
+  } catch (e) { ElMessage.error(e.message) }
+}
+async function handleRemoveAccount(maId) {
+  try { await removeMachineAccount(maId); ElMessage.success('已移除'); fetchMachineAccounts() }
+  catch (e) { ElMessage.error(e.message) }
+}
+
+onMounted(async () => {
+  allGames.value = await getAllGames()
+  allAccounts.value = await getAllAccounts()
+  allWebsitesData.value = await getAllWebsites()
+  fetchList()
+})
 </script>
 
 <style scoped>
