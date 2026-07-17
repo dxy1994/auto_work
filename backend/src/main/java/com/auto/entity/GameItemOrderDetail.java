@@ -43,6 +43,9 @@ public class GameItemOrderDetail {
 
     private String remark;
 
+    /** 来源套装名称（套装拆分时记录，单物品为空） */
+    private String bundleName;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

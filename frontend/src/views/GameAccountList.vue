@@ -21,7 +21,7 @@
       </el-button>
     </div>
 
-    <el-table :data="list" border stripe v-loading="loading">
+    <el-table :data="list" border stripe v-loading="loading" highlight-current-row @current-change="onCurrentChange" row-key="id">
       <el-table-column prop="account_name" label="账号名" min-width="140" />
       <el-table-column label="游戏" width="120">
         <template #default="{ row }">{{ gameNameMap[row.game_id] || row.game_id }}</template>
@@ -126,6 +126,9 @@ const gameNameMap = computed(() => Object.fromEntries(gameList.value.map(g => [g
 const regionNameMap = computed(() => Object.fromEntries(regionList.value.map(r => [r.id, r.name])))
 function statusLabel(s) { return { idle: '空闲', in_use: '使用中', locked: '锁定', disabled: '禁用' }[s] || s }
 function statusTagType(s) { return { idle: 'success', in_use: 'warning', locked: 'danger', disabled: 'info' }[s] || '' }
+
+const currentRow = ref(null)
+function onCurrentChange(row) { currentRow.value = row }
 
 async function fetchList() {
   loading.value = true

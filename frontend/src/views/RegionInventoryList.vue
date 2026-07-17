@@ -22,7 +22,7 @@
       </el-button>
     </div>
 
-    <el-table :data="list" border stripe v-loading="loading" row-key="id" style="min-width: 1100px">
+    <el-table :data="list" border stripe v-loading="loading" row-key="id" highlight-current-row @current-change="onCurrentChange" style="min-width: 1100px">
       <el-table-column v-if="!filterRegionId" prop="region_name" label="大区" width="120" />
       <el-table-column prop="item_name" label="物品名称" min-width="200" />
       <el-table-column label="库存" width="110" align="center">
@@ -122,8 +122,8 @@
       </el-table-column>
     </el-table>
 
-    <div class="pagination-wrap" v-if="total > pageSize">
-      <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" @current-change="fetchList" />
+    <div class="pagination-wrap" v-if="total > 0">
+      <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next" @current-change="fetchList" />
     </div>
   </div>
 </template>
@@ -149,6 +149,9 @@ const loading = ref(false)
 const saving = ref(false)
 
 const changedIds = ref(new Set())
+
+const currentRow = ref(null)
+function onCurrentChange(row) { currentRow.value = row }
 
 async function fetchGames() {
   gameList.value = await getAllGames()

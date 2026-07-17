@@ -15,7 +15,7 @@
       </el-button>
     </div>
 
-    <el-table :data="list" border stripe v-loading="loading">
+    <el-table :data="list" border stripe v-loading="loading" highlight-current-row @current-change="onCurrentChange" row-key="id">
       <el-table-column prop="name" label="别名" width="120" />
       <el-table-column prop="mac_address" label="MAC地址" width="160" />
       <el-table-column prop="ip_address" label="IP地址" width="140" />
@@ -84,7 +84,7 @@
         </el-select>
         <el-button type="primary" size="small" @click="handleAddGame" :disabled="!newGameId">添加</el-button>
       </div>
-      <el-table :data="machineGames" border stripe size="small">
+      <el-table :data="machineGames" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
         <el-table-column label="游戏" min-width="120">
           <template #default="{ row }">{{ gameNameMap[row.game_id] || row.game_id }}</template>
         </el-table-column>
@@ -125,7 +125,7 @@
         </el-select>
         <el-button type="primary" size="small" @click="handleAddAccount" :disabled="!newAccountId">添加</el-button>
       </div>
-      <el-table :data="machineAccounts" border stripe size="small">
+      <el-table :data="machineAccounts" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
         <el-table-column label="网站" min-width="100">
           <template #default="{ row }">{{ websiteNameMap[row.website_id] || row.website_id }}</template>
         </el-table-column>
@@ -164,6 +164,8 @@ const pageSize = 20
 const keyword = ref('')
 const filterStatus = ref('')
 const loading = ref(false)
+const currentRow = ref(null)
+function onCurrentChange(row) { currentRow.value = row }
 const allGames = ref([])
 const allAccounts = ref([])
 const allWebsitesData = ref([])

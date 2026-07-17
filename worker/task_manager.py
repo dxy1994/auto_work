@@ -6,17 +6,14 @@ import time
 
 
 class TaskManager:
-    def __init__(self, reporter):
+    def __init__(self, reporter=None):
         self._reporter = reporter
         self._lock = threading.Lock()
-        # account_id -> {"thread", "stop_event", "task_id", "status", "start_time"}
         self._tasks: dict = {}
 
     def start_order_check(self, task_id, account_id, runner) -> bool:
         """启动订单监控。runner: callable(stop_event) -> None。
-
-        返回 False 表示该账号已有任务在运行。
-        """
+        返回 False 表示该账号已有任务在运行。"""
         return self._start_task(task_id, account_id, "order_check", runner)
 
     def cancel(self, account_id) -> bool:

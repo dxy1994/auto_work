@@ -16,4 +16,7 @@ public interface RegionScriptService extends IService<RegionScript> {
 
     /** 按大区ID和分类获取全部激活话术（按 sort_order 排序）。 */
     List<RegionScript> findAllByRegionIdAndCategory(int regionId, String category);
+
+    /** 获取指定大区+分类下的最大 sort_order。 */
+    Integer maxSortOrder(Integer regionId, String category);
 }

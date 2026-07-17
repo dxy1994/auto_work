@@ -46,4 +46,9 @@ public class RegionScriptServiceImpl extends ServiceImpl<RegionScriptMapper, Reg
                 .eq(RegionScript::getIsActive, 1)
                 .orderByAsc(RegionScript::getSortOrder));
     }
+
+    @Override
+    public Integer maxSortOrder(Integer regionId, String category) {
+        return baseMapper.maxSortOrder(regionId, category);
+    }
 }

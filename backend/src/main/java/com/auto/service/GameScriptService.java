@@ -18,4 +18,7 @@ public interface GameScriptService extends IService<GameScript> {
 
     /** 按游戏ID和分类获取全部激活话术（按 sort_order 排序）。 */
     List<GameScript> findAllByGameIdAndCategory(int gameId, String category);
+
+    /** 获取指定游戏+分类下的最大 sort_order。 */
+    Integer maxSortOrder(Integer gameId, String category);
 }

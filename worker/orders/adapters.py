@@ -123,11 +123,12 @@ class _Adapter:
             self._last_reject_reason = f"标题字段缺失: {e}"
             return None
         try:
+            asset_type = self._resolve_asset_type(raw)
             return NormalizedOrder(
                 platform=self.platform,
                 source_order_no=self._value(raw, "order_no"),
                 region_external_key=self._value(raw, "region"),
-                asset_type="adena",
+                asset_type=asset_type,
                 asset_amount=parse_korean_amount(self._value(raw, "amount")),
                 buyer_character=self._value(raw, "buyer"),
                 platform_status=status,
@@ -145,6 +146,9 @@ class _Adapter:
         if not value:
             raise ValueError(f"missing {source_name}")
         return value
+
+    def _resolve_asset_type(self, raw) -> str:
+        return str(raw.get("item_type") or "").strip() or "unknown"
 
 
 class ItemmaniaAdapter(_Adapter):

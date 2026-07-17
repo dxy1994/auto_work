@@ -22,7 +22,7 @@
       </el-button>
     </div>
 
-    <el-table :data="list" border stripe v-loading="loading" style="width: 100%">
+    <el-table :data="list" border stripe v-loading="loading" highlight-current-row @current-change="onCurrentChange" row-key="id" style="width: 100%">
       <el-table-column prop="account_label" label="账号标签" min-width="100" />
       <el-table-column prop="account_username" label="用户名" min-width="120" />
       <el-table-column prop="website_name" label="所属网站" min-width="120" />
@@ -243,6 +243,9 @@ function scheduleTypeLabel(t) {
 function scheduleTagType(t) {
   return { none: 'info', once: 'warning', scheduled: 'success' }[t] || ''
 }
+
+const currentRow = ref(null)
+function onCurrentChange(row) { currentRow.value = row }
 
 async function fetchList() {
   loading.value = true

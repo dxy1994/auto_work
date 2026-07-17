@@ -1,0 +1,20 @@
+package com.auto.trade.statemachine;
+
+/** 订单交付事件枚举。 */
+public enum DeliveryEvent {
+
+    ORDER_DETECTED,
+    NO_GREETING_SCRIPT,
+    NO_SUB_ORDER,
+    GREETING_SEND_FAILED,
+    GREETING_FAILED,
+    GREETING_SUCCESS,
+    OFFER_ACCEPTED,
+    OFFER_REJECTED,
+    OFFER_EXPIRED,
+    START_FAILED,
+    TRADE_COMPLETED,
+    TRADE_CANCELLED,
+    MANUAL_DISPATCH,
+    RESET_TO_GREETING
+}

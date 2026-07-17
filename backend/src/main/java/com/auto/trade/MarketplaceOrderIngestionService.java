@@ -1,12 +1,20 @@
 package com.auto.trade;
 
 import com.auto.entity.Account;
+import com.auto.entity.BundleItem;
 import com.auto.entity.Game;
+import com.auto.entity.GameItem;
 import com.auto.entity.GameItemOrder;
+import com.auto.entity.GameItemOrderDetail;
 import com.auto.entity.GameRegion;
+import com.auto.entity.GameRegionItem;
 import com.auto.entity.TradeEvent;
 import com.auto.service.AccountService;
+import com.auto.service.BundleItemService;
+import com.auto.service.GameItemOrderDetailService;
 import com.auto.service.GameItemOrderService;
+import com.auto.service.GameItemService;
+import com.auto.service.GameRegionItemService;
 import com.auto.service.GameRegionService;
 import com.auto.service.GameService;
 import com.auto.service.TradeEventService;
@@ -17,6 +25,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +43,10 @@ public class MarketplaceOrderIngestionService {
     private final TradeEventService eventService;
     private final GameService gameService;
     private final GreetingDispatchService greetingDispatchService;
+    private final GameItemService gameItemService;
+    private final BundleItemService bundleItemService;
+    private final GameItemOrderDetailService orderDetailService;
+    private final GameRegionItemService regionItemService;
 
     public MarketplaceOrderIngestionService(
             AccountService accountService,
@@ -41,13 +54,21 @@ public class MarketplaceOrderIngestionService {
             GameItemOrderService orderService,
             TradeEventService eventService,
             GameService gameService,
-            GreetingDispatchService greetingDispatchService) {
+            GreetingDispatchService greetingDispatchService,
+            GameItemService gameItemService,
+            BundleItemService bundleItemService,
+            GameItemOrderDetailService orderDetailService,
+            GameRegionItemService regionItemService) {
         this.accountService = accountService;
         this.regionService = regionService;
         this.orderService = orderService;
         this.eventService = eventService;
         this.gameService = gameService;
         this.greetingDispatchService = greetingDispatchService;
+        this.gameItemService = gameItemService;
+        this.bundleItemService = bundleItemService;
+        this.orderDetailService = orderDetailService;
+        this.regionItemService = regionItemService;
     }
 
     @Transactional
@@ -91,7 +112,6 @@ public class MarketplaceOrderIngestionService {
             }
         }
 
-        boolean supported = "adena".equals(message.assetType());
         GameItemOrder order = new GameItemOrder();
         order.setOrderNo("MP-" + UUID.randomUUID().toString().replace("-", ""));
         order.setWebsiteId(account.getWebsiteId());
@@ -102,14 +122,9 @@ public class MarketplaceOrderIngestionService {
         order.setCustomerName(message.buyerCharacter());
         order.setAssetType(message.assetType());
         order.setAssetAmount(message.assetAmount());
-        boolean isNormal = configError.isEmpty() && supported;
+        boolean isNormal = configError.isEmpty();
         if (isNormal) {
             order.setDeliveryStatus("greeting");
-        } else if (configError.isEmpty()) {
-            // 资产不支持
-            order.setDeliveryStatus("suspended");
-            order.setLastErrorCode("UNSUPPORTED_ASSET");
-            order.setLastErrorMessage("第一阶段只支持 Adena");
         } else {
             order.setDeliveryStatus("suspended");
             order.setLastErrorCode("CONFIG_MISSING");
@@ -117,6 +132,10 @@ public class MarketplaceOrderIngestionService {
         }
         order.setRemark(message.rawTitle());
         order.setProductTitle(message.productTitle());
+        String tradeItem = parseItemFromTitle(message.productTitle());
+        if (!tradeItem.isEmpty()) {
+            order.setTradeItemName(tradeItem);
+        }
         order.setQuantity(message.quantity());
         order.setSaleQuantity(message.saleQuantity());
         if (message.platformOrderTime() != null
@@ -153,13 +172,30 @@ public class MarketplaceOrderIngestionService {
                     accountId, message.sourceOrderNo(), e.getMessage());
             return null;
         }
+
+        // 根据解析的交易物品名自动创建子订单明细（失败不影响主流程）
+        if (order.getTradeItemName() != null && !order.getTradeItemName().isEmpty()
+                && gameId != null && gameId != -1) {
+            try {
+                autoCreateOrderDetails(order, gameId, regionId);
+            } catch (Exception e) {
+                log.warn("[Order] 自动创建子订单明细失败(不影响主流程) order_id={} tradeItemName={}: {}",
+                        order.getId(), order.getTradeItemName(), e.getMessage(), e);
+            }
+        }
+
         TradeEvent event = new TradeEvent();
         event.setOrderId(order.getId());
         event.setEventType("order_detected");
         event.setFromStatus("detected");
         event.setToStatus(order.getDeliveryStatus());
         event.setMessage("machine=" + machineId + ", platform=" + message.platform());
-        eventService.save(event);
+        try {
+            eventService.save(event);
+        } catch (Exception e) {
+            log.error("[Order] 事件记录失败（不影响主流程） order_id={} type={}: {}",
+                    order.getId(), "order_detected", e.getMessage());
+        }
 
         // 正常订单：异步派发招呼指令
         if (isNormal) {
@@ -241,5 +277,83 @@ public class MarketplaceOrderIngestionService {
         } catch (NumberFormatException e) {
             throw new IllegalStateException(message);
         }
+    }
+
+    /** 从标题中提取 [] 内的内容作为实际物品名，未匹配返回空串。 */
+    static String parseItemFromTitle(String title) {
+        if (title == null || title.isEmpty()) {
+            return "";
+        }
+        int start = title.indexOf('[');
+        int end = title.indexOf(']', start + 1);
+        if (start >= 0 && end > start) {
+            return title.substring(start + 1, end).trim();
+        }
+        return "";
+    }
+
+    /**
+     * 根据 tradeItemName 在物品表中查找匹配物品，自动创建子订单明细。
+     * 单物品 → 创建 1 条明细；套装 → 拆分为多条明细，每条记录 bundleName。
+     */
+    private void autoCreateOrderDetails(GameItemOrder order, int gameId, int regionId) {
+        String tradeItemName = order.getTradeItemName();
+        GameItem matchedItem = gameItemService.findByGameIdAndName(gameId, tradeItemName);
+        if (matchedItem == null) {
+            log.info("[Order] 未匹配到物品 order_id={} tradeItemName={}", order.getId(), tradeItemName);
+            return;
+        }
+
+        if (Integer.valueOf(1).equals(matchedItem.getIsBundle())) {
+            // 套装：拆分所有子物品
+            List<Integer> childItemIds = bundleItemService.findItemIdsByBundleId(matchedItem.getId());
+            if (childItemIds.isEmpty()) {
+                log.info("[Order] 套装无子物品 order_id={} bundle={}", order.getId(), tradeItemName);
+                return;
+            }
+            List<GameItem> childItems = gameItemService.listByIds(childItemIds);
+            BigDecimal totalAmount = BigDecimal.ZERO;
+            for (GameItem child : childItems) {
+                GameItemOrderDetail detail = buildDetail(order.getId(), child, regionId, matchedItem.getName());
+                orderDetailService.save(detail);
+                totalAmount = totalAmount.add(detail.getSubtotal());
+            }
+            order.setTotalAmount(totalAmount);
+        } else {
+            // 单物品
+            GameItemOrderDetail detail = buildDetail(order.getId(), matchedItem, regionId, null);
+            orderDetailService.save(detail);
+            order.setTotalAmount(detail.getSubtotal());
+        }
+        orderService.updateById(order);
+        log.info("[Order] 自动创建子订单明细 order_id={} item={} bundle={}",
+                order.getId(), tradeItemName,
+                Integer.valueOf(1).equals(matchedItem.getIsBundle()) ? matchedItem.getName() : "-");
+    }
+
+    private GameItemOrderDetail buildDetail(int orderId, GameItem item, int regionId, String bundleName) {
+        GameItemOrderDetail detail = new GameItemOrderDetail();
+        detail.setOrderId(orderId);
+        detail.setItemId(item.getId());
+        detail.setItemName(item.getName());
+        detail.setItemImage(item.getImage());
+        detail.setQuantity(1);
+        BigDecimal price = item.getPrice() != null ? item.getPrice() : BigDecimal.ZERO;
+        detail.setUnitPrice(price);
+        detail.setSubtotal(price);
+        detail.setBundleName(bundleName);
+        // 从大区物品库存获取进货价/出货价快照
+        if (regionId > 0) {
+            GameRegionItem inventory = regionItemService.getOne(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<GameRegionItem>()
+                            .eq(GameRegionItem::getRegionId, regionId)
+                            .eq(GameRegionItem::getItemId, item.getId())
+                            .eq(GameRegionItem::getIsActive, 1), false);
+            if (inventory != null) {
+                detail.setPurchasePrice(inventory.getPurchasePrice());
+                detail.setSellingPrice(inventory.getSellingPrice());
+            }
+        }
+        return detail;
     }
 }

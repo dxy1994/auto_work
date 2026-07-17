@@ -41,8 +41,8 @@ class NormalizedOrder:
             object.__setattr__(self, field_name, value)
 
         asset_type = str(self.asset_type or "").strip().lower()
-        if asset_type != "adena":
-            raise ValueError("first phase supports Adena only")
+        if not asset_type:
+            raise ValueError("asset_type is required")
         object.__setattr__(self, "asset_type", asset_type)
 
         try:

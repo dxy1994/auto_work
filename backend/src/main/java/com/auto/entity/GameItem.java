@@ -22,9 +22,6 @@ public class GameItem {
 
     private Integer gameId;
 
-    /** 父物品ID（套装子物品）。 */
-    private Integer parentId;
-
     private String name;
 
     private String code;
@@ -36,6 +33,8 @@ public class GameItem {
     private String category;
 
     private BigDecimal price = BigDecimal.ZERO;
+
+    private String position;
 
     private String remark;
 

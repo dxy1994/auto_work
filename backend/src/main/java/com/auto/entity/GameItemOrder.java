@@ -83,6 +83,9 @@ public class GameItemOrder {
     /** 平台商品标题（Marketplace 采集） */
     private String productTitle;
 
+    /** 实际交易物品名（从标题[]中解析，用于匹配子订单） */
+    private String tradeItemName;
+
     /** 上架数量（Marketplace 采集） */
     private Integer quantity;
 

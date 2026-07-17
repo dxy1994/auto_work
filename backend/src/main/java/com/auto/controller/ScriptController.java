@@ -50,6 +50,10 @@ public class ScriptController {
     public GameScript createGameScript(@RequestBody GameScript payload) {
         payload.setId(null);
         payload.setIsActive(1);
+        if (payload.getSortOrder() == null || payload.getSortOrder() == 0) {
+            Integer maxSort = gameScriptService.maxSortOrder(payload.getGameId(), payload.getCategory());
+            payload.setSortOrder((maxSort == null ? 0 : maxSort) + 1);
+        }
         gameScriptService.save(payload);
         return payload;
     }
@@ -95,6 +99,10 @@ public class ScriptController {
     public RegionScript createRegionScript(@RequestBody RegionScript payload) {
         payload.setId(null);
         payload.setIsActive(1);
+        if (payload.getSortOrder() == null || payload.getSortOrder() == 0) {
+            Integer maxSort = regionScriptService.maxSortOrder(payload.getRegionId(), payload.getCategory());
+            payload.setSortOrder((maxSort == null ? 0 : maxSort) + 1);
+        }
         regionScriptService.save(payload);
         return payload;
     }

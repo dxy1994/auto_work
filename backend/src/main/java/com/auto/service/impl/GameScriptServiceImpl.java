@@ -53,4 +53,9 @@ public class GameScriptServiceImpl extends ServiceImpl<GameScriptMapper, GameScr
                 .eq(GameScript::getIsActive, 1)
                 .orderByAsc(GameScript::getSortOrder));
     }
+
+    @Override
+    public Integer maxSortOrder(Integer gameId, String category) {
+        return baseMapper.maxSortOrder(gameId, category);
+    }
 }

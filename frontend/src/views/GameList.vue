@@ -9,7 +9,7 @@
       </el-button>
     </div>
 
-    <el-table :data="list" border stripe v-loading="loading">
+    <el-table :data="list" border stripe v-loading="loading" highlight-current-row @current-change="onCurrentChange" row-key="id">
       <el-table-column prop="code" label="编码" width="120" />
       <el-table-column prop="name" label="游戏名称" min-width="150" />
       <el-table-column prop="platform" label="平台" width="100" />
@@ -84,7 +84,7 @@
           <el-icon><Plus /></el-icon> 新增大区
         </el-button>
       </div>
-      <el-table :data="regionList" border stripe size="small">
+      <el-table :data="regionList" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
         <el-table-column prop="code" label="编码" width="120" />
         <el-table-column prop="name" label="大区名称" min-width="150" />
         <el-table-column prop="sort_order" label="排序" width="70" align="center" />
@@ -131,7 +131,7 @@
               <el-icon><Plus /></el-icon> 新增话术
             </el-button>
           </div>
-          <el-table :data="gameScriptList" border stripe size="small">
+          <el-table :data="gameScriptList" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
             <el-table-column prop="title" label="标题" min-width="140" />
             <el-table-column prop="category" label="分类" width="100" />
             <el-table-column prop="content" label="内容" min-width="200" show-overflow-tooltip />
@@ -163,7 +163,7 @@
               <el-icon><Plus /></el-icon> 新增大区话术
             </el-button>
           </div>
-          <el-table :data="regionScriptList" border stripe size="small">
+          <el-table :data="regionScriptList" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
             <el-table-column prop="title" label="标题" min-width="130" />
             <el-table-column prop="category" label="分类" width="90" />
             <el-table-column prop="content" label="内容" min-width="160" show-overflow-tooltip />
@@ -290,6 +290,9 @@ const page = ref(1)
 const pageSize = 20
 const keyword = ref('')
 const loading = ref(false)
+
+const currentRow = ref(null)
+function onCurrentChange(row) { currentRow.value = row }
 
 async function fetchList() {
   loading.value = true

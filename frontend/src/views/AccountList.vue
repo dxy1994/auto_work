@@ -11,7 +11,7 @@
     </div>
 
     <!-- 账号表格 -->
-    <el-table :data="list" border stripe style="width:100%">
+    <el-table :data="list" border stripe highlight-current-row @current-change="onCurrentChange" row-key="id" style="width:100%">
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column label="所属网站" min-width="120">
         <template #default="{ row }">
@@ -127,6 +127,9 @@ const cancellingId = ref(null)
 // 订单检查状态轮询
 const orderCheckStatuses = ref({})  // { accountId: { status, message, start_time } }
 let statusPollTimer = null
+
+const currentRow = ref(null)
+function onCurrentChange(row) { currentRow.value = row }
 
 function getCheckStatus(accountId) {
   const s = orderCheckStatuses.value[accountId]

@@ -19,7 +19,7 @@
       </el-button>
     </div>
 
-    <el-table :data="list" border stripe v-loading="loading">
+    <el-table :data="list" border stripe v-loading="loading" highlight-current-row @current-change="onCurrentChange" row-key="id">
       <el-table-column prop="order_no" label="订单号" width="160" show-overflow-tooltip />
       <el-table-column label="来源" width="80">
         <template #default="{ row }">{{ websiteNameMap[row.website_id] || row.website_id || '-' }}</template>
@@ -29,6 +29,12 @@
       </el-table-column>
       <el-table-column prop="product_title" label="商品标题" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">{{ row.product_title || row.remark || '-' }}</template>
+      </el-table-column>
+      <el-table-column prop="trade_item_name" label="交易物品" width="120" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.trade_item_name || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="资产类型" width="90">
+        <template #default="{ row }">{{ row.asset_type || '-' }}</template>
       </el-table-column>
       <el-table-column prop="buyer_character" label="买家" width="90" show-overflow-tooltip />
       <el-table-column prop="platform_price" label="平台售价" width="110" align="right">
@@ -110,7 +116,7 @@
         <el-input-number v-model="newDetailPrice" :min="0" :precision="2" size="default" placeholder="单价" style="width:130px" />
         <el-button type="primary" size="small" @click="addDetailRow" :disabled="!newDetailItemId">添加</el-button>
       </div>
-      <el-table :data="createForm.details" border size="small" style="margin-top:10px">
+      <el-table :data="createForm.details" border size="small" highlight-current-row @current-change="onCurrentChange" style="margin-top:10px">
         <el-table-column label="物品" min-width="140">
           <template #default="{ row }">{{ row._itemName }}</template>
         </el-table-column>
@@ -196,6 +202,8 @@
           <span v-else>-</span>
         </el-descriptions-item>
         <el-descriptions-item label="商品标题" :span="2">{{ currentOrder?.product_title || currentOrder?.remark || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="交易物品">{{ currentOrder?.trade_item_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="资产类型">{{ currentOrder?.asset_type || '-' }}</el-descriptions-item>
       </el-descriptions>
 
       <!-- 交易信息 -->
@@ -242,8 +250,14 @@
         <el-input-number v-model="addDetailQty" :min="1" :max="9999" size="default" style="width:110px" />
         <el-button type="primary" size="small" @click="handleAddDetail" :disabled="!addDetailItemId">添加</el-button>
       </div>
-      <el-table :data="detailList" border stripe size="small">
+      <el-table :data="detailList" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
         <el-table-column prop="item_name" label="物品名称" min-width="140" />
+        <el-table-column prop="bundle_name" label="来源套装" width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag size="small" type="info" v-if="row.bundle_name">{{ row.bundle_name }}</el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="图片" width="60">
           <template #default="{ row }">
             <el-image v-if="row.item_image" :src="row.item_image" :preview-src-list="[row.item_image]" style="width:36px;height:36px" fit="cover" />
@@ -302,6 +316,9 @@ const keyword = ref('')
 const filterGameId = ref(null)
 const filterStatus = ref('')
 const loading = ref(false)
+
+const currentRow = ref(null)
+function onCurrentChange(row) { currentRow.value = row }
 
 const gameNameMap = computed(() => Object.fromEntries(gameList.value.map(g => [g.id, g.name])))
 const regionNameMap = computed(() => Object.fromEntries(allRegions.value.map(r => [r.id, r.name])))

@@ -16,42 +16,43 @@
       </el-button>
     </div>
 
-    <el-table :data="list" border stripe v-loading="loading" row-key="id">
-      <!-- 展开套装子物品 -->
-    <el-table-column width="50" align="center">
-      <template #default="{ row }">
-        <el-icon v-if="row.is_bundle" class="expand-icon" :class="{ expanded: expandedRows.has(row.id) }" @click="toggleExpand(row)">
-          <ArrowRight />
-        </el-icon>
-      </template>
-    </el-table-column>
-    <!-- 展开行（套装子物品） -->
-    <template v-for="row in list" :key="'expanded-' + row.id">
-      <tr v-if="expandedRows.has(row.id)">
-        <td :colspan="10" class="expand-area">
-          <div class="expand-title">套装子物品：</div>
-          <el-table :data="row._children || []" border size="small" v-loading="row._childrenLoading">
-            <el-table-column prop="code" label="编码" width="120" />
-            <el-table-column prop="name" label="名称" min-width="150" />
-            <el-table-column label="图片" width="80">
-              <template #default="{ row: child }">
-                <el-image v-if="child.image" :src="child.image" :preview-src-list="[child.image]" style="width:40px;height:40px" fit="cover" />
-              </template>
-            </el-table-column>
-            <el-table-column prop="price" label="价格" width="90" align="right" />
-            <el-table-column label="操作" width="120">
-              <template #default="{ row: child }">
-                <el-button size="small" link type="primary" @click="openItemDialog(child)">编辑</el-button>
-                <el-popconfirm title="确认删除？" @confirm="handleDeleteItem(child.id)">
-                  <template #reference><el-button size="small" link type="danger">删除</el-button></template>
-                </el-popconfirm>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-button size="small" type="primary" style="margin-top:8px" @click="openChildSelect(row)">+ 选择已有物品</el-button>
-        </td>
-      </tr>
-    </template>
+    <el-table
+      ref="tableRef"
+      :data="list"
+      border stripe
+      v-loading="loading"
+      row-key="id"
+      highlight-current-row
+      :row-class-name="tableRowClassName"
+      @current-change="onCurrentChange"
+      @expand-change="handleExpandChange"
+    >
+      <el-table-column type="expand">
+        <template #default="{ row }">
+          <div v-if="row.is_bundle" class="expand-area">
+            <div class="expand-title">套装子物品：</div>
+            <el-table :data="row._children || []" border size="small" v-loading="row._childrenLoading" highlight-current-row @current-change="onCurrentChange">
+              <el-table-column prop="code" label="编码" width="120" />
+              <el-table-column prop="name" label="名称" min-width="150" />
+              <el-table-column label="图片" width="80">
+                <template #default="{ row: child }">
+                  <el-image v-if="child.image" :src="child.image" :preview-src-list="[child.image]" style="width:40px;height:40px" fit="cover" />
+                </template>
+              </el-table-column>
+              <el-table-column prop="price" label="价格" width="90" align="right" />
+              <el-table-column label="操作" width="120">
+                <template #default="{ row: child }">
+                  <el-button size="small" link type="primary" @click="openItemDialog(child)">编辑</el-button>
+                  <el-popconfirm title="确认从套装中移除？" @confirm="handleRemoveChild(row.id, child.id)">
+                    <template #reference><el-button size="small" link type="danger">移除</el-button></template>
+                  </el-popconfirm>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-button size="small" type="primary" style="margin-top:8px" @click="openChildSelect(row)">+ 选择已有物品</el-button>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column prop="code" label="编码" width="120" />
       <el-table-column prop="name" label="物品名称" min-width="150" />
       <el-table-column label="所属游戏" width="100">
@@ -61,6 +62,9 @@
         <template #default="{ row }">
           <el-image v-if="row.image" :src="row.image" :preview-src-list="[row.image]" style="width:40px;height:40px" fit="cover" />
         </template>
+      </el-table-column>
+      <el-table-column prop="position" label="位置坐标" width="120">
+        <template #default="{ row }">{{ row.position || '-' }}</template>
       </el-table-column>
       <el-table-column label="类型" width="80" align="center">
         <template #default="{ row }">
@@ -80,8 +84,8 @@
       </el-table-column>
     </el-table>
 
-    <div class="pagination-wrap" v-if="total > pageSize">
-      <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" @current-change="fetchList" />
+    <div class="pagination-wrap" v-if="total > 0">
+      <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next" @current-change="fetchList" />
     </div>
 
     <!-- 物品编辑弹窗 -->
@@ -104,9 +108,6 @@
             <el-radio :value="1">套装</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="分类">
-          <el-input v-model="form.category" placeholder="如：武器、防具" />
-        </el-form-item>
         <el-form-item label="商品图片">
           <el-upload
             :auto-upload="false"
@@ -121,6 +122,17 @@
             <template #tip><div class="el-upload__tip">支持 jpg/png/gif/webp</div></template>
           </el-upload>
           <el-input v-if="form.image" v-model="form.image" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
+        </el-form-item>
+        <el-form-item label="位置坐标">
+          <el-input v-model="form.position" placeholder="如：X:100,Y:200 或 3-5" />
+        </el-form-item>
+        <el-form-item label="分类">
+          <el-select v-model="form.category" placeholder="请选择分类" style="width:100%">
+            <el-option label="游戏币" value="游戏币" />
+            <el-option label="物品" value="物品" />
+            <el-option label="账户" value="账户" />
+            <el-option label="其他" value="其他" />
+          </el-select>
         </el-form-item>
         <el-form-item label="参考价格">
           <el-input-number v-model="form.price" :min="0" :precision="2" :step="1" />
@@ -139,8 +151,11 @@
     </el-dialog>
 
     <!-- 选择已有物品加入套装弹窗 -->
-    <el-dialog v-model="childSelectVisible" title="选择已有物品加入套装" width="650px" destroy-on-close>
-      <el-table :data="availableItems" border stripe size="small" @selection-change="onChildSelectionChange" ref="childTableRef">
+    <el-dialog v-model="childSelectVisible" title="选择已有物品加入套装" width="700px" destroy-on-close @opened="onChildDialogOpened">
+      <el-input v-model="childKeyword" placeholder="搜索物品名称..." clearable style="margin-bottom:12px" @input="fetchAvailableItems">
+        <template #prefix><el-icon><Search /></el-icon></template>
+      </el-input>
+      <el-table :data="availableItems" border stripe size="small" @selection-change="onChildSelectionChange" @row-click="onChildRowClick" ref="childTableRef" v-loading="childLoading">
         <el-table-column type="selection" width="50" />
         <el-table-column prop="code" label="编码" width="130" />
         <el-table-column prop="name" label="名称" min-width="150" />
@@ -152,6 +167,9 @@
         <el-table-column prop="price" label="价格" width="90" align="right" />
         <el-table-column prop="category" label="分类" width="100" />
       </el-table>
+      <div class="pagination-wrap" v-if="childTotal > childPageSize" style="margin-top:12px">
+        <el-pagination v-model:current-page="childPage" :page-size="childPageSize" :total="childTotal" layout="prev, pager, next" @current-change="fetchAvailableItems" />
+      </div>
       <template #footer>
         <el-button @click="childSelectVisible = false">取消</el-button>
         <el-button type="primary" :loading="childSubmitting" @click="handleAddChildren">添加选中物品</el-button>
@@ -163,8 +181,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowRight } from '@element-plus/icons-vue'
-import { getAllGames, getGameItems, getAllItems, getBundleChildren, createGameItem, updateGameItem, deleteGameItem, uploadFile } from '../api'
+import { getAllGames, getGameItems, getBundleChildren, addBundleChildren, removeBundleChild, createGameItem, updateGameItem, deleteGameItem, uploadFile } from '../api'
 
 const gameList = ref([])
 const list = ref([])
@@ -175,6 +192,9 @@ const keyword = ref('')
 const filterGameId = ref(null)
 const filterType = ref(null)
 const loading = ref(false)
+
+const currentRow = ref(null)
+function onCurrentChange(row) { currentRow.value = row }
 
 const gameNameMap = computed(() => Object.fromEntries(gameList.value.map(g => [g.id, g.name])))
 
@@ -196,21 +216,21 @@ async function fetchList() {
 
 function handleSearch() { page.value = 1; fetchList() }
 
-// ── 手动展开控制 ──
-const expandedRows = ref(new Set())
+// ── 展开行控制 ──
+const tableRef = ref(null)
 
-async function toggleExpand(row) {
-  if (expandedRows.value.has(row.id)) {
-    expandedRows.value.delete(row.id)
-  } else {
-    expandedRows.value.add(row.id)
-    await loadChildren(row)
-  }
-  // 触发响应式更新
-  expandedRows.value = new Set(expandedRows.value)
+// 隐藏非套装行的展开图标
+function tableRowClassName({ row }) {
+  return row.is_bundle ? '' : 'hide-expand-icon'
 }
 
-// 展开行时加载子物品
+// 展开时加载子物品
+async function handleExpandChange(row, expandedRows) {
+  if (row.is_bundle && !row._children) {
+    await loadChildren(row)
+  }
+}
+
 async function loadChildren(row) {
   if (!row.is_bundle || row._children) return
   row._childrenLoading = true
@@ -235,7 +255,7 @@ const rules = {
 
 const defaultForm = () => ({
   game_id: null, name: '', code: '', image: '', is_bundle: 0,
-  category: '', price: 0, sort_order: 0, remark: '',
+  category: '物品', price: 0, position: '', sort_order: 0, remark: '',
 })
 const form = reactive(defaultForm())
 
@@ -264,7 +284,7 @@ function handleImageRemove() {
   form.image = ''
 }
 
-function openItemDialog(row = null, parentId = null) {
+function openItemDialog(row = null) {
   isEdit.value = !!row
   editId.value = row?.id ?? null
   imageFile.value = null
@@ -274,8 +294,6 @@ function openItemDialog(row = null, parentId = null) {
     imageFileList.value = []
   }
   const base = row ? { ...row, is_bundle: row.is_bundle ? 1 : 0 } : { ...defaultForm(), game_id: filterGameId.value, code: genItemCode() }
-  if (parentId) base.parent_id = parentId
-  else if (!row) base.parent_id = null
   Object.assign(form, base)
   dialogVisible.value = true
 }
@@ -314,23 +332,72 @@ async function handleDeleteItem(id) {
   } catch (e) { ElMessage.error(e.message) }
 }
 
+// 从套装中移除子物品（不删除物品本身）
+async function handleRemoveChild(bundleId, childId) {
+  try {
+    await removeBundleChild(bundleId, childId)
+    ElMessage.success('已从套装中移除')
+    // 刷新该套装的子物品列表
+    const bundleRow = list.value.find(r => r.id === bundleId)
+    if (bundleRow) {
+      bundleRow._children = null
+      await loadChildren(bundleRow)
+    }
+  } catch (e) { ElMessage.error(e.message) }
+}
+
 // ── 套装子物品选择 ──
 const childSelectVisible = ref(false)
 const availableItems = ref([])
 const selectedChildren = ref([])
 const childSubmitting = ref(false)
+const childLoading = ref(false)
 const childTableRef = ref(null)
 const currentBundleId = ref(null)
+const currentBundleGameId = ref(null)
+const childPage = ref(1)
+const childPageSize = 10
+const childTotal = ref(0)
+const childKeyword = ref('')
 
 function onChildSelectionChange(selection) {
   selectedChildren.value = selection
 }
 
+function onChildRowClick(row) {
+  childTableRef.value?.toggleRowSelection(row)
+}
+
+async function fetchAvailableItems() {
+  childLoading.value = true
+  try {
+    const res = await getGameItems({
+      game_id: currentBundleGameId.value,
+      is_bundle: 0,
+      exclude_bundle_id: currentBundleId.value,
+      keyword: childKeyword.value || undefined,
+      page: childPage.value,
+      page_size: childPageSize,
+    })
+    availableItems.value = res.items
+    childTotal.value = res.total
+  } finally {
+    childLoading.value = false
+  }
+}
+
+function onChildDialogOpened() {
+  childKeyword.value = ''
+  childPage.value = 1
+  fetchAvailableItems()
+}
+
 async function openChildSelect(bundleRow) {
   currentBundleId.value = bundleRow.id
+  currentBundleGameId.value = bundleRow.game_id
   selectedChildren.value = []
-  // 加载同游戏下未被关联的单品物品
-  availableItems.value = await getAllItems({ game_id: bundleRow.game_id, is_bundle: 0, no_parent: true })
+  childKeyword.value = ''
+  childPage.value = 1
   childSelectVisible.value = true
 }
 
@@ -341,9 +408,7 @@ async function handleAddChildren() {
   }
   childSubmitting.value = true
   try {
-    for (const item of selectedChildren.value) {
-      await updateGameItem(item.id, { parent_id: currentBundleId.value })
-    }
+    await addBundleChildren(currentBundleId.value, selectedChildren.value.map(i => i.id))
     ElMessage.success(`已添加 ${selectedChildren.value.length} 个物品`)
     childSelectVisible.value = false
     // 刷新该套装的子物品列表
@@ -372,7 +437,10 @@ onMounted(async () => {
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 .expand-area { padding: 12px 20px; }
 .expand-title { font-weight: 600; margin-bottom: 8px; color: #606266; }
-.expand-icon { cursor: pointer; transition: transform 0.2s; color: #909399; font-size: 14px; }
-.expand-icon.expanded { transform: rotate(90deg); }
-.expand-icon:hover { color: #409eff; }
+
+/* 隐藏非套装行的展开图标 */
+:deep(.hide-expand-icon .el-table__expand-icon) {
+  visibility: hidden;
+  pointer-events: none;
+}
 </style>

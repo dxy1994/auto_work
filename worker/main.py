@@ -8,35 +8,28 @@ EXE 附加命令：
   auto-worker.exe --uninstall    取消开机自启
 """
 import asyncio
-import builtins
 import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+import threading
 
-# ── 全局 print 拦截器：所有 print() 自动带时间戳 ──
-_original_print = builtins.print
-
-def _ts_print(*args, **kwargs):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _original_print(f"[{ts}]", *args, **kwargs)
-
-builtins.print = _ts_print
-
-# 让 worker 目录内模块可平铺导入（与 backend 风格一致）
+# ── 让 worker 目录内模块可平铺导入 ──
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import websockets
 
-import config
-from agent_client import AgentClient
-from reporter import Reporter, set_reporter
+from core import clock
+from core import config
+from core.context import AppContext
+from ws.client import AgentClient
+from ws.reporter import Reporter
 from task_manager import TaskManager
-from automation.order_monitor import run_order_check
-from automation.greeting_handler import handle_greeting
-from trade.runtime_status import runtime_status
-from trade.task_gate import trade_task_gate
+from trade.status import RuntimeStatus
+from trade.gate import TradeTaskGate
+
+# 安装时间戳 print
+clock.install()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -44,7 +37,6 @@ from trade.task_gate import trade_task_gate
 # ═══════════════════════════════════════════════════════════
 
 def _get_startup_shortcut_path() -> str:
-    """Windows 当前用户启动文件夹下的快捷方式路径。"""
     startup_dir = os.path.join(
         os.environ.get("APPDATA", ""),
         r"Microsoft\Windows\Start Menu\Programs\Startup",
@@ -53,7 +45,6 @@ def _get_startup_shortcut_path() -> str:
 
 
 def _install_autostart() -> bool:
-    """创建指向当前 EXE 的快捷方式到 Windows 启动文件夹。"""
     if sys.platform != "win32":
         print("[Autostart] 仅支持 Windows 平台")
         return False
@@ -82,7 +73,7 @@ def _install_autostart() -> bool:
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
             check=True, capture_output=True,
         )
-        print(f"[Autostart] 开机自启已启用 → {shortcut_path}")
+        print(f"[Autostart] 开机自启已启用 -> {shortcut_path}")
         return True
     except subprocess.CalledProcessError as e:
         print(f"[Autostart] 配置失败: {e.stderr.decode() if e.stderr else e}")
@@ -90,7 +81,6 @@ def _install_autostart() -> bool:
 
 
 def _uninstall_autostart() -> bool:
-    """从 Windows 启动文件夹中移除快捷方式。"""
     if sys.platform != "win32":
         print("[Autostart] 仅支持 Windows 平台")
         return False
@@ -108,20 +98,58 @@ def _uninstall_autostart() -> bool:
 # 任务处理
 # ═══════════════════════════════════════════════════════════
 
-def _submit_task(msg, reporter, task_manager, run_func):
+def _submit_task(msg, ctx: AppContext):
     """通用任务提交：执行 run_func 并通过 reporter 回报结果。"""
+    reporter = ctx.reporter
+    task_manager = ctx.task_manager
     task_id = msg["task_id"]
     account_id = msg.get("account_id")
+
+    def run(msg, stop_event, account_id, task_id):
+        from monitoring.base import _make_result
+        from monitoring.registry import MONITOR_REGISTRY
+        import time
+
+        start = time.time()
+        website_id = msg.get("website_id")
+        monitor_cls = MONITOR_REGISTRY.get(website_id)
+        if monitor_cls is None:
+            return _make_result(
+                "skipped", f"网站 ID {website_id} 未配置订单查询逻辑", start)
+
+        result = None
+        try:
+            monitor = monitor_cls(
+                task_id=task_id,
+                website_id=website_id,
+                account_id=account_id,
+                start=start,
+                reporter=reporter,
+                login_url=msg.get("url"),
+                username=msg.get("username"),
+                password=msg.get("password"),
+                login_type=msg.get("login_type", "form"),
+                login_config=msg.get("login_config") or {},
+                stop_event=stop_event,
+                force_login=msg.get("force_login", False),
+            )
+            result = asyncio.run(monitor.run())
+        except Exception as e:
+            import traceback
+            print(f"[Worker] 订单查询异常: {e}")
+            traceback.print_exc()
+            result = _make_result("failed", f"订单查询异常：{e}", start)
+        return result
 
     def _runner(stop_event):
         if stop_event.is_set():
             result = {"status": "failed", "message": "任务已停止", "duration_ms": 0}
         else:
             try:
-                result = run_func(msg, stop_event, account_id, task_id)
+                result = run(msg, stop_event, account_id, task_id)
             except Exception as e:
                 import traceback
-                print(f"[Worker] ❌ 任务执行异常 (task_id={task_id}): {e}")
+                print(f"[Worker] 任务执行异常 (task_id={task_id}): {e}")
                 traceback.print_exc()
                 result = {"status": "failed", "message": f"浏览器任务启动失败：{e}", "duration_ms": 0}
         reporter.report_result(task_id, account_id, result)
@@ -135,30 +163,30 @@ def _submit_task(msg, reporter, task_manager, run_func):
         })
 
 
-def _handle_order_check(msg, reporter, task_manager):
-    def run(msg, stop_event, account_id, task_id):
-        return run_order_check(
-            task_id=task_id, website_id=msg.get("website_id"),
-            account_id=account_id, url=msg.get("url"),
-            username=msg.get("username"), password=msg.get("password"),
-            login_type=msg.get("login_type", "form"),
-            login_config=msg.get("login_config") or {},
-            stop_event=stop_event,
-        )
-    _submit_task(msg, reporter, task_manager, run)
+# ═══════════════════════════════════════════════════════════
+# 消息分发
+# ═══════════════════════════════════════════════════════════
 
-
-async def _dispatch_message(msg, reporter, task_manager):
+async def _dispatch_message(msg, ctx: AppContext):
+    """根据消息类型分发到不同处理函数。"""
     mtype = msg.get("type")
+    reporter = ctx.reporter
+    task_manager = ctx.task_manager
+    runtime_status = ctx.runtime_status
+    trade_task_gate = ctx.trade_task_gate
+
     if mtype == "order_check":
-        _handle_order_check(msg, reporter, task_manager)
+        _submit_task(msg, ctx)
+
     elif mtype == "cancel":
         account_id = msg.get("account_id")
         ok = task_manager.cancel(account_id)
         print(f"[Worker] 收到 cancel account_id={account_id}, ok={ok}")
+
     elif mtype == "orders_check_result":
         reporter.deliver_orders_check_result(
             msg.get("request_id"), msg.get("existing_ids", []))
+
     elif mtype == "trade_offer":
         assignment_id = msg.get("assignment_id")
         accepted, reason = trade_task_gate.offer(
@@ -170,6 +198,7 @@ async def _dispatch_message(msg, reporter, task_manager):
             )
         reporter.report_trade_offer_decision(
             assignment_id, accepted, "" if accepted else reason)
+
     elif mtype == "trade_start":
         assignment_id = msg.get("assignment_id")
         if trade_task_gate.start(assignment_id, msg.get("execution_token")):
@@ -189,6 +218,7 @@ async def _dispatch_message(msg, reporter, task_manager):
         else:
             reporter.report_trade_status(
                 assignment_id, "start_rejected", "assignment or token mismatch")
+
     elif mtype == "trade_cancel":
         assignment_id = msg.get("assignment_id")
         if trade_task_gate.cancel(assignment_id):
@@ -197,15 +227,28 @@ async def _dispatch_message(msg, reporter, task_manager):
                 current_assignment_id=None,
             )
             reporter.report_trade_status(assignment_id, "cancelled")
+
     elif mtype == "greeting":
-        # 招呼指令：在新线程中执行，不阻塞 WS 接收循环
-        import threading
-        threading.Thread(
-            target=handle_greeting,
-            args=(msg,),
-            daemon=True,
-            name=f"greeting-{msg.get('order_id', 'unknown')}",
-        ).start()
+        # 招呼指令：优先路由到活跃 Monitor（复用其 session，避免 CDP 争抢）
+        account_id = msg.get("account_id")
+        from monitoring.base import get_active_monitor
+        monitor = get_active_monitor(account_id) if account_id else None
+        if monitor:
+            threading.Thread(
+                target=lambda: monitor.do_greeting(msg),
+                daemon=True,
+                name=f"greeting-{msg.get('order_id', 'unknown')}",
+            ).start()
+        else:
+            from monitoring.greeting import handle_greeting
+            threading.Thread(
+                target=handle_greeting,
+                args=(msg, reporter),
+                kwargs={"main_loop": ctx.loop},
+                daemon=True,
+                name=f"greeting-{msg.get('order_id', 'unknown')}",
+            ).start()
+
     else:
         print(f"[Worker] 未知消息类型: {mtype}")
 
@@ -214,24 +257,27 @@ async def _dispatch_message(msg, reporter, task_manager):
 # 连接管理
 # ═══════════════════════════════════════════════════════════
 
-async def _heartbeat(client):
+async def _heartbeat(client, ctx: AppContext):
     while True:
         await asyncio.sleep(config.HEARTBEAT_INTERVAL)
-        await client.send({"type": "heartbeat", "runtime": runtime_status.snapshot()})
+        await client.send({
+            "type": "heartbeat",
+            "runtime": ctx.runtime_status.snapshot(),
+        })
 
 
-async def _connect_once(task_manager):
+async def _connect_once(ctx: AppContext):
     info = config.get_machine_info()
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
         loop = asyncio.get_event_loop()
         client = AgentClient(ws, loop)
         reporter = Reporter(client)
-        set_reporter(reporter)
-        # 注册本机
+        ctx.reporter = reporter
+
         await client.send({"type": "register", **info})
         print(f"[Worker] 已连接总控，注册中: {info}")
 
-        hb = asyncio.create_task(_heartbeat(client))
+        hb = asyncio.create_task(_heartbeat(client, ctx))
         try:
             async for raw in ws:
                 try:
@@ -241,25 +287,34 @@ async def _connect_once(task_manager):
                 if msg.get("type") == "registered":
                     print(f"[Worker] 注册成功 machine_id={msg.get('machine_id')}")
                     continue
-                await _dispatch_message(msg, reporter, task_manager)
+                await _dispatch_message(msg, ctx)
         finally:
             hb.cancel()
-            task_manager.cancel_all()
+            ctx.task_manager.cancel_all()
 
 
 async def _main_loop():
+    loop = asyncio.get_event_loop()
+    ctx = AppContext(loop)
+
+    runtime_status = RuntimeStatus()
+    trade_task_gate = TradeTaskGate()
+    ctx.runtime_status = runtime_status
+    ctx.trade_task_gate = trade_task_gate
+
     # 跨重连复用注册表；未及时退出的旧任务继续占用账号，避免新连接重复启动。
-    task_manager = TaskManager(reporter=None)
+    task_manager = TaskManager()
+    ctx.task_manager = task_manager
+
     while True:
         try:
-            await _connect_once(task_manager)
+            await _connect_once(ctx)
         except Exception as e:
             print(f"[Worker] 连接断开/失败: {e}，{config.RECONNECT_INTERVAL}s 后重连")
         await asyncio.sleep(config.RECONNECT_INTERVAL)
 
 
 if __name__ == "__main__":
-    # ── 命令行模式：开机自启管理 ──
     if "--install" in sys.argv:
         ok = _install_autostart()
         sys.exit(0 if ok else 1)
@@ -268,7 +323,6 @@ if __name__ == "__main__":
         ok = _uninstall_autostart()
         sys.exit(0 if ok else 1)
 
-    # ── 正常模式：启动 Worker ──
     print(f"[Worker] 启动，总控地址: {config.BACKEND_WS_URL}")
     try:
         asyncio.run(_main_loop())

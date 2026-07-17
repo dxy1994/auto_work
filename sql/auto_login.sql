@@ -117,6 +117,7 @@ CREATE TABLE `game_item_order_details`  (
   `selling_price` decimal(10, 2) NULL DEFAULT NULL COMMENT '出货价(创建时快照)',
   `status` enum('pending','processing','completed','failed') CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT 'pending' COMMENT '明细状态',
   `remark` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL COMMENT '备注',
+  `bundle_name` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '来源套装名称(套装拆分时记录)',
   `created_at` datetime NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
@@ -164,6 +165,7 @@ CREATE TABLE `game_item_orders`  (
   `platform_price` decimal(12, 2) NULL DEFAULT NULL COMMENT '平台售价(원)',
   `platform_item_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '平台物品分类(게임머니/아이템/계정)',
   `product_title` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '平台商品标题',
+  `trade_item_name` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '实际交易物品名(从标题[]解析,用于匹配子订单)',
   `quantity` int NULL DEFAULT 1 COMMENT '上架数量',
   `sale_quantity` int NULL DEFAULT 1 COMMENT '已售数量',
   PRIMARY KEY (`id`) USING BTREE,
@@ -188,27 +190,41 @@ DROP TABLE IF EXISTS `game_items`;
 CREATE TABLE `game_items`  (
   `id` int NOT NULL AUTO_INCREMENT,
   `game_id` int NOT NULL COMMENT '关联游戏ID',
-  `parent_id` int NULL DEFAULT NULL COMMENT '父物品ID(套装时为NULL，子物品指向套装ID)',
   `name` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '物品名称',
   `code` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '物品编码',
   `image` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '商品图片URL',
   `is_bundle` tinyint(1) NULL DEFAULT 0 COMMENT '是否为套装(1=套装, 0=单品)',
   `category` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '物品分类',
   `price` decimal(10, 2) NULL DEFAULT 0.00 COMMENT '参考价格',
+  `position` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '位置坐标（如X:100,Y:200）',
   `remark` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL COMMENT '备注',
   `sort_order` int NULL DEFAULT 0 COMMENT '排序',
   `is_active` tinyint(1) NULL DEFAULT 1,
   `created_at` datetime NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
-  UNIQUE INDEX `uk_game_item`(`game_id` ASC, `code` ASC) USING BTREE,
-  INDEX `idx_parent`(`parent_id` ASC) USING BTREE
+  UNIQUE INDEX `uk_game_item`(`game_id` ASC, `code` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 2 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '游戏物品表' ROW_FORMAT = DYNAMIC;
+
+-- ----------------------------
+-- Table structure for bundle_items
+-- ----------------------------
+DROP TABLE IF EXISTS `bundle_items`;
+CREATE TABLE `bundle_items`  (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `bundle_id` int NOT NULL COMMENT '套装ID',
+  `item_id` int NOT NULL COMMENT '物品ID',
+  `sort_order` int NULL DEFAULT 0 COMMENT '排序',
+  `created_at` datetime NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_bundle_item`(`bundle_id` ASC, `item_id` ASC) USING BTREE,
+  INDEX `idx_item`(`item_id` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '套装物品关联表（多对多）' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
 -- Records of game_items
 -- ----------------------------
-INSERT INTO `game_items` VALUES (1, 1, NULL, '游戏币', '게임머니', '', 0, 'coin', 0.00, '', 0, 1, '2026-07-15 11:11:06', '2026-07-15 11:11:06');
+INSERT INTO `game_items` VALUES (1, 1, '游戏币', '게임머니', '', 0, 'coin', 0.00, NULL, '', 0, 1, '2026-07-15 11:11:06', '2026-07-15 11:11:06');
 
 -- ----------------------------
 -- Table structure for game_region_items
@@ -480,7 +496,7 @@ CREATE TABLE `trade_events`  (
   `event_type` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
   `from_status` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `to_status` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
-  `message` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `message` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
   `payload` json NULL,
   `created_at` datetime NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) USING BTREE,
