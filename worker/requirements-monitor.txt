@@ -1,0 +1,10 @@
+# ═══════════════════════════════════════════════
+# Monitor 专用依赖 — 浏览器自动化 + 音频提醒 + 存储同步
+# 安装: pip install -r requirements-common.txt -r requirements-monitor.txt
+# ═══════════════════════════════════════════════
+patchright                     # 浏览器自动化（Playwright 增强版）
+pygame>=2.6                    # 音频文件播放
+pywin32>=306                   # Windows COM (TTS 语音 / 系统蜂鸣)
+boto3>=1.28                    # RustFS S3 存储同步
+requests>=2.28                 # 图片下载（聊天发送）
+beautifulsoup4>=4.12           # HTML 解析

@@ -9,16 +9,25 @@ import tools.jackson.databind.cfg.CoercionInputShape;
 import tools.jackson.databind.type.LogicalType;
 
 /**
- * Jackson 定制：允许布尔值反序列化为整型字段。
- * 前端对 is_default / is_active 等字段发送 true/false，而 entity 中为 Integer(1/0)，
- * 移除 DTO 后直接绑定 entity，需要此强制转换（true→1，false→0）。
+ * Jackson 公共定制：
+ * <ul>
+ *   <li>布尔 → 数字容错转换（true→1，false→0），覆盖所有数字逻辑类型</li>
+ *   <li>日期格式由 application.yml 中 spring.jackson.* 配置统一管理</li>
+ * </ul>
  */
 @Configuration
 public class JacksonConfig {
 
     @Bean
-    public JsonMapperBuilderCustomizer booleanToIntegerCoercion() {
-        return builder -> builder.withCoercionConfig(LogicalType.Integer,
-                config -> config.setCoercion(CoercionInputShape.Boolean, CoercionAction.TryConvert));
+    public JsonMapperBuilderCustomizer booleanToNumberCoercion() {
+        return builder -> {
+            // 针对 Integer / Float 显式配置；额外添加默认兜底配置
+            builder.withCoercionConfig(LogicalType.Integer,
+                    config -> config.setCoercion(CoercionInputShape.Boolean, CoercionAction.TryConvert));
+            builder.withCoercionConfig(LogicalType.Float,
+                    config -> config.setCoercion(CoercionInputShape.Boolean, CoercionAction.TryConvert));
+            builder.withCoercionConfigDefaults(
+                    config -> config.setCoercion(CoercionInputShape.Boolean, CoercionAction.TryConvert));
+        };
     }
 }

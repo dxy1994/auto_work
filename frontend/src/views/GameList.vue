@@ -49,6 +49,12 @@
             <el-option label="主机" value="主机" />
           </el-select>
         </el-form-item>
+        <el-form-item label="交易执行">
+          <el-select v-model="gameForm.trade_type" placeholder="选择交易执行方式" style="width:100%">
+            <el-option label="脚本" value="script" />
+            <el-option label="Web" value="web" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="游戏图标">
           <el-upload
             :auto-upload="false"
@@ -318,7 +324,7 @@ const gameRules = {
   code: [{ required: true, message: '请输入编码', trigger: 'blur' }],
 }
 
-const defaultGameForm = () => ({ name: '', code: '', platform: '', icon: '', sort_order: 0, remark: '' })
+const defaultGameForm = () => ({ name: '', code: '', platform: '', trade_type: 'script', icon: '', sort_order: 0, remark: '' })
 const gameForm = reactive(defaultGameForm())
 
 // 游戏图标上传
@@ -397,7 +403,7 @@ async function fetchRegions(game = null) {
   const g = game || currentGame.value
   if (!g) return
   try {
-    const res = await getGameRegions({ game_id: g.id, page_size: 100 })
+    const res = await getGameRegions({ game_id: g.id, page_size: 1000 })
     regionList.value = res.items
   } catch (e) {
     ElMessage.error('加载大区列表失败: ' + e.message)
@@ -500,7 +506,7 @@ async function fetchGameScripts() {
 
 async function fetchRegionScripts() {
   if (!scriptRegionId.value) { regionScriptList.value = []; return }
-  const res = await getRegionScripts({ region_id: scriptRegionId.value, page_size: 200 })
+  const res = await getRegionScripts({ region_id: scriptRegionId.value, page_size: 1000 })
   regionScriptList.value = res.items
 }
 

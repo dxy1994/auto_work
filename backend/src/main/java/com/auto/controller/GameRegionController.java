@@ -4,9 +4,10 @@ import com.auto.common.ApiException;
 import com.auto.common.PageRequests;
 import com.auto.entity.GameItem;
 import com.auto.entity.GameRegion;
-import com.auto.entity.GameRegionItem;
+import com.auto.entity.GameRegionInventory;
 import com.auto.service.GameItemService;
-import com.auto.service.GameRegionItemService;
+import com.auto.service.GameRegionInventoryService;
+import com.auto.service.GameRegionInventoryShopPriceService;
 import com.auto.service.GameRegionService;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpStatus;
@@ -25,13 +26,16 @@ public class GameRegionController {
 
     private final GameRegionService regionService;
     private final GameItemService itemService;
-    private final GameRegionItemService inventoryService;
+    private final GameRegionInventoryService inventoryService;
+    private final GameRegionInventoryShopPriceService shopPriceService;
 
     public GameRegionController(GameRegionService regionService, GameItemService itemService,
-                                GameRegionItemService inventoryService) {
+                                GameRegionInventoryService inventoryService,
+                                GameRegionInventoryShopPriceService shopPriceService) {
         this.regionService = regionService;
         this.itemService = itemService;
         this.inventoryService = inventoryService;
+        this.shopPriceService = shopPriceService;
     }
 
     @GetMapping
@@ -68,17 +72,18 @@ public class GameRegionController {
     /** 为新大区初始化该游戏下所有有效物品的库存记录（默认 0）。 */
     private void initRegionInventory(GameRegion region) {
         Set<Integer> existing = new HashSet<>();
-        for (GameRegionItem inv : inventoryService.findByRegionId(region.getId())) {
+        for (GameRegionInventory inv : inventoryService.findByRegionId(region.getId())) {
             existing.add(inv.getItemId());
         }
         for (GameItem item : itemService.findByGameIdActive(region.getGameId())) {
             if (existing.contains(item.getId())) continue;
-            GameRegionItem inv = new GameRegionItem();
+            GameRegionInventory inv = new GameRegionInventory();
             inv.setGameId(region.getGameId());
             inv.setRegionId(region.getId());
             inv.setItemId(item.getId());
             inv.setStock(0);
             inventoryService.save(inv);
+            shopPriceService.initForInventory(inv.getId());
         }
     }
 

@@ -39,6 +39,7 @@
                   <el-image v-if="child.image" :src="child.image" :preview-src-list="[child.image]" style="width:40px;height:40px" fit="cover" />
                 </template>
               </el-table-column>
+              <el-table-column prop="quantity" label="数量" width="70" align="center" />
               <el-table-column prop="price" label="价格" width="90" align="right" />
               <el-table-column label="操作" width="120">
                 <template #default="{ row: child }">
@@ -162,6 +163,11 @@
         <el-table-column label="图片" width="80">
           <template #default="{ row }">
             <el-image v-if="row.image" :src="row.image" :preview-src-list="[row.image]" style="width:40px;height:40px" fit="cover" />
+          </template>
+        </el-table-column>
+        <el-table-column label="数量" width="100" align="center">
+          <template #default="{ row }">
+            <el-input-number v-model="row._quantity" :min="1" :max="99" size="small" controls-position="right" style="width:90px" @click.stop />
           </template>
         </el-table-column>
         <el-table-column prop="price" label="价格" width="90" align="right" />
@@ -379,7 +385,7 @@ async function fetchAvailableItems() {
       page: childPage.value,
       page_size: childPageSize,
     })
-    availableItems.value = res.items
+    availableItems.value = res.items.map(i => ({ ...i, _quantity: i._quantity || 1 }))
     childTotal.value = res.total
   } finally {
     childLoading.value = false
@@ -408,7 +414,8 @@ async function handleAddChildren() {
   }
   childSubmitting.value = true
   try {
-    await addBundleChildren(currentBundleId.value, selectedChildren.value.map(i => i.id))
+    const items = selectedChildren.value.map(i => ({ item_id: i.id, quantity: i._quantity || 1 }))
+    await addBundleChildren(currentBundleId.value, items)
     ElMessage.success(`已添加 ${selectedChildren.value.length} 个物品`)
     childSelectVisible.value = false
     // 刷新该套装的子物品列表

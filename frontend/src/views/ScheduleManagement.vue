@@ -52,7 +52,9 @@
       <el-table-column label="启用状态" width="100" align="center">
         <template #default="{ row }">
           <el-switch
-            :model-value="!!row.is_enabled"
+            :model-value="row.is_enabled"
+            :active-value="1"
+            :inactive-value="0"
             size="small"
             @change="(val) => handleToggleEnabled(row, val)"
           />
@@ -113,7 +115,7 @@
           <div class="form-hint">单位：秒，如 3600 = 每小时执行一次</div>
         </el-form-item>
         <el-form-item label="是否启用">
-          <el-switch v-model="scheduleForm.is_enabled" />
+          <el-switch v-model="scheduleForm.is_enabled" :active-value="1" :inactive-value="0" />
         </el-form-item>
         <el-divider>提醒音频（可选）</el-divider>
         <el-form-item label="上传音频">
@@ -220,7 +222,7 @@ const scheduleForm = reactive({
   schedule_time: null,
   schedule_cron: '',
   alert_audio_path: null,
-  is_enabled: true,
+  is_enabled: 1,
 })
 
 // 音频上传相关
@@ -284,7 +286,7 @@ function openEditDialog(row) {
     schedule_time: row.schedule_time,
     schedule_cron: row.schedule_cron || '',
     alert_audio_path: row.alert_audio_path || null,
-    is_enabled: !!row.is_enabled,
+    is_enabled: row.is_enabled ? 1 : 0,
   })
 }
 
@@ -312,7 +314,7 @@ async function openAddDialog() {
     schedule_time: null,
     schedule_cron: '',
     alert_audio_path: null,
-    is_enabled: true,
+    is_enabled: 1,
   })
   // 加载所有账号，过滤掉已有配置的
   try {
@@ -356,7 +358,7 @@ async function handleToggleEnabled(row, val) {
       is_enabled: val,
     }
     await upsertSchedule(row.account_id, data)
-    row.is_enabled = val ? 1 : 0
+    row.is_enabled = val
     ElMessage.success(val ? '已启用' : '已停用')
   } catch (e) {
     ElMessage.error('操作失败: ' + e.message)

@@ -14,23 +14,29 @@
         text-color="#ffffffa6"
         active-text-color="#409eff"
       >
-        <el-menu-item index="/websites">
-          <el-icon><Grid /></el-icon>
-          <span>网站管理</span>
-        </el-menu-item>
-        <el-menu-item index="/accounts">
-          <el-icon><User /></el-icon>
-          <span>账号管理</span>
-        </el-menu-item>
-        <el-menu-item index="/schedules">
-          <el-icon><Clock /></el-icon>
-          <span>子功能配置管理</span>
-        </el-menu-item>
-
-        <el-sub-menu index="central-control">
+        <el-sub-menu index="platform">
           <template #title>
-            <el-icon><Setting /></el-icon>
-            <span>中控平台</span>
+            <el-icon><Connection /></el-icon>
+            <span>平台接入</span>
+          </template>
+          <el-menu-item index="/platforms">
+            <el-icon><Grid /></el-icon>
+            <span>交易平台</span>
+          </el-menu-item>
+          <el-menu-item index="/platform-accounts">
+            <el-icon><User /></el-icon>
+            <span>平台账号</span>
+          </el-menu-item>
+          <el-menu-item index="/platform-schedules">
+            <el-icon><Clock /></el-icon>
+            <span>定时调度</span>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="game-config">
+          <template #title>
+            <el-icon><Trophy /></el-icon>
+            <span>游戏配置</span>
           </template>
           <el-menu-item index="/games">
             <el-icon><Trophy /></el-icon>
@@ -38,23 +44,52 @@
           </el-menu-item>
           <el-menu-item index="/game-items">
             <el-icon><GoodsFilled /></el-icon>
-            <span>游戏物品管理</span>
+            <span>游戏物品</span>
           </el-menu-item>
           <el-menu-item index="/region-inventories">
             <el-icon><Box /></el-icon>
-            <span>大区物品库存</span>
+            <span>大区库存</span>
           </el-menu-item>
-          <el-menu-item index="/machines">
+        </el-sub-menu>
+
+        <el-sub-menu index="machine">
+          <template #title>
             <el-icon><Monitor /></el-icon>
             <span>机器管理</span>
+          </template>
+          <el-menu-item index="/machines">
+            <el-icon><Monitor /></el-icon>
+            <span>机器列表</span>
           </el-menu-item>
           <el-menu-item index="/game-accounts">
             <el-icon><Avatar /></el-icon>
-            <span>游戏账号管理</span>
+            <span>游戏账号</span>
           </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="order">
+          <template #title>
+            <el-icon><Document /></el-icon>
+            <span>订单交易</span>
+          </template>
           <el-menu-item index="/orders">
             <el-icon><Document /></el-icon>
             <span>订单管理</span>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="device">
+          <template #title>
+            <el-icon><Setting /></el-icon>
+            <span>设备管理</span>
+          </template>
+          <el-menu-item index="/mk-devices">
+            <el-icon><Mouse /></el-icon>
+            <span>键鼠设备</span>
+          </el-menu-item>
+          <el-menu-item index="/vs-devices">
+            <el-icon><VideoCameraFilled /></el-icon>
+            <span>视频流设备</span>
           </el-menu-item>
         </el-sub-menu>
       </el-menu>

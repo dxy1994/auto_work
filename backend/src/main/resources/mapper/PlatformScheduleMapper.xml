@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.auto.mapper.PlatformScheduleMapper">
+
+    <!-- 联表查询调度配置列表（含账号与网站信息），返回 snake_case 键的 Map -->
+    <select id="searchWithRelations" resultType="map">
+        select s.id as id, s.account_id as account_id, s.name as name, s.code as code,
+        s.refresh_interval as refresh_interval, s.schedule_type as schedule_type,
+        s.schedule_time as schedule_time, s.schedule_cron as schedule_cron,
+        s.alert_audio_path as alert_audio_path, s.is_enabled as is_enabled,
+        s.created_at as created_at, s.updated_at as updated_at,
+        a.label as account_label, a.username as account_username,
+        w.name as website_name, w.url as website_url,
+        coalesce(w.login_type, '') as login_type, w.category as category
+        from platform_schedules s
+        join platform_accounts a on a.id = s.account_id
+        join platforms w on w.id = a.website_id
+        <where>
+            <if test="keyword != null"> and (a.label like concat('%', #{keyword}, '%')
+                or a.username like concat('%', #{keyword}, '%')) </if>
+            <if test="scheduleType != null"> and s.schedule_type = #{scheduleType} </if>
+        </where>
+        order by s.updated_at desc
+    </select>
+
+</mapper>

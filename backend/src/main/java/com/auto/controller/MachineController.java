@@ -3,11 +3,13 @@ package com.auto.controller;
 import com.auto.common.ApiException;
 import com.auto.common.PageRequests;
 import com.auto.entity.Machine;
-import com.auto.entity.MachineAccount;
-import com.auto.entity.MachineGame;
-import com.auto.service.MachineAccountService;
-import com.auto.service.MachineGameService;
+import com.auto.entity.MachinePlatformAccount;
+import com.auto.entity.MachineGameAccount;
+import com.auto.service.MachinePlatformAccountService;
+import com.auto.service.MachineGameAccountService;
 import com.auto.service.MachineService;
+import com.auto.service.MouseKeyboardDeviceService;
+import com.auto.service.VideoStreamDeviceService;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -23,14 +25,20 @@ import java.util.Map;
 public class MachineController {
 
     private final MachineService machineService;
-    private final MachineGameService machineGameService;
-    private final MachineAccountService machineAccountService;
+    private final MachineGameAccountService machineGameService;
+    private final MachinePlatformAccountService machineAccountService;
+    private final MouseKeyboardDeviceService mkDeviceService;
+    private final VideoStreamDeviceService vsDeviceService;
 
-    public MachineController(MachineService machineService, MachineGameService machineGameService,
-                            MachineAccountService machineAccountService) {
+    public MachineController(MachineService machineService, MachineGameAccountService machineGameService,
+                            MachinePlatformAccountService machineAccountService,
+                            MouseKeyboardDeviceService mkDeviceService,
+                            VideoStreamDeviceService vsDeviceService) {
         this.machineService = machineService;
         this.machineGameService = machineGameService;
         this.machineAccountService = machineAccountService;
+        this.mkDeviceService = mkDeviceService;
+        this.vsDeviceService = vsDeviceService;
     }
 
     @GetMapping
@@ -53,12 +61,14 @@ public class MachineController {
             item.put("last_heartbeat", m.getLastHeartbeat());
             item.put("remark", m.getRemark());
             item.put("is_active", m.getIsActive());
+            item.put("mk_device_id", m.getMkDeviceId());
+            item.put("vs_device_id", m.getVsDeviceId());
             item.put("created_at", m.getCreatedAt());
             item.put("updated_at", m.getUpdatedAt());
-            // 标识机器类型
+            // 标识机器类型（可同时关联游戏账号和网站账户）
             boolean hasGames = !machineGameService.findByMachineIdActiveOrderByPriorityDesc(m.getId()).isEmpty();
             boolean hasAccounts = !machineAccountService.findByMachineIdActive(m.getId()).isEmpty();
-            item.put("type", hasGames ? "game" : hasAccounts ? "account" : "none");
+            item.put("type", hasGames && hasAccounts ? "both" : hasGames ? "game" : hasAccounts ? "account" : "none");
             items.add(item);
         }
         return Map.of("total", result.getTotal(), "items", items);
@@ -98,6 +108,28 @@ public class MachineController {
         if (payload.getOsInfo() != null) m.setOsInfo(payload.getOsInfo());
         if (payload.getStatus() != null) m.setStatus(payload.getStatus());
         if (payload.getRemark() != null) m.setRemark(payload.getRemark());
+        if (payload.getMkDeviceId() != null) {
+            if (payload.getMkDeviceId() == -1) {
+                m.setMkDeviceId(null);
+            } else {
+                Machine existingMk = machineService.findByMkDeviceId(payload.getMkDeviceId());
+                if (existingMk != null && !existingMk.getId().equals(machineId)) {
+                    throw ApiException.badRequest("该鼠标键盘设备已被机器 [" + existingMk.getName() + "] 关联");
+                }
+                m.setMkDeviceId(payload.getMkDeviceId());
+            }
+        }
+        if (payload.getVsDeviceId() != null) {
+            if (payload.getVsDeviceId() == -1) {
+                m.setVsDeviceId(null);
+            } else {
+                Machine existingVs = machineService.findByVsDeviceId(payload.getVsDeviceId());
+                if (existingVs != null && !existingVs.getId().equals(machineId)) {
+                    throw ApiException.badRequest("该视频流设备已被机器 [" + existingVs.getName() + "] 关联");
+                }
+                m.setVsDeviceId(payload.getVsDeviceId());
+            }
+        }
         if (payload.getIsActive() != null) m.setIsActive(payload.getIsActive());
         machineService.updateById(m);
         return m;
@@ -111,21 +143,21 @@ public class MachineController {
         machineService.removeById(machineId);
     }
 
-    // ── 机器关联游戏 ────────────────────────────────────────────
+    // ── 机器关联游戏账号 ────────────────────────────────────────
 
-    @GetMapping("/{machineId}/games")
-    public List<MachineGame> listGames(@PathVariable Integer machineId) {
+    @GetMapping("/{machineId}/game-accounts")
+    public List<MachineGameAccount> listGames(@PathVariable Integer machineId) {
         return machineGameService.findByMachineIdActiveOrderByPriorityDesc(machineId);
     }
 
-    @PostMapping("/{machineId}/games")
+    @PostMapping("/{machineId}/game-accounts")
     @ResponseStatus(HttpStatus.CREATED)
-    public MachineGame addGame(@PathVariable Integer machineId, @RequestBody MachineGame payload) {
-        if (!machineAccountService.findByMachineIdActive(machineId).isEmpty()) {
-            throw ApiException.badRequest("该机器已关联网站账户，不能同时关联游戏");
-        }
-        if (machineGameService.findByMachineIdAndGameId(machineId, payload.getGameId()) != null) {
-            throw ApiException.badRequest("该游戏已关联此机器");
+    public MachineGameAccount addGame(@PathVariable Integer machineId, @RequestBody MachineGameAccount payload) {
+        // 检查是否已存在相同账号+大区的关联
+        MachineGameAccount existing = machineGameService.findByMachineIdAndGameAccountIdAndRegionId(
+                machineId, payload.getGameAccountId(), payload.getRegionId());
+        if (existing != null) {
+            throw ApiException.badRequest("该游戏账号（大区）已关联此机器");
         }
         payload.setId(null);
         payload.setMachineId(machineId);
@@ -134,9 +166,9 @@ public class MachineController {
         return payload;
     }
 
-    @PutMapping("/games/{mgId}")
-    public MachineGame updateGame(@PathVariable Integer mgId, @RequestBody MachineGame payload) {
-        MachineGame mg = machineGameService.getById(mgId);
+    @PutMapping("/game-accounts/{mgId}")
+    public MachineGameAccount updateGame(@PathVariable Integer mgId, @RequestBody MachineGameAccount payload) {
+        MachineGameAccount mg = machineGameService.getById(mgId);
         if (mg == null) throw ApiException.notFound("关联记录不存在");
         if (payload.getPriority() != null) mg.setPriority(payload.getPriority());
         if (payload.getMaxConcurrent() != null) mg.setMaxConcurrent(payload.getMaxConcurrent());
@@ -145,27 +177,24 @@ public class MachineController {
         return mg;
     }
 
-    @DeleteMapping("/games/{mgId}")
+    @DeleteMapping("/game-accounts/{mgId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void removeGame(@PathVariable Integer mgId) {
-        MachineGame mg = machineGameService.getById(mgId);
+        MachineGameAccount mg = machineGameService.getById(mgId);
         if (mg == null) throw ApiException.notFound("关联记录不存在");
         machineGameService.removeById(mgId);
     }
 
     // ── 机器关联账户 ────────────────────────────────────────────
 
-    @GetMapping("/{machineId}/accounts")
-    public List<MachineAccount> listAccounts(@PathVariable Integer machineId) {
+    @GetMapping("/{machineId}/platform-accounts")
+    public List<MachinePlatformAccount> listAccounts(@PathVariable Integer machineId) {
         return machineAccountService.findByMachineIdActive(machineId);
     }
 
-    @PostMapping("/{machineId}/accounts")
+    @PostMapping("/{machineId}/platform-accounts")
     @ResponseStatus(HttpStatus.CREATED)
-    public MachineAccount addAccount(@PathVariable Integer machineId, @RequestBody MachineAccount payload) {
-        if (!machineGameService.findByMachineIdActiveOrderByPriorityDesc(machineId).isEmpty()) {
-            throw ApiException.badRequest("该机器已关联游戏，不能同时关联网站账户");
-        }
+    public MachinePlatformAccount addAccount(@PathVariable Integer machineId, @RequestBody MachinePlatformAccount payload) {
         if (machineAccountService.findByMachineIdAndAccountId(machineId, payload.getAccountId()) != null) {
             throw ApiException.badRequest("该账户已关联此机器");
         }
@@ -176,10 +205,10 @@ public class MachineController {
         return payload;
     }
 
-    @DeleteMapping("/accounts/{maId}")
+    @DeleteMapping("/platform-accounts/{maId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void removeAccount(@PathVariable Integer maId) {
-        MachineAccount ma = machineAccountService.getById(maId);
+        MachinePlatformAccount ma = machineAccountService.getById(maId);
         if (ma == null) throw ApiException.notFound("关联记录不存在");
         machineAccountService.removeById(maId);
     }

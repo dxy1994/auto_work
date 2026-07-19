@@ -1,13 +1,13 @@
 package com.auto.controller;
 
 import com.auto.common.ApiException;
-import com.auto.entity.Account;
-import com.auto.entity.MachineAccount;
-import com.auto.entity.Website;
-import com.auto.service.AccountService;
+import com.auto.entity.PlatformAccount;
+import com.auto.entity.MachinePlatformAccount;
+import com.auto.entity.Platform;
+import com.auto.service.PlatformAccountService;
 import com.auto.service.CryptoService;
-import com.auto.service.MachineAccountService;
-import com.auto.service.WebsiteService;
+import com.auto.service.MachinePlatformAccountService;
+import com.auto.service.PlatformService;
 import com.auto.ws.AgentRegistry;
 import org.springframework.web.bind.annotation.*;
 
@@ -22,19 +22,19 @@ import java.util.Map;
 @RequestMapping("/api/automation")
 public class AutomationController {
 
-    private final WebsiteService websiteService;
-    private final AccountService accountService;
-    private final MachineAccountService machineAccountService;
+    private final PlatformService websiteService;
+    private final PlatformAccountService accountService;
+    private final MachinePlatformAccountService machinePlatformAccountService;
     private final CryptoService crypto;
     private final AgentRegistry registry;
 
-    public AutomationController(WebsiteService websiteService, AccountService accountService,
-                                MachineAccountService machineAccountService,
+    public AutomationController(PlatformService websiteService, PlatformAccountService accountService,
+                                MachinePlatformAccountService machinePlatformAccountService,
                                 CryptoService crypto,
                                 AgentRegistry registry) {
         this.websiteService = websiteService;
         this.accountService = accountService;
-        this.machineAccountService = machineAccountService;
+        this.machinePlatformAccountService = machinePlatformAccountService;
         this.crypto = crypto;
         this.registry = registry;
     }
@@ -45,14 +45,14 @@ public class AutomationController {
     public Map<String, Object> orderCheck(
             @RequestParam(name = "account_id") Integer accountId,
             @RequestParam(name = "machine_id", required = false) Integer machineId) {
-        Account account = accountService.getById(accountId);
+        PlatformAccount account = accountService.getById(accountId);
         if (account == null) throw ApiException.notFound("账号不存在");
-        Website website = websiteService.getById(account.getWebsiteId());
+        Platform website = websiteService.getById(account.getWebsiteId());
         if (website == null) throw ApiException.notFound("网站不存在");
         validateActiveTarget(website, account);
 
         // 查询该账户关联的所有机器
-        List<MachineAccount> associations = machineAccountService.findByAccountIdActive(accountId);
+        List<MachinePlatformAccount> associations = machinePlatformAccountService.findByAccountIdActive(accountId);
         if (associations.isEmpty()) {
             throw ApiException.badRequest("该账号未关联任何机器，请先在机器管理中绑定");
         }
@@ -73,7 +73,7 @@ public class AutomationController {
         } else {
             // 未指定：从关联的机器中选第一个在线的
             target = null;
-            for (MachineAccount ma : associations) {
+            for (MachinePlatformAccount ma : associations) {
                 Integer mid = registry.pickAgent(ma.getMachineId());
                 if (mid != null) {
                     target = mid;
@@ -134,7 +134,7 @@ public class AutomationController {
         return resp;
     }
 
-    private void validateActiveTarget(Website website, Account account) {
+    private void validateActiveTarget(Platform website, PlatformAccount account) {
         if (!Integer.valueOf(1).equals(website.getIsActive())) {
             throw ApiException.conflict("网站已停用");
         }

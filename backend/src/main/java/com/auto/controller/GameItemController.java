@@ -2,12 +2,15 @@ package com.auto.controller;
 
 import com.auto.common.ApiException;
 import com.auto.common.PageRequests;
+import com.auto.entity.BundleChildVO;
 import com.auto.entity.GameItem;
+import com.auto.entity.ItemBundleRelation;
 import com.auto.entity.GameRegion;
-import com.auto.entity.GameRegionItem;
-import com.auto.service.BundleItemService;
+import com.auto.entity.GameRegionInventory;
+import com.auto.service.ItemBundleRelationService;
 import com.auto.service.GameItemService;
-import com.auto.service.GameRegionItemService;
+import com.auto.service.GameRegionInventoryService;
+import com.auto.service.GameRegionInventoryShopPriceService;
 import com.auto.service.GameRegionService;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpStatus;
@@ -23,16 +26,19 @@ import java.util.stream.Collectors;
 public class GameItemController {
 
     private final GameItemService itemService;
-    private final BundleItemService bundleItemService;
+    private final ItemBundleRelationService bundleItemService;
     private final GameRegionService regionService;
-    private final GameRegionItemService inventoryService;
+    private final GameRegionInventoryService inventoryService;
+    private final GameRegionInventoryShopPriceService shopPriceService;
 
-    public GameItemController(GameItemService itemService, BundleItemService bundleItemService,
-                              GameRegionService regionService, GameRegionItemService inventoryService) {
+    public GameItemController(GameItemService itemService, ItemBundleRelationService bundleItemService,
+                              GameRegionService regionService, GameRegionInventoryService inventoryService,
+                              GameRegionInventoryShopPriceService shopPriceService) {
         this.itemService = itemService;
         this.bundleItemService = bundleItemService;
         this.regionService = regionService;
         this.inventoryService = inventoryService;
+        this.shopPriceService = shopPriceService;
     }
 
     @GetMapping
@@ -67,23 +73,46 @@ public class GameItemController {
         return itemService.findBundles(gameId);
     }
 
-    /** 获取套装下的子物品列表 */
+    /** 获取套装下的子物品列表（含数量） */
     @GetMapping("/bundle/{bundleId}/children")
-    public List<GameItem> bundleChildren(@PathVariable Integer bundleId) {
-        List<Integer> itemIds = bundleItemService.findItemIdsByBundleId(bundleId);
-        if (itemIds.isEmpty()) return Collections.emptyList();
-        return itemService.listByIds(itemIds).stream()
+    public List<BundleChildVO> bundleChildren(@PathVariable Integer bundleId) {
+        List<ItemBundleRelation> relations = bundleItemService.findRelationsByBundleId(bundleId);
+        if (relations.isEmpty()) return Collections.emptyList();
+        List<Integer> itemIds = relations.stream().map(ItemBundleRelation::getItemId).collect(Collectors.toList());
+        Map<Integer, GameItem> itemMap = itemService.listByIds(itemIds).stream()
                 .filter(i -> i.getIsActive() == 1)
+                .collect(Collectors.toMap(GameItem::getId, i -> i));
+        return relations.stream()
+                .filter(r -> itemMap.containsKey(r.getItemId()))
+                .map(r -> BundleChildVO.from(itemMap.get(r.getItemId()), r.getQuantity()))
                 .collect(Collectors.toList());
     }
 
-    /** 批量添加物品到套装 */
+    /** 批量添加物品到套装（支持指定数量） */
     @PostMapping("/bundle/{bundleId}/children")
     @Transactional
-    public void addBundleChildren(@PathVariable Integer bundleId, @RequestBody Map<String, List<Integer>> payload) {
-        List<Integer> itemIds = payload.get("item_ids");
-        if (itemIds == null || itemIds.isEmpty()) throw ApiException.badRequest("item_ids 不能为空");
-        bundleItemService.addItems(bundleId, itemIds);
+    public void addBundleChildren(@PathVariable Integer bundleId, @RequestBody Map<String, Object> payload) {
+        // 支持新格式：{"items": [{"item_id": 1, "quantity": 2}]} 或旧格式：{"item_ids": [1, 2]}
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) payload.get("items");
+        if (items != null) {
+            // 新格式：逐条指定数量
+            Map<Integer, Integer> itemQuantities = new LinkedHashMap<>();
+            for (Map<String, Object> item : items) {
+                Integer itemId = toInt(item.get("item_id"));
+                Integer quantity = toInt(item.get("quantity"));
+                if (itemId == null) continue;
+                itemQuantities.put(itemId, quantity != null && quantity > 0 ? quantity : 1);
+            }
+            if (itemQuantities.isEmpty()) throw ApiException.badRequest("items 不能为空");
+            bundleItemService.addItemsWithQuantity(bundleId, itemQuantities);
+        } else {
+            // 旧格式：仅 item_ids 列表（向后兼容）
+            @SuppressWarnings("unchecked")
+            List<Integer> itemIds = (List<Integer>) payload.get("item_ids");
+            if (itemIds == null || itemIds.isEmpty()) throw ApiException.badRequest("item_ids 或 items 不能为空");
+            bundleItemService.addItems(bundleId, itemIds);
+        }
     }
 
     /** 从套装中移除物品 */
@@ -121,17 +150,18 @@ public class GameItemController {
     /** 为新物品初始化该游戏下所有有效大区的库存记录（默认 0）。 */
     private void initItemInventory(GameItem item) {
         Set<Integer> existing = new HashSet<>();
-        for (GameRegionItem inv : inventoryService.findByItemId(item.getId())) {
+        for (GameRegionInventory inv : inventoryService.findByItemId(item.getId())) {
             existing.add(inv.getRegionId());
         }
         for (GameRegion region : regionService.findByGameIdActive(item.getGameId())) {
             if (existing.contains(region.getId())) continue;
-            GameRegionItem inv = new GameRegionItem();
+            GameRegionInventory inv = new GameRegionInventory();
             inv.setGameId(item.getGameId());
             inv.setRegionId(region.getId());
             inv.setItemId(item.getId());
             inv.setStock(0);
             inventoryService.save(inv);
+            shopPriceService.initForInventory(inv.getId());
         }
     }
 
@@ -159,5 +189,20 @@ public class GameItemController {
         GameItem item = itemService.getById(itemId);
         if (item == null) throw ApiException.notFound("物品不存在");
         itemService.removeById(itemId);
+    }
+
+    private Integer toInt(Object value) {
+        if (value == null) return null;
+        if (value instanceof Boolean) return null;
+        if (value instanceof Number n) return n.intValue();
+        if (value instanceof String s) {
+            if (s.isBlank()) return null;
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
     }
 }

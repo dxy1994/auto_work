@@ -29,6 +29,9 @@ public class Game {
 
     private String remark;
 
+    /** web / script。 */
+    private String tradeType = "script";
+
     private Integer sortOrder = 0;
 
     private Integer isActive = 1;

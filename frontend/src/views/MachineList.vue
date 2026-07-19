@@ -30,13 +30,20 @@
           <el-tag :type="statusTagType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="鼠标键盘设备" width="140" show-overflow-tooltip>
+        <template #default="{ row }">{{ mkDeviceNameMap[row.mk_device_id] || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="视频流设备" width="140" show-overflow-tooltip>
+        <template #default="{ row }">{{ vsDeviceNameMap[row.vs_device_id] || '-' }}</template>
+      </el-table-column>
+      <el-table-column prop="os_info" label="操作系统" width="120" show-overflow-tooltip />
       <el-table-column prop="last_heartbeat" label="最后心跳" width="170" />
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
       <el-table-column label="操作" width="380" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openMachineDialog(row)">编辑</el-button>
-          <el-button v-if="row.type !== 'account'" size="small" type="success" @click="openGamesDrawer(row)">关联游戏</el-button>
-          <el-button v-if="row.type !== 'game'" size="small" type="warning" @click="openAccountsDrawer(row)">关联账户</el-button>
+          <el-button v-if="row.type !== 'account'" size="small" type="success" @click="openGameAccountsDrawer(row)">关联账号</el-button>
+          <el-button v-if="row.type !== 'game'" size="small" type="warning" @click="openAccountsDrawer(row)">关联商户</el-button>
           <el-popconfirm title="确认删除？" @confirm="handleDeleteMachine(row.id)">
             <template #reference><el-button size="small" type="danger">删除</el-button></template>
           </el-popconfirm>
@@ -66,6 +73,19 @@
         <el-form-item label="操作系统">
           <el-input v-model="machineForm.os_info" placeholder="如：Windows 11" />
         </el-form-item>
+        <el-form-item label="鼠标键盘设备">
+          <el-select v-model="machineForm.mk_device_id" placeholder="选择设备" clearable style="width:100%" @clear="machineForm.mk_device_id = -1">
+            <el-option v-for="d in allMkDevices" :key="d.id" :label="d.name" :value="d.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="视频流设备">
+          <el-select v-model="machineForm.vs_device_id" placeholder="选择设备" clearable style="width:100%" @clear="machineForm.vs_device_id = -1">
+            <el-option v-for="d in allVsDevices" :key="d.id" :label="d.name" :value="d.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="启用状态">
+          <el-switch v-model="machineForm.is_active" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="禁用" />
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="machineForm.remark" type="textarea" rows="2" />
         </el-form-item>
@@ -76,17 +96,26 @@
       </template>
     </el-dialog>
 
-    <!-- 关联游戏抽屉 -->
-    <el-drawer v-model="gamesDrawerVisible" :title="`关联游戏 - ${currentMachine?.name || currentMachine?.mac_address || ''}`" size="550px" destroy-on-close>
+    <!-- 关联游戏账号抽屉 -->
+    <el-drawer v-model="gameAccountsDrawerVisible" :title="`关联游戏账号 - ${currentMachine?.name || currentMachine?.mac_address || ''}`" size="650px" destroy-on-close>
       <div class="games-toolbar">
-        <el-select v-model="newGameId" placeholder="选择游戏" style="width: 200px">
-          <el-option v-for="g in allGames" :key="g.id" :label="g.name" :value="g.id" />
+        <el-select v-model="newGameAccountId" placeholder="选择游戏账号" style="width: 240px" filterable @change="onGameAccountChanged">
+          <el-option v-for="a in allGameAccounts" :key="a.id" :label="`${gameNameMap[a.game_id] || ''} - ${a.account_name} (${a.nickname || '无昵称'})`" :value="a.id" />
         </el-select>
-        <el-button type="primary" size="small" @click="handleAddGame" :disabled="!newGameId">添加</el-button>
+        <el-select v-model="newRegionId" placeholder="选择大区" style="width: 180px" filterable :disabled="!newGameAccountId">
+          <el-option v-for="rid in availableRegions" :key="rid" :label="regionNameMap[rid] || rid" :value="rid" />
+        </el-select>
+        <el-button type="primary" size="small" @click="handleAddGameAccount" :disabled="!newGameAccountId">添加</el-button>
       </div>
-      <el-table :data="machineGames" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
-        <el-table-column label="游戏" min-width="120">
+      <el-table :data="machineGameAccounts" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
+        <el-table-column label="游戏" min-width="100">
           <template #default="{ row }">{{ gameNameMap[row.game_id] || row.game_id }}</template>
+        </el-table-column>
+        <el-table-column label="大区" min-width="100">
+          <template #default="{ row }">{{ regionNameMap[row.region_id] || row.region_id }}</template>
+        </el-table-column>
+        <el-table-column label="账号" min-width="120">
+          <template #default="{ row }">{{ row.account_name }}</template>
         </el-table-column>
         <el-table-column prop="priority" label="优先级" width="90" align="center" />
         <el-table-column prop="max_concurrent" label="最大并发" width="90" align="center" />
@@ -100,8 +129,8 @@
         </el-table-column>
       </el-table>
 
-      <!-- 游戏配置编辑弹窗 -->
-      <el-dialog v-model="gameCfgVisible" title="编辑游戏配置" width="380px" append-to-body destroy-on-close>
+      <!-- 配置编辑弹窗 -->
+      <el-dialog v-model="gameCfgVisible" title="编辑配置" width="380px" append-to-body destroy-on-close>
         <el-form :model="gameCfgForm" label-width="80px">
           <el-form-item label="优先级">
             <el-input-number v-model="gameCfgForm.priority" :min="0" :max="999" />
@@ -155,6 +184,7 @@ import {
   getMachineGames, addMachineGame, updateMachineGame, removeMachineGame,
   getMachineAccounts, addMachineAccount, removeMachineAccount,
   getAllGames, getAllAccounts, getAllWebsites,
+  getAllRegions, getAllMkDevices, getAllVsDevices, getAllGameAccounts,
 } from '../api'
 
 const list = ref([])
@@ -169,14 +199,22 @@ function onCurrentChange(row) { currentRow.value = row }
 const allGames = ref([])
 const allAccounts = ref([])
 const allWebsitesData = ref([])
+const allRegions = ref([])
+const allMkDevices = ref([])
+const allVsDevices = ref([])
+const allGameAccounts = ref([])
 const websiteNameMap = computed(() => Object.fromEntries(allWebsitesData.value.map(w => [w.id, w.name])))
 const accountMap = computed(() => Object.fromEntries(allAccounts.value.map(a => [a.id, a])))
 const gameNameMap = computed(() => Object.fromEntries(allGames.value.map(g => [g.id, g.name])))
+const regionNameMap = computed(() => Object.fromEntries(allRegions.value.map(r => [r.id, r.name])))
+const mkDeviceNameMap = computed(() => Object.fromEntries(allMkDevices.value.map(d => [d.id, d.name])))
+const vsDeviceNameMap = computed(() => Object.fromEntries(allVsDevices.value.map(d => [d.id, d.name])))
+const gameAccountMap = computed(() => Object.fromEntries(allGameAccounts.value.map(a => [a.id, a])))
 
 function statusLabel(s) { return { online: '在线', offline: '离线', busy: '忙碌', disabled: '禁用' }[s] || s }
 function statusTagType(s) { return { online: 'success', offline: 'info', busy: 'warning', disabled: 'danger' }[s] || '' }
-function typeLabel(t) { return { game: '游戏', account: '账户' }[t] || '未绑定' }
-function typeTagType(t) { return { game: '', account: 'warning' }[t] || 'info' }
+function typeLabel(t) { return { game: '游戏', account: '账户', both: '游戏+账户' }[t] || '未绑定' }
+function typeTagType(t) { return { game: '', account: 'warning', both: 'success' }[t] || 'info' }
 
 async function fetchList() {
   loading.value = true
@@ -196,7 +234,7 @@ const editId = ref(null)
 const submitting = ref(false)
 const machineFormRef = ref(null)
 const machineRules = { mac_address: [{ required: true, message: '请输入MAC地址', trigger: 'blur' }] }
-const defaultMachineForm = () => ({ mac_address: '', name: '', ip_address: '', hostname: '', os_info: '', remark: '' })
+const defaultMachineForm = () => ({ mac_address: '', name: '', ip_address: '', hostname: '', os_info: '', mk_device_id: null, vs_device_id: null, is_active: 1, remark: '' })
 const machineForm = reactive(defaultMachineForm())
 
 function openMachineDialog(row = null) {
@@ -207,28 +245,54 @@ function openMachineDialog(row = null) {
 async function handleMachineSubmit() {
   await machineFormRef.value?.validate(); submitting.value = true
   try {
-    if (machineIsEdit.value) { await updateMachine(editId.value, { ...machineForm }); ElMessage.success('更新成功') }
-    else { await createMachine({ ...machineForm }); ElMessage.success('添加成功') }
+    const data = { ...machineForm }
+    // 空字符串转为 null，避免后端校验问题
+    if (!data.name) data.name = null
+    if (!data.ip_address) data.ip_address = null
+    if (!data.hostname) data.hostname = null
+    if (!data.os_info) data.os_info = null
+    if (!data.remark) data.remark = null
+    if (machineIsEdit.value) { await updateMachine(editId.value, data); ElMessage.success('更新成功') }
+    else { await createMachine(data); ElMessage.success('添加成功') }
     machineDialogVisible.value = false; fetchList()
   } catch (e) { ElMessage.error(e.message) } finally { submitting.value = false }
 }
 async function handleDeleteMachine(id) { try { await deleteMachine(id); ElMessage.success('已删除'); fetchList() } catch (e) { ElMessage.error(e.message) } }
 
-// ── 关联游戏 ──
-const gamesDrawerVisible = ref(false)
+// ── 关联游戏账号 ──
+const gameAccountsDrawerVisible = ref(false)
 const currentMachine = ref(null)
-const machineGames = ref([])
-const newGameId = ref(null)
+const machineGameAccounts = ref([])
+const newGameAccountId = ref(null)
+const newRegionId = ref(null)
+const availableRegions = ref([])
 
-async function openGamesDrawer(machine) {
-  currentMachine.value = machine; gamesDrawerVisible.value = true; await fetchMachineGames()
+function onGameAccountChanged(gaId) {
+  newRegionId.value = null
+  if (!gaId) { availableRegions.value = []; return }
+  const ga = allGameAccounts.value.find(a => a.id === gaId)
+  availableRegions.value = ga?.region_ids || (ga?.region_id ? [ga.region_id] : [])
 }
-async function fetchMachineGames() { if (!currentMachine.value) return; machineGames.value = await getMachineGames(currentMachine.value.id) }
-async function handleAddGame() {
-  try { await addMachineGame(currentMachine.value.id, { game_id: newGameId.value }); ElMessage.success('已添加'); newGameId.value = null; fetchMachineGames() }
-  catch (e) { ElMessage.error(e.message) }
+
+async function openGameAccountsDrawer(machine) {
+  currentMachine.value = machine; gameAccountsDrawerVisible.value = true; newGameAccountId.value = null; newRegionId.value = null; availableRegions.value = []; await fetchMachineGameAccounts()
 }
-async function handleRemoveGame(mgId) { try { await removeMachineGame(mgId); ElMessage.success('已移除'); fetchMachineGames() } catch (e) { ElMessage.error(e.message) } }
+async function fetchMachineGameAccounts() {
+  if (!currentMachine.value) return
+  const mgs = await getMachineGames(currentMachine.value.id)
+  // 合并 game_account 信息，优先使用 machine_games 自身的 region_id
+  machineGameAccounts.value = mgs.map(mg => {
+    const ga = gameAccountMap.value[mg.game_account_id] || {}
+    return { ...mg, game_id: ga.game_id, region_id: mg.region_id || ga.region_id, account_name: ga.account_name }
+  })
+}
+async function handleAddGameAccount() {
+  try {
+    await addMachineGame(currentMachine.value.id, { game_account_id: newGameAccountId.value, region_id: newRegionId.value || null })
+    ElMessage.success('已添加'); newGameAccountId.value = null; newRegionId.value = null; fetchMachineGameAccounts()
+  } catch (e) { ElMessage.error(e.message) }
+}
+async function handleRemoveGame(mgId) { try { await removeMachineGame(mgId); ElMessage.success('已移除'); fetchMachineGameAccounts() } catch (e) { ElMessage.error(e.message) } }
 
 // 游戏配置编辑
 const gameCfgVisible = ref(false)
@@ -236,7 +300,7 @@ const gameCfgId = ref(null)
 const gameCfgForm = reactive({ priority: 0, max_concurrent: 1 })
 function editGameConfig(row) { gameCfgId.value = row.id; Object.assign(gameCfgForm, { priority: row.priority, max_concurrent: row.max_concurrent }); gameCfgVisible.value = true }
 async function handleUpdateGameCfg() {
-  try { await updateMachineGame(gameCfgId.value, { ...gameCfgForm }); ElMessage.success('已更新'); gameCfgVisible.value = false; fetchMachineGames() }
+  try { await updateMachineGame(gameCfgId.value, { ...gameCfgForm }); ElMessage.success('已更新'); gameCfgVisible.value = false; fetchMachineGameAccounts() }
   catch (e) { ElMessage.error(e.message) }
 }
 
@@ -272,6 +336,11 @@ onMounted(async () => {
   allGames.value = await getAllGames()
   allAccounts.value = await getAllAccounts()
   allWebsitesData.value = await getAllWebsites()
+  allRegions.value = await getAllRegions()
+  allMkDevices.value = await getAllMkDevices()
+  allVsDevices.value = await getAllVsDevices()
+  const gaRes = await getAllGameAccounts()
+  allGameAccounts.value = gaRes.items || []
   fetchList()
 })
 </script>

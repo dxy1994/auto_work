@@ -1,20 +1,20 @@
 package com.auto.trade;
 
-import com.auto.entity.Account;
-import com.auto.entity.BundleItem;
+import com.auto.entity.PlatformAccount;
+import com.auto.entity.ItemBundleRelation;
 import com.auto.entity.Game;
 import com.auto.entity.GameItem;
 import com.auto.entity.GameItemOrder;
 import com.auto.entity.GameItemOrderDetail;
 import com.auto.entity.GameRegion;
-import com.auto.entity.GameRegionItem;
+import com.auto.entity.GameRegionInventory;
 import com.auto.entity.TradeEvent;
-import com.auto.service.AccountService;
-import com.auto.service.BundleItemService;
+import com.auto.service.PlatformAccountService;
+import com.auto.service.ItemBundleRelationService;
 import com.auto.service.GameItemOrderDetailService;
 import com.auto.service.GameItemOrderService;
 import com.auto.service.GameItemService;
-import com.auto.service.GameRegionItemService;
+import com.auto.service.GameRegionInventoryService;
 import com.auto.service.GameRegionService;
 import com.auto.service.GameService;
 import com.auto.service.TradeEventService;
@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /** 将 Worker 订单观察幂等写入总控订单域。 */
 @Service
@@ -37,28 +38,28 @@ public class MarketplaceOrderIngestionService {
 
     private static final Logger log = LoggerFactory.getLogger(MarketplaceOrderIngestionService.class);
 
-    private final AccountService accountService;
+    private final PlatformAccountService accountService;
     private final GameRegionService regionService;
     private final GameItemOrderService orderService;
     private final TradeEventService eventService;
     private final GameService gameService;
     private final GreetingDispatchService greetingDispatchService;
     private final GameItemService gameItemService;
-    private final BundleItemService bundleItemService;
+    private final ItemBundleRelationService bundleItemService;
     private final GameItemOrderDetailService orderDetailService;
-    private final GameRegionItemService regionItemService;
+    private final GameRegionInventoryService regionItemService;
 
     public MarketplaceOrderIngestionService(
-            AccountService accountService,
+            PlatformAccountService accountService,
             GameRegionService regionService,
             GameItemOrderService orderService,
             TradeEventService eventService,
             GameService gameService,
             GreetingDispatchService greetingDispatchService,
             GameItemService gameItemService,
-            BundleItemService bundleItemService,
+            ItemBundleRelationService bundleItemService,
             GameItemOrderDetailService orderDetailService,
-            GameRegionItemService regionItemService) {
+            GameRegionInventoryService regionItemService) {
         this.accountService = accountService;
         this.regionService = regionService;
         this.orderService = orderService;
@@ -73,7 +74,7 @@ public class MarketplaceOrderIngestionService {
 
     @Transactional
     public GameItemOrder ingest(int machineId, int accountId, OrderDetectedMessage message) {
-        Account account = accountService.getById(accountId);
+        PlatformAccount account = accountService.getById(accountId);
         if (account == null || !Integer.valueOf(1).equals(account.getIsActive())) {
             throw new IllegalStateException("网站账号不存在或已停用");
         }
@@ -305,23 +306,28 @@ public class MarketplaceOrderIngestionService {
         }
 
         if (Integer.valueOf(1).equals(matchedItem.getIsBundle())) {
-            // 套装：拆分所有子物品
-            List<Integer> childItemIds = bundleItemService.findItemIdsByBundleId(matchedItem.getId());
-            if (childItemIds.isEmpty()) {
+            // 套装：拆分所有子物品，按关联表中配置的数量创建明细
+            List<ItemBundleRelation> relations = bundleItemService.findRelationsByBundleId(matchedItem.getId());
+            if (relations.isEmpty()) {
                 log.info("[Order] 套装无子物品 order_id={} bundle={}", order.getId(), tradeItemName);
                 return;
             }
-            List<GameItem> childItems = gameItemService.listByIds(childItemIds);
+            List<Integer> childItemIds = relations.stream().map(ItemBundleRelation::getItemId).collect(Collectors.toList());
+            Map<Integer, GameItem> childItemMap = gameItemService.listByIds(childItemIds).stream()
+                    .collect(Collectors.toMap(GameItem::getId, i -> i));
             BigDecimal totalAmount = BigDecimal.ZERO;
-            for (GameItem child : childItems) {
-                GameItemOrderDetail detail = buildDetail(order.getId(), child, regionId, matchedItem.getName());
+            for (ItemBundleRelation rel : relations) {
+                GameItem child = childItemMap.get(rel.getItemId());
+                if (child == null) continue;
+                int qty = rel.getQuantity() != null && rel.getQuantity() > 0 ? rel.getQuantity() : 1;
+                GameItemOrderDetail detail = buildDetail(order.getId(), child, regionId, matchedItem.getName(), qty);
                 orderDetailService.save(detail);
                 totalAmount = totalAmount.add(detail.getSubtotal());
             }
             order.setTotalAmount(totalAmount);
         } else {
             // 单物品
-            GameItemOrderDetail detail = buildDetail(order.getId(), matchedItem, regionId, null);
+            GameItemOrderDetail detail = buildDetail(order.getId(), matchedItem, regionId, null, 1);
             orderDetailService.save(detail);
             order.setTotalAmount(detail.getSubtotal());
         }
@@ -331,27 +337,26 @@ public class MarketplaceOrderIngestionService {
                 Integer.valueOf(1).equals(matchedItem.getIsBundle()) ? matchedItem.getName() : "-");
     }
 
-    private GameItemOrderDetail buildDetail(int orderId, GameItem item, int regionId, String bundleName) {
+    private GameItemOrderDetail buildDetail(int orderId, GameItem item, int regionId, String bundleName, int quantity) {
         GameItemOrderDetail detail = new GameItemOrderDetail();
         detail.setOrderId(orderId);
         detail.setItemId(item.getId());
         detail.setItemName(item.getName());
         detail.setItemImage(item.getImage());
-        detail.setQuantity(1);
+        detail.setQuantity(quantity);
         BigDecimal price = item.getPrice() != null ? item.getPrice() : BigDecimal.ZERO;
         detail.setUnitPrice(price);
-        detail.setSubtotal(price);
+        detail.setSubtotal(price.multiply(BigDecimal.valueOf(quantity)));
         detail.setBundleName(bundleName);
         // 从大区物品库存获取进货价/出货价快照
         if (regionId > 0) {
-            GameRegionItem inventory = regionItemService.getOne(
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<GameRegionItem>()
-                            .eq(GameRegionItem::getRegionId, regionId)
-                            .eq(GameRegionItem::getItemId, item.getId())
-                            .eq(GameRegionItem::getIsActive, 1), false);
+            GameRegionInventory inventory = regionItemService.getOne(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<GameRegionInventory>()
+                            .eq(GameRegionInventory::getRegionId, regionId)
+                            .eq(GameRegionInventory::getItemId, item.getId())
+                            .eq(GameRegionInventory::getIsActive, 1), false);
             if (inventory != null) {
                 detail.setPurchasePrice(inventory.getPurchasePrice());
-                detail.setSellingPrice(inventory.getSellingPrice());
             }
         }
         return detail;

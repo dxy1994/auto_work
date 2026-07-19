@@ -1,8 +1,8 @@
-patchright
-websockets==16.1
-python-dotenv==1.2.2
-pygame>=2.6
-pywin32>=306
-boto3>=1.28
-requests>=2.28
-beautifulsoup4>=4.12
+# ═══════════════════════════════════════════════
+# 全量依赖 — 开发环境一键安装
+# 生产部署请按角色选择安装：
+#   Monitor: pip install -r requirements-common.txt -r requirements-monitor.txt
+#   Trader:  pip install -r requirements-common.txt -r requirements-trader.txt
+# ═══════════════════════════════════════════════
+-r requirements-common.txt
+-r requirements-monitor.txt

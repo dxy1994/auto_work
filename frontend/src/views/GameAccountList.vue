@@ -26,8 +26,13 @@
       <el-table-column label="游戏" width="120">
         <template #default="{ row }">{{ gameNameMap[row.game_id] || row.game_id }}</template>
       </el-table-column>
-      <el-table-column label="大区" width="120">
-        <template #default="{ row }">{{ regionNameMap[row.region_id] || '-' }}</template>
+      <el-table-column label="大区" min-width="140" show-overflow-tooltip>
+        <template #default="{ row }">
+          <template v-if="row.region_ids && row.region_ids.length">
+            <el-tag v-for="rid in row.region_ids" :key="rid" size="small" style="margin-right:4px">{{ regionNameMap[rid] || rid }}</el-tag>
+          </template>
+          <span v-else>-</span>
+        </template>
       </el-table-column>
       <el-table-column prop="nickname" label="昵称" width="120" />
       <el-table-column prop="level" label="等级" width="80" />
@@ -59,7 +64,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="所属大区">
-          <el-select v-model="form.region_id" placeholder="选择大区(可选)" clearable style="width:100%">
+          <el-select v-model="form.region_ids" placeholder="选择大区(可多选)" clearable multiple collapse-tags style="width:100%">
             <el-option v-for="r in formRegionList" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
         </el-form-item>
@@ -149,7 +154,7 @@ async function onGameChange() {
   handleSearch()
 }
 async function onFormGameChange() {
-  form.region_id = null
+  form.region_ids = []
   formRegionList.value = form.game_id ? await getAllRegions(form.game_id) : []
 }
 
@@ -166,14 +171,14 @@ const rules = {
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 }
 const defaultForm = () => ({
-  game_id: null, region_id: null, machine_id: null,
+  game_id: null, region_ids: [], machine_id: null,
   account_name: '', account_no: '', password: '', nickname: '', level: '', status: 'idle',
 })
 const form = reactive(defaultForm())
 
 function openDialog(row = null) {
   isEdit.value = !!row; editId.value = row?.id ?? null
-  Object.assign(form, row ? { ...row, password: '' } : defaultForm())
+  Object.assign(form, row ? { ...row, password: '', region_ids: row.region_ids || (row.region_id ? [row.region_id] : []) } : defaultForm())
   // 加载表单大区列表
   if (row?.game_id) { onFormGameChange(row.game_id) }
   else { formRegionList.value = [] }
@@ -186,6 +191,7 @@ async function handleSubmit() {
   submitting.value = true
   try {
     const data = { ...form }
+    delete data.region_id // 移除旧字段
     if (isEdit.value && !data.password) delete data.password
     if (isEdit.value) { await updateGameAccount(editId.value, data); ElMessage.success('更新成功') }
     else { await createGameAccount(data); ElMessage.success('添加成功') }

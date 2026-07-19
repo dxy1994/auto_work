@@ -11,6 +11,7 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /** 游戏账号。 */
@@ -46,6 +47,10 @@ public class GameAccount {
 
     /** idle / in_use / locked / disabled。 */
     private String status = "idle";
+
+    /** 大区ID列表（瞬态，不持久化到本表，通过 game_account_regions 维护）。 */
+    @TableField(exist = false)
+    private List<Integer> regionIds;
 
     private Integer isActive = 1;
 

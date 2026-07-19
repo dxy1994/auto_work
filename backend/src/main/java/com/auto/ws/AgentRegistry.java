@@ -41,6 +41,8 @@ public class AgentRegistry {
     private final Map<String, Long> retiredTaskIds = new ConcurrentHashMap<>();
     /** machine_id -> Worker 最近一次游戏运行态。 */
     private final Map<Integer, WorkerRuntimeStatus> runtimeStatuses = new ConcurrentHashMap<>();
+    /** machine_id -> Worker 角色（monitor / trader）。 */
+    private final Map<Integer, String> machineRoles = new ConcurrentHashMap<>();
     private static final long TASK_ID_QUARANTINE_MS = 30 * 60 * 1000L;
     private final Object taskLock = new Object();
 
@@ -81,6 +83,11 @@ public class AgentRegistry {
             m.setIsActive(1);
         }
         machineService.saveOrUpdate(m);
+
+        String role = str(msg.get("role"));
+        if (role != null) {
+            machineRoles.put(m.getId(), role);
+        }
         return m.getId();
     }
 
@@ -119,7 +126,12 @@ public class AgentRegistry {
         Object runtimeObj = msg.get("runtime");
         if (runtimeObj instanceof Map<?, ?> rawRuntime) {
             Map<String, Object> runtime = (Map<String, Object>) rawRuntime;
+            String role = str(runtime.get("role"));
+            if (role != null) {
+                machineRoles.put(machineId, role);
+            }
             runtimeStatuses.put(machineId, new WorkerRuntimeStatus(
+                    role,
                     asInt(runtime.get("game_id")),
                     asInt(runtime.get("game_account_id")),
                     asInt(runtime.get("region_id")),
@@ -133,6 +145,14 @@ public class AgentRegistry {
 
     public WorkerRuntimeStatus getRuntimeStatus(int machineId) {
         return runtimeStatuses.get(machineId);
+    }
+
+    public String getMachineRole(int machineId) {
+        return machineRoles.get(machineId);
+    }
+
+    public boolean isAgentTrader(int machineId) {
+        return "trader".equals(machineRoles.get(machineId));
     }
 
     public boolean isAgentOnline(int machineId) {
@@ -160,6 +180,7 @@ public class AgentRegistry {
         }
         setMachineOffline(machineId);
         runtimeStatuses.remove(machineId);
+        machineRoles.remove(machineId);
         failTasksForMachine(machineId, "worker 断线，任务中断");
     }
 

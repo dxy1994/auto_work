@@ -10,7 +10,13 @@ set "ENV_FILE=%WORKER_DIR%\.env"
 set "ENV_EXAMPLE=%WORKER_DIR%\.env.example"
 
 echo ========================================
-echo   Worker 分布式 Agent 启动（Windows 本机）
+echo   Worker 启动 — 请按角色选择启动脚本
+echo ========================================
+echo.
+echo   Monitor（监控 + 招呼）: scripts\start-monitor.bat
+echo   Trader（游戏交易执行）: scripts\start-trader.bat
+echo.
+echo   本脚本保留兼容旧习惯，默认启动 Monitor
 echo ========================================
 
 :: 0. 检查 .env 配置文件

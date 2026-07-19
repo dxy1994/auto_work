@@ -2,7 +2,7 @@ package com.auto.service.impl;
 
 import com.auto.entity.GameItem;
 import com.auto.mapper.GameItemMapper;
-import com.auto.service.BundleItemService;
+import com.auto.service.ItemBundleRelationService;
 import com.auto.service.GameItemService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -15,9 +15,9 @@ import java.util.List;
 @Service
 public class GameItemServiceImpl extends ServiceImpl<GameItemMapper, GameItem> implements GameItemService {
 
-    private final BundleItemService bundleItemService;
+    private final ItemBundleRelationService bundleItemService;
 
-    public GameItemServiceImpl(BundleItemService bundleItemService) {
+    public GameItemServiceImpl(ItemBundleRelationService bundleItemService) {
         this.bundleItemService = bundleItemService;
     }
 

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.auto.mapper.GameAccountRegionMapper">
+
+    <!-- 联表 game_accounts 查询指定游戏+大区的账号-大区关联 -->
+    <select id="findByGameIdAndRegionIdActive" resultType="com.auto.entity.GameAccountRegion">
+        select gar.id, gar.game_account_id, gar.region_id, gar.is_active,
+               gar.created_at, gar.updated_at
+        from game_account_regions gar
+        join game_accounts ga on gar.game_account_id = ga.id
+        where gar.region_id = #{regionId}
+          and ga.game_id = #{gameId}
+          and gar.is_active = 1
+          and ga.is_active = 1
+    </select>
+
+</mapper>

@@ -32,6 +32,12 @@ public class Machine {
     /** online / offline / busy / disabled。 */
     private String status = "offline";
 
+    /** 关联鼠标键盘设备ID（一对一）。 */
+    private Integer mkDeviceId;
+
+    /** 关联视频流设备ID（一对一）。 */
+    private Integer vsDeviceId;
+
     private LocalDateTime lastHeartbeat;
 
     private String remark;

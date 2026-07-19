@@ -1,0 +1,5 @@
+# ═══════════════════════════════════════════════
+# Trader 专用依赖 — 比 Monitor 轻量得多，不需要浏览器
+# 安装: pip install -r requirements-common.txt -r requirements-trader.txt
+# ═══════════════════════════════════════════════
+# pyserial>=3.5                # ESP32C3 串口通信（固件就绪后启用）

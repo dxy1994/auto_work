@@ -93,7 +93,7 @@
             :placeholder="isEdit ? '留空则不修改' : '请输入密码'" />
         </el-form-item>
         <el-form-item label="设为默认">
-          <el-switch v-model="form.is_default" />
+          <el-switch v-model="form.is_default" :active-value="1" :inactive-value="0" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -164,7 +164,7 @@ async function pollStatus() {
 }
 
 const defaultForm = () => ({
-  website_id: null, label: '', username: '', password: '', is_default: false,
+  website_id: null, label: '', username: '', password: '', is_default: 0,
 })
 const form = reactive(defaultForm())
 
@@ -200,7 +200,7 @@ function openDialog(a = null) {
   isEdit.value = !!a
   editId.value = a?.id ?? null
   Object.assign(form, a
-    ? { website_id: a.website_id, label: a.label, username: a.username, password: '', is_default: !!a.is_default }
+    ? { website_id: a.website_id, label: a.label, username: a.username, password: '', is_default: a.is_default ?? 0 }
     : defaultForm()
   )
   dialogVisible.value = true

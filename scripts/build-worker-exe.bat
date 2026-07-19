@@ -82,15 +82,20 @@ cd /d "%WORKER_DIR%"
     --workpath "%BUILD_DIR%" ^
     --specpath "%WORKER_DIR%" ^
     --hidden-import "patchright" ^
-    --hidden-import "patchright.sync_api" ^
-    --hidden-import "automation" ^
-    --hidden-import "automation.browser" ^
-    --hidden-import "automation.login_helper" ^
-    --hidden-import "automation.order_monitor" ^
+    --hidden-import "patchright.async_api" ^
+    --hidden-import "shared" ^
+    --hidden-import "monitor" ^
+    --hidden-import "monitor.browser" ^
+    --hidden-import "monitor.chat" ^
+    --hidden-import "monitor.monitoring" ^
+    --hidden-import "monitor.orders" ^
+    --hidden-import "trader" ^
+    --hidden-import "trader.executor" ^
     --hidden-import "websockets" ^
     --hidden-import "dotenv" ^
     --collect-all "patchright" ^
-    --add-data ".env.example;." ^
+    --add-data ".env.monitor.example;." ^
+    --add-data ".env.trader.example;." ^
     main.py
 
 if errorlevel 1 (
@@ -109,9 +114,12 @@ echo.
 echo   输出文件: worker\dist\auto-worker.exe
 echo.
 echo   使用说明:
-echo     1. 在同目录下创建 .env 文件（参考 .env.example）
-echo     2. 确保本机已安装 Chrome 或 Edge 浏览器
-echo     3. 双击 auto-worker.exe 启动
+echo     1. 根据角色复制对应模板:
+echo        Monitor: copy .env.monitor.example .env
+echo        Trader:  copy .env.trader.example .env
+echo     2. 编辑 .env，修改 BACKEND_WS_URL 为总控地址
+echo     3. Monitor 需确保已安装 Chrome/Edge
+echo     4. 双击 auto-worker.exe 启动
 echo.
 echo   注意: EXE 启动较慢（解压依赖），请耐心等候
 echo ========================================

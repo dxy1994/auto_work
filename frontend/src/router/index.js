@@ -3,25 +3,25 @@ import { createRouter, createWebHistory } from 'vue-router'
 const routes = [
   {
     path: '/',
-    redirect: '/websites',
+    redirect: '/platforms',
   },
   {
-    path: '/websites',
-    name: 'WebsiteList',
+    path: '/platforms',
+    name: 'PlatformList',
     component: () => import('../views/WebsiteList.vue'),
-    meta: { title: '网站管理' },
+    meta: { title: '交易平台' },
   },
   {
-    path: '/accounts',
-    name: 'AccountList',
+    path: '/platform-accounts',
+    name: 'PlatformAccountList',
     component: () => import('../views/AccountList.vue'),
-    meta: { title: '账号管理' },
+    meta: { title: '平台账号' },
   },
   {
-    path: '/schedules',
-    name: 'ScheduleManagement',
+    path: '/platform-schedules',
+    name: 'PlatformScheduleManagement',
     component: () => import('../views/ScheduleManagement.vue'),
-    meta: { title: '子功能配置管理' },
+    meta: { title: '定时调度' },
   },
   // ── 中控平台 ──
   {
@@ -40,7 +40,7 @@ const routes = [
     path: '/region-inventories',
     name: 'RegionInventoryList',
     component: () => import('../views/RegionInventoryList.vue'),
-    meta: { title: '大区物品库存管理' },
+    meta: { title: '大区库存' },
   },
   {
     path: '/machines',
@@ -59,6 +59,18 @@ const routes = [
     name: 'OrderList',
     component: () => import('../views/OrderList.vue'),
     meta: { title: '订单管理' },
+  },
+  {
+    path: '/mk-devices',
+    name: 'MouseKeyboardDeviceList',
+    component: () => import('../views/MouseKeyboardDeviceList.vue'),
+    meta: { title: '鼠标键盘设备管理' },
+  },
+  {
+    path: '/vs-devices',
+    name: 'VideoStreamDeviceList',
+    component: () => import('../views/VideoStreamDeviceList.vue'),
+    meta: { title: '视频流设备管理' },
   },
 ]
 

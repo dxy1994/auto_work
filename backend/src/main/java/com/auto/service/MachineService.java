@@ -14,4 +14,8 @@ public interface MachineService extends IService<Machine> {
     List<Machine> findAllActive();
 
     Machine findByMacAddress(String macAddress);
+
+    Machine findByMkDeviceId(Integer mkDeviceId);
+
+    Machine findByVsDeviceId(Integer vsDeviceId);
 }

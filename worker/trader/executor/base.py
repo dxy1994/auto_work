@@ -1,0 +1,47 @@
+"""
+游戏交易执行器抽象基类。
+
+每个游戏实现一个子类，覆写 execute() 方法，
+通过 HardwareController 发送键鼠指令到 ESP32C3。
+"""
+from abc import ABC, abstractmethod
+from typing import Optional
+
+from trader.executor.hardware.controller import HardwareController
+
+
+class BaseGameExecutor(ABC):
+    """游戏交易执行器基类。"""
+
+    def __init__(self, hw: HardwareController):
+        self._hw = hw
+
+    @property
+    @abstractmethod
+    def game_code(self) -> str:
+        """返回游戏标识码（与 game 表的 code 字段对应）。"""
+        ...
+
+    @abstractmethod
+    async def execute(self, order: dict) -> dict:
+        """执行游戏内交易流程。
+
+        Args:
+            order: 总控下发的订单数据，包含：
+                - order_id: 订单ID
+                - game_id: 游戏ID
+                - region_id: 大区ID
+                - buyer_character: 买家角色名
+                - asset_type: 资产类型
+                - asset_amount: 资产数量
+                - details: 子订单明细列表 [{item_id, item_name, quantity, ...}]
+                - item_positions: 物品在游戏中的位置坐标 [{item_id, x, y, image_url}]
+
+        Returns:
+            {"success": bool, "message": str, "duration_ms": int}
+        """
+        ...
+
+    def cancel(self):
+        """取消当前交易（可覆写）。"""
+        pass

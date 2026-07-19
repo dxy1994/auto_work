@@ -1,13 +1,19 @@
 package com.auto.trade;
 
+import com.auto.entity.Game;
 import com.auto.entity.GameAccount;
+import com.auto.entity.GameItem;
 import com.auto.entity.GameItemOrder;
+import com.auto.entity.GameItemOrderDetail;
 import com.auto.entity.Machine;
-import com.auto.entity.MachineGame;
+import com.auto.entity.MachineGameAccount;
 import com.auto.entity.TradeAssignment;
 import com.auto.service.GameAccountService;
+import com.auto.service.GameItemOrderDetailService;
 import com.auto.service.GameItemOrderService;
-import com.auto.service.MachineGameService;
+import com.auto.service.GameItemService;
+import com.auto.service.GameService;
+import com.auto.service.MachineGameAccountService;
 import com.auto.service.MachineService;
 import com.auto.service.TradeAssignmentService;
 import com.auto.trade.statemachine.DeliveryEvent;
@@ -42,26 +48,32 @@ public class TradeDispatchCoordinator {
     private static final int OFFER_LEASE_SECONDS = 30;
 
     private final GameItemOrderService orderService;
-    private final MachineGameService machineGameService;
+    private final MachineGameAccountService machineGameService;
     private final GameAccountService gameAccountService;
     private final MachineService machineService;
     private final TradeAssignmentService assignmentService;
     private final AgentRegistry agentRegistry;
     private final TradeMachineSelector selector;
     private final OrderDeliveryStateMachine stateMachine;
+    private final GameService gameService;
+    private final GameItemOrderDetailService detailService;
+    private final GameItemService itemService;
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, TradeOffer> pendingOffers = new ConcurrentHashMap<>();
     private final Set<String> acceptedAssignments = ConcurrentHashMap.newKeySet();
 
     public TradeDispatchCoordinator(
             GameItemOrderService orderService,
-            MachineGameService machineGameService,
+            MachineGameAccountService machineGameService,
             GameAccountService gameAccountService,
             MachineService machineService,
             TradeAssignmentService assignmentService,
             AgentRegistry agentRegistry,
             TradeMachineSelector selector,
-            OrderDeliveryStateMachine stateMachine) {
+            OrderDeliveryStateMachine stateMachine,
+            GameService gameService,
+            GameItemOrderDetailService detailService,
+            GameItemService itemService) {
         this.orderService = orderService;
         this.machineGameService = machineGameService;
         this.gameAccountService = gameAccountService;
@@ -70,6 +82,9 @@ public class TradeDispatchCoordinator {
         this.agentRegistry = agentRegistry;
         this.selector = selector;
         this.stateMachine = stateMachine;
+        this.gameService = gameService;
+        this.detailService = detailService;
+        this.itemService = itemService;
     }
 
     @Transactional
@@ -77,6 +92,13 @@ public class TradeDispatchCoordinator {
         GameItemOrder order = orderService.getById(orderId);
         if (order == null) {
             throw new IllegalStateException("订单不存在");
+        }
+
+        // 校验交易通道：目前仅支持 script（游戏内键鼠交易）
+        Game game = gameService.getById(order.getGameId());
+        if (game == null || !"script".equals(game.getTradeType())) {
+            throw new IllegalStateException("该游戏不支持自动交易（tradeType="
+                    + (game != null ? game.getTradeType() : "null") + "）");
         }
 
         // 根据当前状态选择事件
@@ -238,32 +260,36 @@ public class TradeDispatchCoordinator {
     }
 
     private List<TradeCandidate> buildCandidates(GameItemOrder order) {
-        List<MachineGame> machineGames = machineGameService
-                .findByGameIdActiveOrderByPriorityDesc(order.getGameId());
         List<GameAccount> accounts = gameAccountService
                 .findIdleByGameAndRegion(order.getGameId(), order.getRegionId());
-        Map<Integer, GameAccount> accountByMachine = new LinkedHashMap<>();
-        for (GameAccount account : accounts) {
-            accountByMachine.putIfAbsent(account.getMachineId(), account);
+        if (accounts.isEmpty()) return List.of();
+
+        List<Integer> accountIds = accounts.stream().map(GameAccount::getId).toList();
+        // 按账号+大区查找机器关联（支持一号多区后，需精准匹配 regionId）
+        List<MachineGameAccount> machineGames = machineGameService
+                .findByGameAccountIdsAndRegionIdActive(accountIds, order.getRegionId());
+        Map<Integer, MachineGameAccount> mgByAccountId = new HashMap<>();
+        for (MachineGameAccount mg : machineGames) {
+            mgByAccountId.putIfAbsent(mg.getGameAccountId(), mg);
         }
 
         List<TradeCandidate> candidates = new ArrayList<>();
-        for (MachineGame machineGame : machineGames) {
-            int machineId = machineGame.getMachineId();
-            GameAccount account = accountByMachine.get(machineId);
+        for (GameAccount account : accounts) {
+            MachineGameAccount mg = mgByAccountId.get(account.getId());
+            if (mg == null) continue;
+            int machineId = mg.getMachineId();
+            if (!agentRegistry.isAgentTrader(machineId)) continue;
             WorkerRuntimeStatus runtime = agentRegistry.getRuntimeStatus(machineId);
-            if (account == null || runtime == null) {
-                continue;
-            }
+            if (runtime == null) continue;
             boolean runtimeMatchesAccount = account.getId().equals(runtime.gameAccountId())
                     && order.getGameId().equals(runtime.gameId())
                     && order.getRegionId().equals(runtime.regionId());
             candidates.add(new TradeCandidate(
                     machineId,
                     account.getId(),
-                    machineGame.getGameId(),
+                    order.getGameId(),
                     order.getRegionId(),
-                    machineGame.getPriority(),
+                    mg.getPriority(),
                     agentRegistry.isAgentOnline(machineId),
                     runtimeMatchesAccount && "idle".equals(account.getStatus()),
                     runtime.clientStatus(),
@@ -316,6 +342,41 @@ public class TradeDispatchCoordinator {
         payload.put("buyer_character", order.getBuyerCharacter());
         payload.put("asset_type", order.getAssetType());
         payload.put("asset_amount", order.getAssetAmount());
+        payload.put("trade_type", "script");
+
+        // 子订单明细
+        List<Map<String, Object>> details = new ArrayList<>();
+        List<Map<String, Object>> positions = new ArrayList<>();
+        for (GameItemOrderDetail d : detailService.findByOrderId(order.getId())) {
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("item_id", d.getItemId());
+            detail.put("item_name", d.getItemName());
+            detail.put("quantity", d.getQuantity());
+            detail.put("item_image", d.getItemImage());
+            details.add(detail);
+
+            // 物品在游戏中的位置坐标
+            if (d.getItemId() != null) {
+                GameItem item = itemService.getById(d.getItemId());
+                if (item != null && item.getPosition() != null && !item.getPosition().isBlank()) {
+                    String[] parts = item.getPosition().trim().split("\\s*,\\s*");
+                    if (parts.length == 2) {
+                        try {
+                            Map<String, Object> pos = new LinkedHashMap<>();
+                            pos.put("item_id", d.getItemId());
+                            pos.put("x", Integer.parseInt(parts[0]));
+                            pos.put("y", Integer.parseInt(parts[1]));
+                            pos.put("image_url", item.getImage());
+                            positions.add(pos);
+                        } catch (NumberFormatException ignored) {
+                            // 位置格式不合法则跳过
+                        }
+                    }
+                }
+            }
+        }
+        payload.put("details", details);
+        payload.put("item_positions", positions);
         return payload;
     }
 

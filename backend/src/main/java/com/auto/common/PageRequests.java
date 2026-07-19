@@ -5,7 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 /** 统一校验前端使用的 1-based 分页参数，并构造 MyBatis-Plus 分页对象。 */
 public final class PageRequests {
 
-    private static final int MAX_PAGE_SIZE = 200;
+    private static final int MAX_PAGE_SIZE = 1000;
 
     private PageRequests() {
     }

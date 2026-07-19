@@ -2,37 +2,19 @@ package com.auto.controller;
 
 import com.auto.common.ApiException;
 import com.auto.common.PageRequests;
-import com.auto.entity.Account;
-import com.auto.entity.GameItem;
-import com.auto.entity.GameItemOrder;
-import com.auto.entity.GameItemOrderDetail;
-import com.auto.entity.GameRegion;
-import com.auto.entity.GameRegionItem;
-import com.auto.entity.MachineAccount;
-import com.auto.entity.Website;
-import com.auto.service.AccountService;
-import com.auto.service.GameItemOrderDetailService;
-import com.auto.service.GameItemOrderService;
-import com.auto.service.GameItemService;
-import com.auto.service.GameRegionItemService;
-import com.auto.service.GameRegionService;
-import com.auto.service.MachineAccountService;
-import com.auto.service.WebsiteService;
+import com.auto.entity.*;
+import com.auto.service.*;
 import com.auto.trade.GreetingDispatchService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
-import tools.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
+import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 
 /** 订单管理（主子表联动）。 */
 @RestController
@@ -51,29 +33,32 @@ public class OrderController {
     private final GameItemOrderDetailService detailService;
     private final GameItemService itemService;
     private final GameRegionService regionService;
-    private final GameRegionItemService inventoryService;
+    private final GameRegionInventoryService inventoryService;
+    private final GameRegionInventoryShopPriceService shopPriceService;
     private final GreetingDispatchService greetingDispatchService;
-    private final AccountService accountService;
-    private final MachineAccountService machineAccountService;
-    private final WebsiteService websiteService;
+    private final PlatformAccountService accountService;
+    private final MachinePlatformAccountService machinePlatformAccountService;
+    private final PlatformService websiteService;
     private final ObjectMapper objectMapper;
 
     public OrderController(GameItemOrderService orderService, GameItemOrderDetailService detailService,
                            GameItemService itemService, GameRegionService regionService,
-                           GameRegionItemService inventoryService,
+                           GameRegionInventoryService inventoryService,
+                           GameRegionInventoryShopPriceService shopPriceService,
                            GreetingDispatchService greetingDispatchService,
-                           AccountService accountService,
-                           MachineAccountService machineAccountService,
-                           WebsiteService websiteService,
+                           PlatformAccountService accountService,
+                           MachinePlatformAccountService machinePlatformAccountService,
+                           PlatformService websiteService,
                            ObjectMapper objectMapper) {
         this.orderService = orderService;
         this.detailService = detailService;
         this.itemService = itemService;
         this.regionService = regionService;
         this.inventoryService = inventoryService;
+        this.shopPriceService = shopPriceService;
         this.greetingDispatchService = greetingDispatchService;
         this.accountService = accountService;
-        this.machineAccountService = machineAccountService;
+        this.machinePlatformAccountService = machinePlatformAccountService;
         this.websiteService = websiteService;
         this.objectMapper = objectMapper;
     }
@@ -133,9 +118,9 @@ public class OrderController {
         // 通过 website 账户找到招呼用的 Web 端机器（非游戏交易机器）
         Integer accountId = null;
         Integer machineId = null;
-        for (Account acc : accountService.findAllActive()) {
+        for (PlatformAccount acc : accountService.findAllActive()) {
             if (!acc.getWebsiteId().equals(order.getWebsiteId())) continue;
-            for (MachineAccount ma : machineAccountService.findByAccountIdActive(acc.getId())) {
+            for (MachinePlatformAccount ma : machinePlatformAccountService.findByAccountIdActive(acc.getId())) {
                 accountId = acc.getId();
                 machineId = ma.getMachineId();
                 break;
@@ -147,7 +132,7 @@ public class OrderController {
         }
 
         // 根据网站 URL 判断平台类型
-        Website website = websiteService.getById(order.getWebsiteId());
+        Platform website = websiteService.getById(order.getWebsiteId());
         String platform = "";
         if (website != null && website.getUrl() != null) {
             String url = website.getUrl();
@@ -218,7 +203,7 @@ public class OrderController {
             BigDecimal unitPrice = d.unitPrice != null ? d.unitPrice
                     : (item.getPrice() != null ? item.getPrice() : BigDecimal.ZERO);
             // 从大区物品库存获取进货价/出货价快照
-            GameRegionItem inventory = findInventory(payload.regionId, d.itemId);
+            GameRegionInventory inventory = findInventory(payload.regionId, d.itemId);
             GameItemOrderDetail detail = new GameItemOrderDetail();
             detail.setOrderId(order.getId());
             detail.setItemId(d.itemId);
@@ -229,7 +214,6 @@ public class OrderController {
             detail.setSubtotal(unitPrice.multiply(BigDecimal.valueOf(qty)));
             if (inventory != null) {
                 detail.setPurchasePrice(inventory.getPurchasePrice());
-                detail.setSellingPrice(inventory.getSellingPrice());
             }
             detail.setRemark(d.remark);
             detailService.save(detail);
@@ -300,7 +284,7 @@ public class OrderController {
         int qty = payload.quantity != null ? payload.quantity : 1;
         BigDecimal unitPrice = payload.unitPrice != null ? payload.unitPrice
                 : (item.getPrice() != null ? item.getPrice() : BigDecimal.ZERO);
-        GameRegionItem inventory = findInventory(o.getRegionId(), payload.itemId);
+        GameRegionInventory inventory = findInventory(o.getRegionId(), payload.itemId);
         GameItemOrderDetail detail = new GameItemOrderDetail();
         detail.setOrderId(orderId);
         detail.setItemId(payload.itemId);
@@ -311,7 +295,6 @@ public class OrderController {
         detail.setSubtotal(unitPrice.multiply(BigDecimal.valueOf(qty)));
         if (inventory != null) {
             detail.setPurchasePrice(inventory.getPurchasePrice());
-            detail.setSellingPrice(inventory.getSellingPrice());
         }
         detail.setRemark(payload.remark);
         detailService.save(detail);
@@ -397,11 +380,11 @@ public class OrderController {
         }
     }
 
-    private GameRegionItem findInventory(Integer regionId, Integer itemId) {
-        return inventoryService.getOne(new LambdaQueryWrapper<GameRegionItem>()
-                .eq(GameRegionItem::getRegionId, regionId)
-                .eq(GameRegionItem::getItemId, itemId)
-                .eq(GameRegionItem::getIsActive, 1), false);
+    private GameRegionInventory findInventory(Integer regionId, Integer itemId) {
+        return inventoryService.getOne(new LambdaQueryWrapper<GameRegionInventory>()
+                .eq(GameRegionInventory::getRegionId, regionId)
+                .eq(GameRegionInventory::getItemId, itemId)
+                .eq(GameRegionInventory::getIsActive, 1), false);
     }
 
     /** 创建订单入参（主表 + 明细）。 */

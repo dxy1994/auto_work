@@ -65,6 +65,7 @@ public class GameController {
         if (payload.getIcon() != null) g.setIcon(payload.getIcon());
         if (payload.getPlatform() != null) g.setPlatform(payload.getPlatform());
         if (payload.getRemark() != null) g.setRemark(payload.getRemark());
+        if (payload.getTradeType() != null) g.setTradeType(payload.getTradeType());
         if (payload.getSortOrder() != null) g.setSortOrder(payload.getSortOrder());
         if (payload.getIsActive() != null) g.setIsActive(payload.getIsActive());
         gameService.updateById(g);

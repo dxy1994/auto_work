@@ -36,4 +36,18 @@ public class MachineServiceImpl extends ServiceImpl<MachineMapper, Machine> impl
         return getOne(new LambdaQueryWrapper<Machine>()
                 .eq(Machine::getMacAddress, macAddress), false);
     }
+
+    @Override
+    public Machine findByMkDeviceId(Integer mkDeviceId) {
+        return getOne(new LambdaQueryWrapper<Machine>()
+                .eq(Machine::getMkDeviceId, mkDeviceId)
+                .eq(Machine::getIsActive, 1), false);
+    }
+
+    @Override
+    public Machine findByVsDeviceId(Integer vsDeviceId) {
+        return getOne(new LambdaQueryWrapper<Machine>()
+                .eq(Machine::getVsDeviceId, vsDeviceId)
+                .eq(Machine::getIsActive, 1), false);
+    }
 }
