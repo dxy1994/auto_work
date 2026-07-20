@@ -36,6 +36,9 @@ PLAYWRIGHT_HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() in ("tru
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "20"))
 RECONNECT_INTERVAL = int(os.getenv("RECONNECT_INTERVAL", "5"))
 
+# Trader 键鼠硬件网关
+ESP32_HOST = os.getenv("ESP32_HOST", "192.168.1.100")
+
 # ── RustFS / S3 兼容存储（浏览器配置跨机器同步）──
 STORAGE_ENDPOINT = os.getenv("STORAGE_ENDPOINT", "")
 STORAGE_BUCKET = os.getenv("STORAGE_BUCKET", "auto-worker-profiles")

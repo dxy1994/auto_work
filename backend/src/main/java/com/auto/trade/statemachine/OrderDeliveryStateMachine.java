@@ -97,7 +97,7 @@ public class OrderDeliveryStateMachine {
 
         // trade_start 下发失败
         register(DeliveryState.ASSIGNED, DeliveryEvent.START_FAILED,
-                DeliveryState.SUSPENDED,
+                DeliveryState.WAITING_ASSIGNMENT,
                 new StartFailedAction(assignmentService, machineService, gameAccountService, agentRegistry));
 
         // 交易完成
@@ -111,6 +111,17 @@ public class OrderDeliveryStateMachine {
                 DeliveryState.SUSPENDED,
                 new TradeCancelledAction(assignmentService, machineService, gameAccountService, agentRegistry));
 
+        TradeCancelledAction tradeFailedAction = new TradeCancelledAction(
+                assignmentService, machineService, gameAccountService, agentRegistry);
+        register(DeliveryState.ASSIGNED, DeliveryEvent.TRADE_RETRYABLE_FAILED,
+                DeliveryState.WAITING_ASSIGNMENT, tradeFailedAction);
+        register(DeliveryState.ASSIGNED, DeliveryEvent.TRADE_FAILED,
+                DeliveryState.SUSPENDED, tradeFailedAction);
+        register(DeliveryState.ASSIGNED, DeliveryEvent.TRADE_TIMED_OUT,
+                DeliveryState.SUSPENDED, tradeFailedAction);
+        register(DeliveryState.ASSIGNED, DeliveryEvent.TRADE_VERIFICATION_FAILED,
+                DeliveryState.REVIEW_REQUIRED, tradeFailedAction);
+
         // 手动重试指派
         register(DeliveryState.WAITING_ASSIGNMENT, DeliveryEvent.MANUAL_DISPATCH,
                 DeliveryState.OFFERED,
@@ -118,6 +129,9 @@ public class OrderDeliveryStateMachine {
 
         // 人工修复后重置
         register(DeliveryState.GREETING_ABNORMAL, DeliveryEvent.RESET_TO_GREETING,
+                DeliveryState.GREETING,
+                new ResetToGreetingAction());
+        register(DeliveryState.REVIEW_REQUIRED, DeliveryEvent.RESET_TO_GREETING,
                 DeliveryState.GREETING,
                 new ResetToGreetingAction());
     }

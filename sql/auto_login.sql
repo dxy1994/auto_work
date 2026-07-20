@@ -699,6 +699,7 @@ CREATE TABLE `games`  (
   `platform` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '平台(PC/手游/主机)',
   `remark` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL COMMENT '备注',
   `trade_type` enum('web','script') CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT 'script' COMMENT '交易执行分类: web/script',
+  `trade_timeout_seconds` int NOT NULL DEFAULT 300 COMMENT '等待买家交易申请超时秒数',
   `sort_order` int NULL DEFAULT 0 COMMENT '排序',
   `is_active` tinyint(1) NULL DEFAULT 1,
   `created_at` datetime NULL DEFAULT CURRENT_TIMESTAMP,
@@ -710,8 +711,8 @@ CREATE TABLE `games`  (
 -- ----------------------------
 -- Records of games
 -- ----------------------------
-INSERT INTO `games` VALUES (1, '天堂经典版', '리니지클래식', '', 'PC', '', 'script', 0, 1, '2026-07-15 11:01:45', '2026-07-15 11:01:45');
-INSERT INTO `games` VALUES (2, '暗黑2:休闲版', '디아블로2:레저렉션', '', 'PC', '', 'script', 1, 1, '2026-07-15 11:02:42', '2026-07-15 11:02:42');
+INSERT INTO `games` VALUES (1, '天堂经典版', '리니지클래식', '', 'PC', '', 'script', 300, 0, 1, '2026-07-15 11:01:45', '2026-07-15 11:01:45');
+INSERT INTO `games` VALUES (2, '暗黑2:休闲版', '디아블로2:레저렉션', '', 'PC', '', 'script', 300, 1, 1, '2026-07-15 11:02:42', '2026-07-15 11:02:42');
 
 -- ----------------------------
 -- Table structure for machine_accounts

@@ -284,6 +284,15 @@ public class AgentRegistry {
         return sendToAgent(machineId, payload);
     }
 
+    /** 请求 Worker 立即取消当前交易，不需要再携带执行令牌。 */
+    public boolean sendTradeCancel(int machineId, String assignmentId, String reason) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "trade_cancel");
+        payload.put("assignment_id", assignmentId);
+        payload.put("reason", reason);
+        return sendToAgent(machineId, payload);
+    }
+
     /** 下发招呼指令给指定机器。 */
     public boolean sendGreeting(int machineId, int orderId, int websiteId, int accountId,
                                 java.util.List<java.util.Map<String, Object>> scripts, String chatUrl) {

@@ -22,6 +22,10 @@ import java.util.Map;
 @Slf4j
 public class TradeRecoveryService {
 
+    private static final List<String> ACTIVE_ASSIGNMENT_STATUSES = List.of(
+            "offered", "accepted", "started", "preparing", "switching_region",
+            "waiting_buyer", "trading", "verifying");
+
     private final TradeAssignmentService assignmentService;
     private final GameItemOrderService orderService;
     private final OrderDeliveryStateMachine stateMachine;
@@ -39,7 +43,7 @@ public class TradeRecoveryService {
     public void recoverAfterRestart() {
         List<TradeAssignment> active = assignmentService.list(
                 new LambdaQueryWrapper<TradeAssignment>()
-                        .in(TradeAssignment::getStatus, "offered", "accepted"));
+                        .in(TradeAssignment::getStatus, activeAssignmentStatuses()));
         for (TradeAssignment assignment : active) {
             recover(assignment, "backend restarted");
         }
@@ -51,7 +55,7 @@ public class TradeRecoveryService {
         List<TradeAssignment> active = assignmentService.list(
                 new LambdaQueryWrapper<TradeAssignment>()
                         .eq(TradeAssignment::getMachineId, event.machineId())
-                        .in(TradeAssignment::getStatus, "offered", "accepted"));
+                        .in(TradeAssignment::getStatus, activeAssignmentStatuses()));
         for (TradeAssignment assignment : active) {
             recover(assignment, event.reason());
         }
@@ -79,6 +83,18 @@ public class TradeRecoveryService {
         context.put("message", reason);
         context.put("errorCode", "WORKER_DISCONNECTED");
         context.put("errorMessage", reason);
-        stateMachine.fire(order, DeliveryEvent.WORKER_DISCONNECTED, context);
+        boolean resultMayBeUncertain = "trading".equals(assignment.getStatus())
+                || "verifying".equals(assignment.getStatus());
+        if (resultMayBeUncertain) {
+            context.put("assignmentStatus", "interrupted_uncertain");
+            context.put("errorCode", "WORKER_DISCONNECTED_RESULT_UNCERTAIN");
+            stateMachine.fire(order, DeliveryEvent.TRADE_VERIFICATION_FAILED, context);
+        } else {
+            stateMachine.fire(order, DeliveryEvent.WORKER_DISCONNECTED, context);
+        }
+    }
+
+    private static List<String> activeAssignmentStatuses() {
+        return ACTIVE_ASSIGNMENT_STATUSES;
     }
 }

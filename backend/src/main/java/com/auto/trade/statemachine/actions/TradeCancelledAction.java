@@ -37,16 +37,24 @@ public class TradeCancelledAction implements TransitionAction {
         int machineId = ((Number) context.get("machineId")).intValue();
         int gameAccountId = ((Number) context.get("gameAccountId")).intValue();
 
-        finishAssignment(assignmentId, "cancelled");
+        String assignmentStatus = (String) context.getOrDefault("assignmentStatus", "cancelled");
+        finishAssignment(assignmentId, assignmentStatus, (String) context.get("errorMessage"));
         ResourceHelper.release(machineService, gameAccountService, agentRegistry, machineId, gameAccountId);
+        if (to == DeliveryState.WAITING_ASSIGNMENT) {
+            order.setAssignmentId(null);
+            order.setAssignedMachineId(null);
+            order.setGameAccountId(null);
+            order.setAssignedAt(null);
+        }
     }
 
-    private void finishAssignment(String assignmentId, String status) {
+    private void finishAssignment(String assignmentId, String status, String reason) {
         TradeAssignment assignment = assignmentService.getOne(
                 new LambdaQueryWrapper<TradeAssignment>()
                         .eq(TradeAssignment::getAssignmentId, assignmentId), false);
         if (assignment != null) {
             assignment.setStatus(status);
+            assignment.setRejectReason(reason);
             assignment.setFinishedAt(LocalDateTime.now());
             assignmentService.updateById(assignment);
         }

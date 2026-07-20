@@ -30,7 +30,12 @@ class BaseGameExecutor(ABC):
             order: 总控下发的订单数据，包含：
                 - order_id: 订单ID
                 - game_id: 游戏ID
+                - game_account_id: 本次指派使用的游戏账号ID
+                - trade_timeout_seconds: 等待买家交易申请的超时秒数
                 - region_id: 大区ID
+                - region_name: 大区显示名称
+                - region_code: 游戏客户端使用的大区代码/名称
+                - region_sort_order: 大区在客户端服务器列表中的固定排序号
                 - buyer_character: 买家角色名
                 - asset_type: 资产类型
                 - asset_amount: 资产数量

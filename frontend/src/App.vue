@@ -75,6 +75,7 @@
           <el-menu-item index="/orders">
             <el-icon><Document /></el-icon>
             <span>订单管理</span>
+            <span v-if="manualAlerts.total" class="menu-alert-count">{{ manualAlerts.total }}</span>
           </el-menu-item>
         </el-sub-menu>
 
@@ -97,17 +98,134 @@
 
     <!-- 主内容区 -->
     <el-main class="main-content">
+      <el-badge
+        v-if="manualAlerts.total"
+        :value="manualAlerts.total > 99 ? '99+' : manualAlerts.total"
+        class="global-alert-trigger"
+      >
+        <el-button type="danger" size="large" @click="manualAlerts.drawerVisible = true">
+          <el-icon><BellFilled /></el-icon>
+          待人工处理
+        </el-button>
+      </el-badge>
       <router-view />
     </el-main>
   </el-container>
+
+  <el-drawer
+    v-model="manualAlerts.drawerVisible"
+    title="待人工处理"
+    size="520px"
+    append-to-body
+    @open="manualAlerts.refresh"
+  >
+    <div class="alert-drawer-toolbar">
+      <div>
+        <div class="alert-count-title">共 {{ manualAlerts.total }} 条未处理异常</div>
+        <div class="alert-count-hint">后台状态恢复后自动移除并停止播报</div>
+      </div>
+      <div class="alert-actions">
+        <el-button
+          v-if="manualAlerts.total"
+          type="warning"
+          plain
+          @click="manualAlerts.speak(true)"
+        >
+          <el-icon><Microphone /></el-icon>
+          立即播报
+        </el-button>
+        <el-button :loading="manualAlerts.loading" @click="manualAlerts.refresh">刷新</el-button>
+      </div>
+    </div>
+
+    <el-alert
+      v-if="!manualAlerts.speechSupported"
+      title="当前浏览器不支持语音合成，请使用 Chrome 或 Edge"
+      type="error"
+      :closable="false"
+      show-icon
+      class="alert-notice"
+    />
+    <el-alert
+      v-else-if="manualAlerts.needsInteraction && manualAlerts.total"
+      title="浏览器阻止了自动语音，请点击“立即播报”启用"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="alert-notice"
+    />
+    <el-alert
+      v-if="manualAlerts.fetchError"
+      :title="manualAlerts.fetchError"
+      description="已保留上一次异常列表，提醒不会因为短暂断线而停止"
+      type="error"
+      :closable="false"
+      show-icon
+      class="alert-notice"
+    />
+
+    <el-empty v-if="!manualAlerts.total && !manualAlerts.loading" description="当前没有待人工处理的异常" />
+    <div v-else class="manual-alert-list">
+      <article
+        v-for="item in manualAlerts.items"
+        :key="item.id"
+        class="manual-alert-card"
+        :class="`severity-${item.severity}`"
+      >
+        <div class="manual-alert-heading">
+          <el-tag :type="severityType(item.severity)" effect="dark" size="small">
+            {{ severityLabel(item.severity) }}
+          </el-tag>
+          <strong>{{ item.title }}</strong>
+          <span class="manual-alert-time">{{ formatTime(item.occurred_at) }}</span>
+        </div>
+        <div class="manual-alert-order">
+          订单：{{ item.source_order_no || item.order_no || item.entity_id }}
+          <span v-if="item.buyer_character">· 买家 {{ item.buyer_character }}</span>
+        </div>
+        <p>{{ item.message }}</p>
+        <div class="manual-alert-footer">
+          <el-tag v-if="item.error_code" type="danger" size="small">{{ item.error_code }}</el-tag>
+          <el-button link type="primary" @click="openAlertOrder(item)">查看并处理</el-button>
+        </div>
+      </article>
+    </div>
+  </el-drawer>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useManualAlertStore } from './stores/manualAlerts'
 
 const route = useRoute()
+const router = useRouter()
+const manualAlerts = useManualAlertStore()
 const activeMenu = computed(() => route.path)
+
+function severityType(severity) {
+  return { critical: 'danger', danger: 'danger', warning: 'warning' }[severity] || 'info'
+}
+
+function severityLabel(severity) {
+  return { critical: '紧急复核', danger: '交易异常', warning: '配置异常' }[severity] || '待处理'
+}
+
+function formatTime(value) {
+  if (!value) return '-'
+  return String(value).replace('T', ' ').slice(0, 19)
+}
+
+function openAlertOrder(item) {
+  manualAlerts.drawerVisible = false
+  router.push({
+    path: '/orders',
+    query: { alert_order_id: item.entity_id, alert_nonce: Date.now() },
+  })
+}
+
+onMounted(() => manualAlerts.start())
+onBeforeUnmount(() => manualAlerts.stop())
 </script>
 
 <style>
@@ -140,5 +258,55 @@ html, body, #app { height: 100%; margin: 0; padding: 0; }
   background: #f0f2f5;
   padding: 20px;
   overflow-y: auto;
+  position: relative;
 }
+
+.global-alert-trigger {
+  position: fixed;
+  z-index: 1000;
+  top: 16px;
+  right: 28px;
+}
+.global-alert-trigger .el-button { box-shadow: 0 6px 18px rgba(245, 108, 108, .35); }
+.menu-alert-count {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: #f56c6c;
+  color: #fff;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+}
+.alert-drawer-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #ebeef5;
+}
+.alert-count-title { color: #303133; font-size: 18px; font-weight: 700; }
+.alert-count-hint { margin-top: 6px; color: #909399; font-size: 12px; }
+.alert-actions { display: flex; flex-shrink: 0; }
+.alert-notice { margin-top: 14px; }
+.manual-alert-list { display: grid; gap: 12px; margin-top: 16px; }
+.manual-alert-card {
+  padding: 14px 16px;
+  border: 1px solid #e4e7ed;
+  border-left-width: 5px;
+  border-radius: 8px;
+  background: #fff;
+}
+.manual-alert-card.severity-critical,
+.manual-alert-card.severity-danger { border-left-color: #f56c6c; }
+.manual-alert-card.severity-warning { border-left-color: #e6a23c; }
+.manual-alert-heading { display: flex; align-items: center; gap: 8px; }
+.manual-alert-heading strong { color: #303133; }
+.manual-alert-time { margin-left: auto; color: #909399; font-size: 12px; }
+.manual-alert-order { margin-top: 10px; color: #606266; font-size: 13px; }
+.manual-alert-card p { margin: 8px 0; color: #303133; line-height: 1.6; }
+.manual-alert-footer { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
 </style>

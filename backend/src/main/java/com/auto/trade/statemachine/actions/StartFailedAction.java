@@ -39,6 +39,10 @@ public class StartFailedAction implements TransitionAction {
 
         finishAssignment(assignmentId, "start_failed");
         ResourceHelper.release(machineService, gameAccountService, agentRegistry, machineId, gameAccountId);
+        order.setAssignmentId(null);
+        order.setAssignedMachineId(null);
+        order.setGameAccountId(null);
+        order.setAssignedAt(null);
     }
 
     private void finishAssignment(String assignmentId, String status) {

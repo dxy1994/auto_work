@@ -13,6 +13,9 @@
       <el-table-column prop="code" label="编码" width="120" />
       <el-table-column prop="name" label="游戏名称" min-width="150" />
       <el-table-column prop="platform" label="平台" width="100" />
+      <el-table-column prop="trade_timeout_seconds" label="交易超时" width="100" align="center">
+        <template #default="{ row }">{{ row.trade_timeout_seconds ?? 300 }} 秒</template>
+      </el-table-column>
       <el-table-column prop="sort_order" label="排序" width="70" align="center" />
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
       <el-table-column label="操作" width="350" fixed="right">
@@ -54,6 +57,16 @@
             <el-option label="脚本" value="script" />
             <el-option label="Web" value="web" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="交易超时">
+          <el-input-number
+            v-model="gameForm.trade_timeout_seconds"
+            :min="30"
+            :max="7200"
+            :step="30"
+            controls-position="right"
+          />
+          <span style="margin-left:8px;color:#909399">秒（等待买家交易申请）</span>
         </el-form-item>
         <el-form-item label="游戏图标">
           <el-upload
@@ -324,7 +337,10 @@ const gameRules = {
   code: [{ required: true, message: '请输入编码', trigger: 'blur' }],
 }
 
-const defaultGameForm = () => ({ name: '', code: '', platform: '', trade_type: 'script', icon: '', sort_order: 0, remark: '' })
+const defaultGameForm = () => ({
+  name: '', code: '', platform: '', trade_type: 'script',
+  trade_timeout_seconds: 300, icon: '', sort_order: 0, remark: '',
+})
 const gameForm = reactive(defaultGameForm())
 
 // 游戏图标上传

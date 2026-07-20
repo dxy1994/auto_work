@@ -3,3 +3,8 @@
 # 安装: pip install -r requirements-common.txt -r requirements-trader.txt
 # ═══════════════════════════════════════════════
 # pyserial>=3.5                # ESP32C3 串口通信（固件就绪后启用）
+opencv-python>=4.10,<5
+Pillow>=10,<13
+numpy>=1.26,<3
+pywin32>=306; sys_platform == "win32"
+pytesseract>=0.3.13,<1

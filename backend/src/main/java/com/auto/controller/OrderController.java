@@ -5,6 +5,8 @@ import com.auto.common.PageRequests;
 import com.auto.entity.*;
 import com.auto.service.*;
 import com.auto.trade.GreetingDispatchRequested;
+import com.auto.trade.statemachine.DeliveryEvent;
+import com.auto.trade.statemachine.OrderDeliveryStateMachine;
 import com.auto.ws.AgentRegistry;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -43,6 +45,7 @@ public class OrderController {
     private final PlatformService websiteService;
     private final AgentRegistry registry;
     private final ObjectMapper objectMapper;
+    private final OrderDeliveryStateMachine deliveryStateMachine;
 
     public OrderController(GameItemOrderService orderService, GameItemOrderDetailService detailService,
                            GameItemService itemService, GameRegionService regionService,
@@ -53,7 +56,8 @@ public class OrderController {
                            MachinePlatformAccountService machinePlatformAccountService,
                            PlatformService websiteService,
                            AgentRegistry registry,
-                           ObjectMapper objectMapper) {
+                           ObjectMapper objectMapper,
+                           OrderDeliveryStateMachine deliveryStateMachine) {
         this.orderService = orderService;
         this.detailService = detailService;
         this.itemService = itemService;
@@ -66,6 +70,7 @@ public class OrderController {
         this.websiteService = websiteService;
         this.registry = registry;
         this.objectMapper = objectMapper;
+        this.deliveryStateMachine = deliveryStateMachine;
     }
 
     private String genOrderNo() {
@@ -99,6 +104,75 @@ public class OrderController {
         return Map.of("total", result.getTotal(), "items", result.getRecords());
     }
 
+    /**
+     * 全局待人工处理消息。不提供“已读即消失”语义；
+     * 只有订单真正离开异常状态，该提示才会消失。
+     */
+    @GetMapping("/manual-alerts")
+    public Map<String, Object> manualAlerts() {
+        LambdaQueryWrapper<GameItemOrder> query = manualAlertQuery()
+                .orderByAsc(GameItemOrder::getUpdatedAt)
+                .last("LIMIT 200");
+        List<Map<String, Object>> items = orderService.list(query).stream()
+                .map(this::toManualAlert)
+                .toList();
+        long total = orderService.count(manualAlertQuery());
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("total", total);
+        response.put("items", items);
+        response.put("polled_at", LocalDateTime.now());
+        return response;
+    }
+
+    private LambdaQueryWrapper<GameItemOrder> manualAlertQuery() {
+        return new LambdaQueryWrapper<GameItemOrder>()
+                .notIn(GameItemOrder::getStatus, "completed", "cancelled")
+                .and(q -> q.and(greeting -> greeting
+                                .eq(GameItemOrder::getDeliveryStatus, "greeting")
+                                .eq(GameItemOrder::getStatus, "abnormal"))
+                        .or().in(GameItemOrder::getDeliveryStatus,
+                                "suspended", "review_required"));
+    }
+
+    private Map<String, Object> toManualAlert(GameItemOrder order) {
+        String deliveryStatus = order.getDeliveryStatus();
+        String title;
+        String severity;
+        if ("review_required".equals(deliveryStatus)) {
+            title = "交易结果需要人工复核";
+            severity = "critical";
+        } else if ("suspended".equals(deliveryStatus)) {
+            title = "订单交付已挂起";
+            severity = "danger";
+        } else {
+            title = "订单招呼异常";
+            severity = "warning";
+        }
+        String message = order.getLastErrorMessage();
+        if (message == null || message.isBlank()) {
+            message = switch (deliveryStatus) {
+                case "review_required" -> "交易结果不确定，请核对游戏和平台订单";
+                case "suspended" -> "自动交付无法继续，请人工处理";
+                default -> "请检查招呼话术、订单明细或 Worker 状态";
+            };
+        }
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", "order:" + order.getId());
+        item.put("entity_type", "order");
+        item.put("entity_id", order.getId());
+        item.put("order_no", order.getOrderNo());
+        item.put("source_order_no", order.getSourceOrderNo());
+        item.put("buyer_character", order.getBuyerCharacter());
+        item.put("delivery_status", deliveryStatus);
+        item.put("order_status", order.getStatus());
+        item.put("severity", severity);
+        item.put("title", title);
+        item.put("message", message);
+        item.put("error_code", order.getLastErrorCode());
+        item.put("occurred_at", order.getUpdatedAt());
+        return item;
+    }
+
     @GetMapping("/{orderId}")
     public Map<String, Object> get(@PathVariable Integer orderId) {
         GameItemOrder o = orderService.getById(orderId);
@@ -108,6 +182,7 @@ public class OrderController {
 
     /** 重新招呼：适用于订单交付状态为 greeting 且总订单未完成/未取消。 */
     @PostMapping("/{orderId}/re-greeting")
+    @Transactional
     public Map<String, Object> reGreeting(@PathVariable Integer orderId) {
         GameItemOrder order = orderService.getById(orderId);
         if (order == null) throw ApiException.notFound("订单不存在");
@@ -151,6 +226,14 @@ public class OrderController {
             if (url.contains("itemmania")) platform = "itemmania";
             else if (url.contains("itembay")) platform = "itembay";
             else if (url.contains("barotem")) platform = "barotem";
+        }
+
+        // 所有前置条件都通过后再退出 abnormal；任何失败都保留告警。
+        if ("abnormal".equals(orderStatus)) {
+            deliveryStateMachine.fire(
+                    order,
+                    DeliveryEvent.RESET_TO_GREETING,
+                    Map.of("message", "人工修复后重新招呼"));
         }
 
         eventPublisher.publishEvent(new GreetingDispatchRequested(

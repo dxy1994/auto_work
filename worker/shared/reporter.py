@@ -45,9 +45,9 @@ class Reporter:
         self._client.send_threadsafe(
             trade_offer_decision_msg(assignment_id, accepted, reason))
 
-    def report_trade_status(self, assignment_id, status, message=""):
+    def report_trade_status(self, assignment_id, status, message="", error_code=""):
         self._client.send_threadsafe(
-            trade_status_msg(assignment_id, status, message))
+            trade_status_msg(assignment_id, status, message, error_code))
 
     def report_order_detected(self, account_id, order):
         self._client.send_threadsafe(

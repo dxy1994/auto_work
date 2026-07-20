@@ -20,6 +20,7 @@ class AppContext:
         self._task_manager = None
         self._runtime_status = None
         self._trade_task_gate = None
+        self._active_trade = None
 
     # ── 属性访问 ──
 
@@ -66,3 +67,29 @@ class AppContext:
     @trade_task_gate.setter
     def trade_task_gate(self, value):
         self._trade_task_gate = value
+
+    def set_active_trade(self, assignment_id, executor, task):
+        with self._lock:
+            if self._active_trade is not None:
+                raise RuntimeError("another trade execution is already active")
+            self._active_trade = {
+                "assignment_id": assignment_id,
+                "executor": executor,
+                "task": task,
+            }
+
+    def active_trade(self, assignment_id=None):
+        with self._lock:
+            active = self._active_trade
+            if active is None:
+                return None
+            if assignment_id is not None and active["assignment_id"] != assignment_id:
+                return None
+            return dict(active)
+
+    def clear_active_trade(self, assignment_id):
+        with self._lock:
+            if self._active_trade is None or self._active_trade["assignment_id"] != assignment_id:
+                return False
+            self._active_trade = None
+            return True

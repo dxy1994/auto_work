@@ -10,12 +10,15 @@ class ExecutorRegistry:
         self._executors: dict[str, BaseGameExecutor] = {}
 
     def register(self, executor: BaseGameExecutor):
-        game_code = executor.game_code.strip().lower()
-        if not game_code:
+        aliases = getattr(executor, "game_codes", (executor.game_code,))
+        game_codes = {str(code).strip().lower() for code in aliases if str(code).strip()}
+        if not game_codes:
             raise ValueError("executor game_code is required")
-        if game_code in self._executors:
-            raise ValueError(f"duplicate executor for game_code={game_code}")
-        self._executors[game_code] = executor
+        duplicates = sorted(code for code in game_codes if code in self._executors)
+        if duplicates:
+            raise ValueError(f"duplicate executor for game_code={duplicates[0]}")
+        for game_code in game_codes:
+            self._executors[game_code] = executor
 
     def get(self, game_code: str) -> Optional[BaseGameExecutor]:
         if not game_code:

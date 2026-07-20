@@ -144,7 +144,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                     str(raw.get("assignment_id")),
                     machineId,
                     str(raw.get("status")),
-                    str(raw.get("message")));
+                    str(raw.get("message")),
+                    str(raw.get("error_code")));
         } catch (IllegalStateException e) {
             log.warn("[Trade] 忽略无效交易状态 machine_id={}: {}", machineId, e.getMessage());
         }

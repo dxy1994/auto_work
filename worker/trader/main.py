@@ -23,6 +23,9 @@ from shared.reporter import Reporter
 from trader.status import RuntimeStatus
 from trader.gate import TradeTaskGate
 from trader.executor.registry import EXECUTOR_REGISTRY
+from trader.executor.hardware.controller import HardwareController
+from trader.executor.lineage_classic import LineageClassicExecutor
+from trader.executor.lineage_classic.policy import execution_timeout_seconds
 
 # 安装时间戳 print
 clock.install()
@@ -31,6 +34,71 @@ clock.install()
 # ═══════════════════════════════════════════════════════════
 # 消息分发
 # ═══════════════════════════════════════════════════════════
+
+TERMINAL_TRADE_STATUSES = {
+    "completed",
+    "failed",
+    "retryable_failed",
+    "timed_out",
+    "cancelled",
+    "verification_failed",
+}
+
+
+async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext):
+    reporter = ctx.reporter
+    runtime_status = ctx.runtime_status
+    trade_task_gate = ctx.trade_task_gate
+
+    def progress(status, message):
+        runtime_status.update(executor_status=status)
+        reporter.report_trade_status(assignment_id, status, message)
+
+    set_progress = getattr(executor, "set_progress_callback", None)
+    if callable(set_progress):
+        set_progress(progress)
+
+    reporter.report_trade_status(assignment_id, "started", "trade executor started")
+    try:
+        result = await asyncio.wait_for(
+            executor.execute(order),
+            timeout=execution_timeout_seconds(order),
+        )
+        success = bool(result.get("success"))
+        terminal_status = "completed" if success else result.get("status", "failed")
+        if terminal_status not in TERMINAL_TRADE_STATUSES:
+            terminal_status = "failed"
+        reporter.report_trade_status(
+            assignment_id,
+            terminal_status,
+            result.get("message", ""),
+            result.get("error_code", ""),
+        )
+    except asyncio.TimeoutError:
+        executor.cancel()
+        reporter.report_trade_status(
+            assignment_id,
+            "verification_failed",
+            "worker execution watchdog timed out; result may be uncertain",
+            "EXECUTION_WATCHDOG_TIMEOUT",
+        )
+    except asyncio.CancelledError:
+        executor.cancel()
+        reporter.report_trade_status(
+            assignment_id, "cancelled", "trade execution task cancelled", "TRADE_CANCELLED"
+        )
+        raise
+    except Exception as exc:
+        reporter.report_trade_status(
+            assignment_id, "failed", f"executor error: {exc}", "EXECUTOR_EXCEPTION"
+        )
+    finally:
+        if callable(set_progress):
+            set_progress(None)
+        trade_task_gate.complete(assignment_id)
+        ctx.clear_active_trade(assignment_id)
+        runtime_status.update(executor_status="idle", current_assignment_id=None)
+
 
 async def _dispatch_message(msg, ctx: AppContext):
     """根据消息类型分发到交易处理函数。"""
@@ -66,41 +134,51 @@ async def _dispatch_message(msg, ctx: AppContext):
                 executor_status="running",
                 current_assignment_id=assignment_id,
             )
-            reporter.report_trade_status(
-                assignment_id, "started", "trade executor started")
             order = trade_task_gate.current_order(assignment_id) or {}
             executor = EXECUTOR_REGISTRY.get(order.get("game_code"))
-            try:
-                if executor is None:
-                    raise RuntimeError("executor disappeared after offer acceptance")
-                result = await executor.execute(order)
-                success = bool(result.get("success"))
+            if executor is None:
                 reporter.report_trade_status(
                     assignment_id,
-                    "completed" if success else "failed",
-                    result.get("message", ""),
+                    "failed",
+                    "executor disappeared after offer acceptance",
+                    "EXECUTOR_NOT_CONFIGURED",
                 )
-            except Exception as exc:
-                reporter.report_trade_status(
-                    assignment_id, "failed", f"executor error: {exc}")
-            finally:
                 trade_task_gate.complete(assignment_id)
                 runtime_status.update(
                     executor_status="idle",
                     current_assignment_id=None,
                 )
+                return
+            task = asyncio.create_task(
+                _run_trade_assignment(assignment_id, order, executor, ctx),
+                name=f"trade-{assignment_id}",
+            )
+            try:
+                ctx.set_active_trade(assignment_id, executor, task)
+            except Exception:
+                executor.cancel()
+                task.cancel()
+                trade_task_gate.complete(assignment_id)
+                runtime_status.update(executor_status="idle", current_assignment_id=None)
+                raise
         else:
             reporter.report_trade_status(
                 assignment_id, "start_rejected", "assignment or token mismatch")
 
     elif mtype == "trade_cancel":
         assignment_id = msg.get("assignment_id")
-        if trade_task_gate.cancel(assignment_id):
+        active = ctx.active_trade(assignment_id)
+        if active is not None:
+            runtime_status.update(executor_status="cancelling")
+            active["executor"].cancel()
+        elif trade_task_gate.cancel(assignment_id):
             runtime_status.update(
                 executor_status="idle",
                 current_assignment_id=None,
             )
-            reporter.report_trade_status(assignment_id, "cancelled")
+            reporter.report_trade_status(
+                assignment_id, "cancelled", "trade cancelled before start", "TRADE_CANCELLED"
+            )
 
     else:
         print(f"[Trader] 未知消息类型: {mtype}")
@@ -113,6 +191,12 @@ async def _dispatch_message(msg, ctx: AppContext):
 async def _heartbeat(client, ctx: AppContext):
     while True:
         await asyncio.sleep(config.HEARTBEAT_INTERVAL)
+        snapshot = ctx.runtime_status.snapshot()
+        if snapshot.get("executor_status") == "idle":
+            executor = EXECUTOR_REGISTRY.get("lineage_classic")
+            probe = getattr(executor, "probe_runtime", None)
+            if callable(probe):
+                await asyncio.to_thread(probe)
         await client.send({
             "type": "heartbeat",
             "runtime": {
@@ -147,6 +231,10 @@ async def _connect_once(ctx: AppContext):
                 await _dispatch_message(msg, ctx)
         finally:
             hb.cancel()
+            active = ctx.active_trade()
+            if active is not None:
+                active["executor"].cancel()
+                active["task"].cancel()
 
 
 async def main_loop():
@@ -157,6 +245,14 @@ async def main_loop():
     trade_task_gate = TradeTaskGate()
     ctx.runtime_status = runtime_status
     ctx.trade_task_gate = trade_task_gate
+
+    if EXECUTOR_REGISTRY.get("lineage_classic") is None:
+        hardware = HardwareController(config.ESP32_HOST)
+        if not hardware.connect():
+            raise RuntimeError("failed to connect trader hardware controller")
+        executor = LineageClassicExecutor(hardware, runtime_status)
+        EXECUTOR_REGISTRY.register(executor)
+        await asyncio.to_thread(executor.probe_runtime)
 
     while True:
         try:

@@ -133,6 +133,7 @@ export const deleteGameAccount = (id) => request.delete(`/game-accounts/${id}`)
 
 // ── 中控平台：订单管理 ────────────────────────────────────
 export const getOrders = (params) => request.get('/orders', { params })
+export const getManualAlerts = () => request.get('/orders/manual-alerts')
 export const getOrder = (id) => request.get(`/orders/${id}`)
 export const createOrder = (data) => request.post('/orders', data)
 export const updateOrder = (id, data) => request.put(`/orders/${id}`, data)

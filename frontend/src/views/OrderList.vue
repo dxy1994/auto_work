@@ -294,7 +294,8 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { RefreshRight } from '@element-plus/icons-vue'
 import {
@@ -316,6 +317,7 @@ const keyword = ref('')
 const filterGameId = ref(null)
 const filterStatus = ref('')
 const loading = ref(false)
+const route = useRoute()
 
 const currentRow = ref(null)
 function onCurrentChange(row) { currentRow.value = row }
@@ -329,8 +331,8 @@ function orderStatusLabel(s) { return { pending: '待分配', assigned: '已分�
 function orderStatusType(s) { return { pending: 'warning', assigned: 'primary', processing: '', completed: 'success', cancelled: 'info' }[s] || '' }
 function detailStatusLabel(s) { return { pending: '待处理', processing: '处理中', completed: '已完成', failed: '失败' }[s] || s }
 function detailStatusType(s) { return { pending: 'warning', processing: '', completed: 'success', failed: 'danger' }[s] || '' }
-function deliveryStatusLabel(s) { return { greeting: '待招呼', detected: '待分配', waiting_assignment: '等待指派', assigned: '已指派', delivering: '交付中', delivered: '已交付', suspended: '已挂起', failed: '失败' }[s] || s || '待分配' }
-function deliveryStatusType(s) { return { greeting: 'warning', detected: 'info', waiting_assignment: 'warning', assigned: 'primary', delivering: '', delivered: 'success', suspended: 'danger', failed: 'danger' }[s] || 'info' }
+function deliveryStatusLabel(s) { return { greeting: '待招呼', detected: '待分配', waiting_assignment: '等待指派', assigned: '已指派', delivering: '交付中', delivered: '已交付', review_required: '待人工复核', suspended: '已挂起', failed: '失败' }[s] || s || '待分配' }
+function deliveryStatusType(s) { return { greeting: 'warning', detected: 'info', waiting_assignment: 'warning', assigned: 'primary', delivering: '', delivered: 'success', review_required: 'danger', suspended: 'danger', failed: 'danger' }[s] || 'info' }
 
 async function fetchList() {
   loading.value = true
@@ -451,6 +453,25 @@ async function openDetailDrawer(order) {
   currentOrder.value = res
 }
 
+let lastAlertNavigation = ''
+async function openAlertOrderFromRoute() {
+  const orderId = Number(route.query.alert_order_id)
+  if (!Number.isInteger(orderId) || orderId <= 0) return
+  const navigationKey = `${orderId}:${route.query.alert_nonce || ''}`
+  if (navigationKey === lastAlertNavigation) return
+  lastAlertNavigation = navigationKey
+  try {
+    await openDetailDrawer({ id: orderId })
+  } catch (error) {
+    ElMessage.error(error.message || '订单详情加载失败')
+  }
+}
+
+watch(
+  () => [route.query.alert_order_id, route.query.alert_nonce],
+  () => openAlertOrderFromRoute(),
+)
+
 async function handleAddDetail() {
   try {
     await addOrderDetail(currentOrder.value.id, { item_id: addDetailItemId.value, quantity: addDetailQty.value })
@@ -497,7 +518,8 @@ onMounted(async () => {
   machineList.value = await getAllMachines()
   allItems.value = await getAllItems()
   websiteList.value = await getAllWebsites()
-  fetchList()
+  await fetchList()
+  await openAlertOrderFromRoute()
 })
 </script>
 

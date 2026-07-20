@@ -50,4 +50,36 @@ class TradeRecoveryServiceTest {
         assertEquals("assignment-1", contextCaptor.getValue().get("assignmentId"));
         assertEquals("WORKER_DISCONNECTED", contextCaptor.getValue().get("errorCode"));
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void lostMachineDuringTradingRequiresManualVerification() {
+        TradeAssignmentService assignmentService = mock(TradeAssignmentService.class);
+        GameItemOrderService orderService = mock(GameItemOrderService.class);
+        OrderDeliveryStateMachine stateMachine = mock(OrderDeliveryStateMachine.class);
+        TradeRecoveryService service = new TradeRecoveryService(
+                assignmentService, orderService, stateMachine);
+
+        TradeAssignment assignment = new TradeAssignment();
+        assignment.setAssignmentId("assignment-2");
+        assignment.setOrderId(43);
+        assignment.setMachineId(7);
+        assignment.setGameAccountId(9);
+        assignment.setStatus("trading");
+
+        GameItemOrder order = new GameItemOrder();
+        order.setId(43);
+        order.setDeliveryStatus("assigned");
+        order.setStatus("pending");
+        when(orderService.getById(43)).thenReturn(order);
+
+        service.recover(assignment, "worker 断线");
+
+        ArgumentCaptor<Map<String, Object>> contextCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(stateMachine).fire(
+                eq(order), eq(DeliveryEvent.TRADE_VERIFICATION_FAILED), contextCaptor.capture());
+        assertEquals("WORKER_DISCONNECTED_RESULT_UNCERTAIN",
+                contextCaptor.getValue().get("errorCode"));
+        assertEquals("interrupted_uncertain", contextCaptor.getValue().get("assignmentStatus"));
+    }
 }

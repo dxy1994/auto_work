@@ -106,12 +106,13 @@ def trade_offer_decision_msg(assignment_id: str, accepted: bool,
 
 
 def trade_status_msg(assignment_id: str, status: str,
-                     message: str = "") -> dict:
+                     message: str = "", error_code: str = "") -> dict:
     return {
         "type": TYPE_TRADE_STATUS,
         "assignment_id": assignment_id,
         "status": status,
         "message": message,
+        "error_code": error_code,
     }
 
 

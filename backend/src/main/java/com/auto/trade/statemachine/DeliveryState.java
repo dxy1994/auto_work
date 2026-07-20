@@ -19,7 +19,8 @@ public enum DeliveryState {
     ASSIGNED("assigned", "pending", "Worker已接受，执行中"),
     WAITING_ASSIGNMENT("waiting_assignment", "pending", "offer被拒/过期，待重新指派"),
     COMPLETED("completed", "completed", "游戏内交易已完成"),
-    SUSPENDED("suspended", "pending", "交易取消或启动失败，等人工处理");
+    REVIEW_REQUIRED("review_required", "pending", "交易结果不确定，需要人工复核"),
+    SUSPENDED("suspended", "pending", "交易取消或不可自动重试，等人工处理");
 
     private final String deliveryStatus;
     private final String orderStatus;
@@ -45,6 +46,7 @@ public enum DeliveryState {
                 "assigned|pending", ASSIGNED,
                 "waiting_assignment|pending", WAITING_ASSIGNMENT,
                 "completed|completed", COMPLETED,
+                "review_required|pending", REVIEW_REQUIRED,
                 "suspended|pending", SUSPENDED);
     }
 
