@@ -4,6 +4,8 @@ import { getManualAlerts } from '../api'
 
 const POLL_INTERVAL_MS = 5000
 const REMINDER_INTERVAL_MS = 20000
+const VOICE_CONSENT_KEY = 'auto_work_voice_alert_consent_v1'
+const VOICE_CONSENT_GRANTED = 'granted'
 
 export const useManualAlertStore = defineStore('manual-alerts', () => {
   const items = ref([])
@@ -12,6 +14,8 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
   const fetchError = ref('')
   const drawerVisible = ref(false)
   const needsInteraction = ref(false)
+  const voiceConsentRequired = ref(false)
+  const voiceConsentGranted = ref(false)
   const lastUpdatedAt = ref(null)
 
   let pollTimer = null
@@ -48,14 +52,12 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     if (speechSupported.value) window.speechSynthesis.cancel()
   }
 
-  function speak(force = false) {
-    if (!hasAlerts.value || !speechSupported.value) return false
-    const now = Date.now()
-    if (!force && now - lastSpokenAt < REMINDER_INTERVAL_MS) return false
+  function speakText(text, markReminder = false) {
+    if (!text || !speechSupported.value) return false
     const synth = window.speechSynthesis
     if (synth.speaking || synth.pending) return false
 
-    const utterance = new window.SpeechSynthesisUtterance(reminderText())
+    const utterance = new window.SpeechSynthesisUtterance(text)
     utterance.lang = 'zh-CN'
     utterance.rate = 0.92
     utterance.pitch = 1
@@ -70,8 +72,52 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
       }
     }
     synth.speak(utterance)
-    lastSpokenAt = now
+    if (markReminder) lastSpokenAt = Date.now()
     return true
+  }
+
+  function promptVoiceConsent() {
+    voiceConsentRequired.value = true
+    return speakText('中控平台请求开启语音提醒。请点击同意并开启语音提醒。')
+  }
+
+  function grantVoiceConsent() {
+    try {
+      window.localStorage.setItem(VOICE_CONSENT_KEY, VOICE_CONSENT_GRANTED)
+    } catch (_error) {
+      // 隐私模式禁用 localStorage 时，本次会话仍可正常开启。
+    }
+    voiceConsentGranted.value = true
+    voiceConsentRequired.value = false
+    needsInteraction.value = false
+    cancelSpeech()
+    const confirmation = hasAlerts.value
+      ? `语音提醒已开启。${reminderText()}`
+      : '语音提醒已开启。出现需要人工处理的异常时，系统将持续播报。'
+    return speakText(confirmation, hasAlerts.value)
+  }
+
+  function loadVoiceConsent() {
+    let granted = false
+    try {
+      granted = window.localStorage.getItem(VOICE_CONSENT_KEY) === VOICE_CONSENT_GRANTED
+    } catch (_error) {
+      granted = false
+    }
+    voiceConsentGranted.value = granted
+    voiceConsentRequired.value = !granted
+    if (!granted) window.setTimeout(promptVoiceConsent, 0)
+  }
+
+  function speak(force = false) {
+    if (!voiceConsentGranted.value) {
+      promptVoiceConsent()
+      return false
+    }
+    if (!hasAlerts.value || !speechSupported.value) return false
+    const now = Date.now()
+    if (!force && now - lastSpokenAt < REMINDER_INTERVAL_MS) return false
+    return speakText(reminderText(), true)
   }
 
   async function refresh() {
@@ -91,7 +137,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
       lastUpdatedAt.value = response.polled_at || new Date().toISOString()
 
       if (!nextTotal) {
-        cancelSpeech()
+        if (!voiceConsentRequired.value) cancelSpeech()
         lastSpokenAt = 0
         needsInteraction.value = false
       } else if (changed) {
@@ -107,12 +153,15 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
   }
 
   function handleUserInteraction() {
-    if (hasAlerts.value && needsInteraction.value) speak(true)
+    if (!needsInteraction.value) return
+    if (voiceConsentRequired.value) promptVoiceConsent()
+    else if (hasAlerts.value) speak(true)
   }
 
   function start() {
     if (started) return
     started = true
+    loadVoiceConsent()
     refresh()
     pollTimer = window.setInterval(refresh, POLL_INTERVAL_MS)
     reminderTimer = window.setInterval(() => speak(false), 1000)
@@ -137,11 +186,14 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     fetchError,
     drawerVisible,
     needsInteraction,
+    voiceConsentRequired,
+    voiceConsentGranted,
     lastUpdatedAt,
     speechSupported,
     hasAlerts,
     refresh,
     speak,
+    grantVoiceConsent,
     start,
     stop,
   }

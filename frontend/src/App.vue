@@ -112,6 +112,42 @@
     </el-main>
   </el-container>
 
+  <el-dialog
+    v-model="manualAlerts.voiceConsentRequired"
+    title="开启语音提醒"
+    width="440px"
+    align-center
+    :show-close="false"
+    :close-on-click-modal="false"
+    :close-on-press-escape="false"
+  >
+    <div class="voice-consent-content">
+      <el-icon class="voice-consent-icon" :size="46"><BellFilled /></el-icon>
+      <div>
+        <p>中控平台会在订单需要人工处理时持续语音提醒，直到异常状态恢复。</p>
+        <p class="voice-consent-hint">同意状态仅保存在当前浏览器中，每个新浏览器需要各自开启一次。</p>
+      </div>
+    </div>
+    <el-alert
+      v-if="!manualAlerts.speechSupported"
+      title="当前浏览器不支持语音合成，请使用 Chrome 或 Edge"
+      type="error"
+      :closable="false"
+      show-icon
+    />
+    <template #footer>
+      <el-button
+        type="primary"
+        size="large"
+        :disabled="!manualAlerts.speechSupported"
+        @click="manualAlerts.grantVoiceConsent"
+      >
+        <el-icon><Microphone /></el-icon>
+        同意并开启语音提醒
+      </el-button>
+    </template>
+  </el-dialog>
+
   <el-drawer
     v-model="manualAlerts.drawerVisible"
     title="待人工处理"
@@ -268,6 +304,10 @@ html, body, #app { height: 100%; margin: 0; padding: 0; }
   right: 28px;
 }
 .global-alert-trigger .el-button { box-shadow: 0 6px 18px rgba(245, 108, 108, .35); }
+.voice-consent-content { display: flex; gap: 16px; align-items: flex-start; }
+.voice-consent-content p { margin: 0 0 10px; color: #303133; line-height: 1.7; }
+.voice-consent-icon { flex-shrink: 0; color: #e6a23c; }
+.voice-consent-content .voice-consent-hint { color: #909399; font-size: 13px; }
 .menu-alert-count {
   margin-left: auto;
   min-width: 20px;
