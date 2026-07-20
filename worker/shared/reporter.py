@@ -10,7 +10,8 @@ from typing import Optional
 from shared.protocol import (
     task_status_msg, task_result_msg, task_event_msg,
     check_orders_msg, order_detected_msg,
-    trade_offer_decision_msg, trade_status_msg,
+    trade_offer_decision_msg, trade_status_msg, trade_buyer_review_msg,
+    trade_game_screenshot_msg,
     greeting_result_msg,
 )
 
@@ -26,6 +27,8 @@ class Reporter:
         self._lock = threading.Lock()
         self._order_check_events: dict = {}
         self._order_check_results: dict = {}
+        self._trade_screenshot_events: dict = {}
+        self._trade_screenshot_results: dict = {}
 
     # ── 状态上报 ──
 
@@ -48,6 +51,35 @@ class Reporter:
     def report_trade_status(self, assignment_id, status, message="", error_code=""):
         self._client.send_threadsafe(
             trade_status_msg(assignment_id, status, message, error_code))
+
+    def report_trade_buyer_review(self, assignment_id, review):
+        self._client.send_threadsafe(
+            trade_buyer_review_msg(assignment_id, review))
+
+    def save_trade_game_screenshot(self, assignment_id, screenshot_data_url, timeout=10):
+        request_id = str(uuid.uuid4())
+        event = threading.Event()
+        with self._lock:
+            self._trade_screenshot_events[request_id] = event
+        try:
+            self._client.send_threadsafe(trade_game_screenshot_msg(
+                assignment_id, request_id, screenshot_data_url))
+            if not event.wait(timeout):
+                return False
+            with self._lock:
+                return bool(self._trade_screenshot_results.pop(request_id, False))
+        finally:
+            with self._lock:
+                self._trade_screenshot_events.pop(request_id, None)
+                self._trade_screenshot_results.pop(request_id, None)
+
+    def deliver_trade_game_screenshot_saved(self, request_id, success):
+        with self._lock:
+            event = self._trade_screenshot_events.get(request_id)
+            if event is not None:
+                self._trade_screenshot_results[request_id] = bool(success)
+        if event:
+            event.set()
 
     def report_order_detected(self, account_id, order):
         self._client.send_threadsafe(

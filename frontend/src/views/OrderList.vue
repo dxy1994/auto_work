@@ -218,6 +218,45 @@
         </el-descriptions-item>
       </el-descriptions>
 
+      <section v-if="currentOrder?.game_trade_screenshot" class="detail-section game-trade-proof">
+        <div class="game-trade-proof-title">
+          <strong>游戏交易证据</strong>
+          <span>最终确认前保存于 {{ currentOrder.game_trade_screenshot_at || '-' }}</span>
+        </div>
+        <el-image
+          class="game-trade-proof-image"
+          :src="currentOrder.game_trade_screenshot"
+          :preview-src-list="[currentOrder.game_trade_screenshot]"
+          fit="contain"
+        />
+      </section>
+
+      <section v-if="currentOrder?.buyer_review" class="detail-section buyer-review-detail">
+        <div class="buyer-review-detail-title">
+          <strong>交易客户 OCR 审核</strong>
+          <el-tag :type="currentOrder.buyer_review.status === 'pending' ? 'danger' : 'info'">
+            {{ buyerReviewStatusLabel(currentOrder.buyer_review.status) }}
+          </el-tag>
+        </div>
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item label="订单客户名">{{ currentOrder.buyer_review.expected_buyer || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="OCR 文字">{{ currentOrder.buyer_review.observed_buyer || '未识别' }}</el-descriptions-item>
+          <el-descriptions-item label="OCR 置信度">{{ formatConfidence(currentOrder.buyer_review.ocr_confidence) }}</el-descriptions-item>
+          <el-descriptions-item label="请求时间">{{ currentOrder.buyer_review.requested_at || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="处理时间" :span="2">{{ currentOrder.buyer_review.decided_at || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-image
+          class="buyer-review-detail-image"
+          :src="currentOrder.buyer_review.screenshot_data_url"
+          :preview-src-list="[currentOrder.buyer_review.screenshot_data_url]"
+          fit="contain"
+        />
+        <div v-if="currentOrder.buyer_review.status === 'pending'" class="buyer-review-detail-actions">
+          <el-button type="danger" :loading="buyerReviewLoading" @click="handleBuyerReview(false)">不同意并拒绝申请</el-button>
+          <el-button type="success" :loading="buyerReviewLoading" @click="handleBuyerReview(true)">同意并继续交易</el-button>
+        </div>
+      </section>
+
       <!-- 订单信息 -->
       <el-descriptions :column="2" border size="small" title="订单信息" class="detail-section">
         <el-descriptions-item label="游戏">{{ gameNameMap[currentOrder?.game_id] || currentOrder?.game_id }}</el-descriptions-item>
@@ -301,7 +340,7 @@ import { RefreshRight } from '@element-plus/icons-vue'
 import {
   getAllGames, getAllRegions, getAllMachines, getAllItems, getAllWebsites,
   getOrders, getOrder, createOrder, updateOrder, deleteOrder,
-  addOrderDetail, deleteOrderDetail, reGreeting,
+  addOrderDetail, deleteOrderDetail, reGreeting, decideBuyerReview as submitBuyerReview,
 } from '../api'
 
 const gameList = ref([])
@@ -331,8 +370,8 @@ function orderStatusLabel(s) { return { pending: '待分配', assigned: '已分�
 function orderStatusType(s) { return { pending: 'warning', assigned: 'primary', processing: '', completed: 'success', cancelled: 'info' }[s] || '' }
 function detailStatusLabel(s) { return { pending: '待处理', processing: '处理中', completed: '已完成', failed: '失败' }[s] || s }
 function detailStatusType(s) { return { pending: 'warning', processing: '', completed: 'success', failed: 'danger' }[s] || '' }
-function deliveryStatusLabel(s) { return { greeting: '待招呼', detected: '待分配', waiting_assignment: '等待指派', assigned: '已指派', delivering: '交付中', delivered: '已交付', review_required: '待人工复核', suspended: '已挂起', failed: '失败' }[s] || s || '待分配' }
-function deliveryStatusType(s) { return { greeting: 'warning', detected: 'info', waiting_assignment: 'warning', assigned: 'primary', delivering: '', delivered: 'success', review_required: 'danger', suspended: 'danger', failed: 'danger' }[s] || 'info' }
+function deliveryStatusLabel(s) { return { greeting: '待招呼', detected: '待分配', waiting_assignment: '等待指派', assigned: '已指派', delivering: '交付中', delivered: '已交付', wait_web_confirm: '等待网站确认', review_required: '待人工复核', suspended: '已挂起', failed: '失败' }[s] || s || '待分配' }
+function deliveryStatusType(s) { return { greeting: 'warning', detected: 'info', waiting_assignment: 'warning', assigned: 'primary', delivering: '', delivered: 'success', wait_web_confirm: 'warning', review_required: 'danger', suspended: 'danger', failed: 'danger' }[s] || 'info' }
 
 async function fetchList() {
   loading.value = true
@@ -444,6 +483,7 @@ const currentOrder = ref(null)
 const detailList = ref([])
 const addDetailItemId = ref(null)
 const addDetailQty = ref(1)
+const buyerReviewLoading = ref(false)
 
 async function openDetailDrawer(order) {
   currentOrder.value = order
@@ -451,6 +491,35 @@ async function openDetailDrawer(order) {
   const res = await getOrder(order.id)
   detailList.value = res.details || []
   currentOrder.value = res
+}
+
+function formatConfidence(value) {
+  const confidence = Number(value)
+  return Number.isFinite(confidence) && confidence >= 0 ? `${confidence.toFixed(1)}%` : '无法识别'
+}
+
+function buyerReviewStatusLabel(status) {
+  return { pending: '待人工确认', approved: '已同意', rejected: '已拒绝', expired: '已失效', cancelled: '已取消' }[status] || status || '-'
+}
+
+async function handleBuyerReview(approved) {
+  buyerReviewLoading.value = true
+  try {
+    const review = currentOrder.value.buyer_review
+    const response = await submitBuyerReview(currentOrder.value.id, {
+      review_id: review.review_id,
+      approved: Boolean(approved),
+    })
+    ElMessage.success(response.message)
+    const orderRes = await getOrder(currentOrder.value.id)
+    detailList.value = orderRes.details || []
+    currentOrder.value = orderRes
+    fetchList()
+  } catch (error) {
+    ElMessage.error(error.message || '审核决定提交失败')
+  } finally {
+    buyerReviewLoading.value = false
+  }
 }
 
 let lastAlertNavigation = ''
@@ -532,4 +601,12 @@ onMounted(async () => {
 .total-line { text-align: right; font-weight: 600; font-size: 15px; margin-top: 12px; color: #e6a23c; }
 .detail-info { margin-bottom: 8px; }
 .detail-section { margin-bottom: 16px; }
+.buyer-review-detail { padding: 14px; border: 1px solid #f3d19e; border-radius: 8px; background: #fdf6ec; }
+.buyer-review-detail-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.buyer-review-detail-image { width: 100%; min-height: 90px; max-height: 210px; margin-top: 12px; border: 1px solid #dcdfe6; border-radius: 6px; background: #111827; }
+.buyer-review-detail-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+.game-trade-proof { padding: 14px; border: 1px solid #b3d8ff; border-radius: 8px; background: #ecf5ff; }
+.game-trade-proof-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.game-trade-proof-title span { color: #606266; font-size: 12px; }
+.game-trade-proof-image { width: 100%; min-height: 220px; max-height: 480px; border: 1px solid #dcdfe6; border-radius: 6px; background: #111827; }
 </style>

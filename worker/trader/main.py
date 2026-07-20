@@ -42,6 +42,7 @@ TERMINAL_TRADE_STATUSES = {
     "timed_out",
     "cancelled",
     "verification_failed",
+    "wait_web_confirm",
 }
 
 
@@ -57,6 +58,18 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
     set_progress = getattr(executor, "set_progress_callback", None)
     if callable(set_progress):
         set_progress(progress)
+    set_buyer_review = getattr(executor, "set_buyer_review_callback", None)
+    if callable(set_buyer_review):
+        set_buyer_review(
+            lambda review: reporter.report_trade_buyer_review(assignment_id, review)
+        )
+    set_trade_screenshot = getattr(executor, "set_trade_screenshot_callback", None)
+    if callable(set_trade_screenshot):
+        set_trade_screenshot(
+            lambda screenshot: reporter.save_trade_game_screenshot(
+                assignment_id, screenshot
+            )
+        )
 
     reporter.report_trade_status(assignment_id, "started", "trade executor started")
     try:
@@ -65,7 +78,7 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
             timeout=execution_timeout_seconds(order),
         )
         success = bool(result.get("success"))
-        terminal_status = "completed" if success else result.get("status", "failed")
+        terminal_status = result.get("status", "completed" if success else "failed")
         if terminal_status not in TERMINAL_TRADE_STATUSES:
             terminal_status = "failed"
         reporter.report_trade_status(
@@ -95,6 +108,10 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
     finally:
         if callable(set_progress):
             set_progress(None)
+        if callable(set_buyer_review):
+            set_buyer_review(None)
+        if callable(set_trade_screenshot):
+            set_trade_screenshot(None)
         trade_task_gate.complete(assignment_id)
         ctx.clear_active_trade(assignment_id)
         runtime_status.update(executor_status="idle", current_assignment_id=None)
@@ -179,6 +196,22 @@ async def _dispatch_message(msg, ctx: AppContext):
             reporter.report_trade_status(
                 assignment_id, "cancelled", "trade cancelled before start", "TRADE_CANCELLED"
             )
+
+    elif mtype == "trade_buyer_review_decision":
+        assignment_id = msg.get("assignment_id")
+        active = ctx.active_trade(assignment_id)
+        submit_review = (
+            getattr(active["executor"], "submit_buyer_review", None)
+            if active is not None else None
+        )
+        if not callable(submit_review) or not submit_review(
+            msg.get("review_id"), bool(msg.get("approved"))
+        ):
+            print(f"[Trader] 忽略已失效的买家审核决定: {msg.get('review_id')}")
+
+    elif mtype == "trade_game_screenshot_saved":
+        reporter.deliver_trade_game_screenshot_saved(
+            msg.get("request_id"), bool(msg.get("success")))
 
     else:
         print(f"[Trader] 未知消息类型: {mtype}")

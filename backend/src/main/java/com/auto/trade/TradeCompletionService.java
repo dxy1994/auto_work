@@ -32,12 +32,31 @@ public class TradeCompletionService {
 
     public void complete(GameItemOrder order) {
         LocalDateTime now = LocalDateTime.now();
-        order.setGameDeliveredAt(now);
+        if (order.getGameDeliveredAt() == null) {
+            order.setGameDeliveredAt(now);
+            reconcileInventory(order, "completed");
+        } else {
+            for (GameItemOrderDetail detail : detailService.findByOrderId(order.getId())) {
+                detail.setStatus("completed");
+                detailService.updateById(detail);
+            }
+        }
         order.setCompletedAt(now);
+    }
 
+    /** 游戏交易完成时立即扣减库存，但订单仍需等待网站侧确认。 */
+    public void gameDelivered(GameItemOrder order) {
+        if (order.getGameDeliveredAt() != null) {
+            return;
+        }
+        order.setGameDeliveredAt(LocalDateTime.now());
+        reconcileInventory(order, "processing");
+    }
+
+    private void reconcileInventory(GameItemOrder order, String detailStatus) {
         List<String> reconciliationErrors = new ArrayList<>();
         for (GameItemOrderDetail detail : detailService.findByOrderId(order.getId())) {
-            detail.setStatus("completed");
+            detail.setStatus(detailStatus);
             detailService.updateById(detail);
 
             Integer itemId = detail.getItemId();
@@ -67,7 +86,7 @@ public class TradeCompletionService {
         if (!reconciliationErrors.isEmpty()) {
             order.setLastErrorCode("INVENTORY_RECONCILIATION_REQUIRED");
             order.setLastErrorMessage(String.join("; ", reconciliationErrors));
-            log.warn("[TradeCompletion] 订单完成但库存需要对账 order_id={} errors={}",
+            log.warn("[TradeCompletion] 游戏交易完成但库存需要对账 order_id={} errors={}",
                     order.getId(), reconciliationErrors);
         } else {
             order.setLastErrorCode(null);

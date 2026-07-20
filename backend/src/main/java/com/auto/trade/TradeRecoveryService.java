@@ -24,7 +24,7 @@ public class TradeRecoveryService {
 
     private static final List<String> ACTIVE_ASSIGNMENT_STATUSES = List.of(
             "offered", "accepted", "started", "preparing", "switching_region",
-            "waiting_buyer", "trading", "verifying");
+            "waiting_buyer", "waiting_buyer_review", "trading", "verifying");
 
     private final TradeAssignmentService assignmentService;
     private final GameItemOrderService orderService;
@@ -62,6 +62,11 @@ public class TradeRecoveryService {
     }
 
     void recover(TradeAssignment assignment, String reason) {
+        if ("pending".equals(assignment.getBuyerReviewStatus())) {
+            assignment.setBuyerReviewStatus("cancelled");
+            assignment.setBuyerReviewDecidedAt(java.time.LocalDateTime.now());
+            assignmentService.updateById(assignment);
+        }
         GameItemOrder order = orderService.getById(assignment.getOrderId());
         if (order == null) {
             log.warn("[TradeRecovery] 指派对应订单不存在 assignment_id={}",

@@ -293,6 +293,17 @@ public class AgentRegistry {
         return sendToAgent(machineId, payload);
     }
 
+    /** 将人工客户审核结论下发给正在等待的交易执行器。 */
+    public boolean sendTradeBuyerReviewDecision(
+            int machineId, String assignmentId, String reviewId, boolean approved) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "trade_buyer_review_decision");
+        payload.put("assignment_id", assignmentId);
+        payload.put("review_id", reviewId);
+        payload.put("approved", approved);
+        return sendToAgent(machineId, payload);
+    }
+
     /** 下发招呼指令给指定机器。 */
     public boolean sendGreeting(int machineId, int orderId, int websiteId, int accountId,
                                 java.util.List<java.util.Map<String, Object>> scripts, String chatUrl) {

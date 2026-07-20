@@ -22,6 +22,7 @@ import com.auto.trade.statemachine.DeliveryEvent;
 import com.auto.trade.statemachine.OrderDeliveryStateMachine;
 import com.auto.ws.AgentRegistry;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.context.event.EventListener;
@@ -53,7 +54,8 @@ public class TradeDispatchCoordinator {
     private static final int OFFER_LEASE_SECONDS = 30;
     private static final int EXECUTION_WATCHDOG_GRACE_SECONDS = 180;
     private static final Set<String> PROGRESS_STATUSES = Set.of(
-            "started", "preparing", "switching_region", "waiting_buyer", "trading", "verifying");
+            "started", "preparing", "switching_region", "waiting_buyer",
+            "waiting_buyer_review", "trading", "verifying");
 
     private final GameItemOrderService orderService;
     private final MachineGameAccountService machineGameService;
@@ -234,8 +236,8 @@ public class TradeDispatchCoordinator {
             String defaultErrorCode;
 
             switch (status) {
-                case "completed" -> {
-                    stateMachine.fire(order, DeliveryEvent.TRADE_COMPLETED, ctx);
+                case "completed", "wait_web_confirm" -> {
+                    stateMachine.fire(order, DeliveryEvent.GAME_TRADE_COMPLETED, ctx);
                     clearActiveAssignment(assignmentId);
                     return;
                 }
@@ -272,6 +274,114 @@ public class TradeDispatchCoordinator {
             ctx.put("errorMessage", message);
             stateMachine.fire(order, event, ctx);
             clearActiveAssignment(assignmentId);
+        }
+    }
+
+    /** 保存 Worker 上报的低置信客户名，并等待前端人工判断。 */
+    @Transactional
+    public void handleBuyerReview(
+            String assignmentId,
+            int machineId,
+            String reviewId,
+            String observedBuyer,
+            double ocrConfidence,
+            String screenshotDataUrl) {
+        TradeOffer offer = requirePendingOffer(assignmentId, machineId);
+        synchronized (offer) {
+            if (!acceptedAssignments.contains(assignmentId)) {
+                throw new IllegalStateException("指派尚未接受，不能请求买家审核");
+            }
+            if (reviewId == null || reviewId.isBlank() || reviewId.length() > 36) {
+                throw new IllegalStateException("买家审核编号无效");
+            }
+            if (screenshotDataUrl == null
+                    || !screenshotDataUrl.startsWith("data:image/png;base64,")
+                    || screenshotDataUrl.length() > 1_800_000) {
+                throw new IllegalStateException("买家审核截图无效或过大");
+            }
+            TradeAssignment assignment = assignmentService.getOne(
+                    new LambdaQueryWrapper<TradeAssignment>()
+                            .eq(TradeAssignment::getAssignmentId, assignmentId), false);
+            if (assignment == null) {
+                throw new IllegalStateException("交易指派记录不存在: " + assignmentId);
+            }
+            GameItemOrder order = orderService.getById(offer.orderId());
+            assignment.setStatus("waiting_buyer_review");
+            assignment.setBuyerReviewId(reviewId);
+            assignment.setBuyerReviewStatus("pending");
+            assignment.setExpectedBuyerName(order == null ? null : order.getBuyerCharacter());
+            assignment.setObservedBuyerName(truncate(observedBuyer, 255));
+            assignment.setBuyerOcrConfidence(ocrConfidence);
+            assignment.setBuyerReviewScreenshot(screenshotDataUrl);
+            assignment.setBuyerReviewRequestedAt(LocalDateTime.now());
+            assignment.setBuyerReviewDecidedAt(null);
+            if (assignment.getStartedAt() == null) {
+                assignment.setStartedAt(LocalDateTime.now());
+            }
+            assignmentService.updateById(assignment);
+        }
+    }
+
+    /** 保存最终确认按钮点击前的完整游戏截图。 */
+    @Transactional
+    public void handleGameTradeScreenshot(
+            String assignmentId, int machineId, String screenshotDataUrl) {
+        TradeOffer offer = requirePendingOffer(assignmentId, machineId);
+        synchronized (offer) {
+            if (!acceptedAssignments.contains(assignmentId)) {
+                throw new IllegalStateException("指派尚未接受，不能保存交易截图");
+            }
+            if (screenshotDataUrl == null
+                    || !screenshotDataUrl.startsWith("data:image/png;base64,")
+                    || screenshotDataUrl.length() > 3_500_000) {
+                throw new IllegalStateException("游戏交易截图无效或过大");
+            }
+            GameItemOrder order = orderService.getById(offer.orderId());
+            if (order == null || !assignmentId.equals(order.getAssignmentId())) {
+                throw new IllegalStateException("订单不存在或交易指派已失效");
+            }
+            order.setGameTradeScreenshot(screenshotDataUrl);
+            order.setGameTradeScreenshotAt(LocalDateTime.now());
+            orderService.updateById(order);
+        }
+    }
+
+    /** 前端人工决定后，将结果发送给原 Worker；下发失败时保留 pending 供重试。 */
+    @Transactional
+    public TradeAssignment decideBuyerReview(
+            Integer orderId, String reviewId, boolean approved) {
+        TradeAssignment assignment = assignmentService.getOne(
+                new LambdaQueryWrapper<TradeAssignment>()
+                        .eq(TradeAssignment::getOrderId, orderId)
+                        .eq(TradeAssignment::getBuyerReviewId, reviewId)
+                        .eq(TradeAssignment::getBuyerReviewStatus, "pending"), false);
+        if (assignment == null) {
+            throw new IllegalStateException("审核请求不存在或已处理");
+        }
+        TradeOffer offer = requirePendingOffer(
+                assignment.getAssignmentId(), assignment.getMachineId());
+        synchronized (offer) {
+            boolean claimed = assignmentService.update(new LambdaUpdateWrapper<TradeAssignment>()
+                    .eq(TradeAssignment::getId, assignment.getId())
+                    .eq(TradeAssignment::getBuyerReviewStatus, "pending")
+                    .set(TradeAssignment::getBuyerReviewStatus, "decision_sending"));
+            if (!claimed) {
+                throw new IllegalStateException("审核请求已由其他页面处理");
+            }
+            if (!agentRegistry.sendTradeBuyerReviewDecision(
+                    assignment.getMachineId(), assignment.getAssignmentId(), reviewId, approved)) {
+                throw new IllegalStateException("交易 Worker 已离线，审核决定下发失败");
+            }
+            LocalDateTime decidedAt = LocalDateTime.now();
+            String reviewStatus = approved ? "approved" : "rejected";
+            assignmentService.update(new LambdaUpdateWrapper<TradeAssignment>()
+                    .eq(TradeAssignment::getId, assignment.getId())
+                    .eq(TradeAssignment::getBuyerReviewStatus, "decision_sending")
+                    .set(TradeAssignment::getBuyerReviewStatus, reviewStatus)
+                    .set(TradeAssignment::getBuyerReviewDecidedAt, decidedAt));
+            assignment.setBuyerReviewStatus(reviewStatus);
+            assignment.setBuyerReviewDecidedAt(decidedAt);
+            return assignment;
         }
     }
 
@@ -476,6 +586,14 @@ public class TradeDispatchCoordinator {
     }
 
     private void clearActiveAssignment(String assignmentId) {
+        TradeAssignment assignment = assignmentService.getOne(
+                new LambdaQueryWrapper<TradeAssignment>()
+                        .eq(TradeAssignment::getAssignmentId, assignmentId), false);
+        if (assignment != null && "pending".equals(assignment.getBuyerReviewStatus())) {
+            assignment.setBuyerReviewStatus("expired");
+            assignment.setBuyerReviewDecidedAt(LocalDateTime.now());
+            assignmentService.updateById(assignment);
+        }
         pendingOffers.remove(assignmentId);
         acceptedAssignments.remove(assignmentId);
         executionDeadlines.remove(assignmentId);
@@ -558,5 +676,12 @@ public class TradeDispatchCoordinator {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
+    }
+
+    private static String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 }

@@ -16,7 +16,13 @@ from trader.executor.lineage_classic.navigation import (
     region_text_matches,
 )
 from trader.executor.lineage_classic.policy import trade_timeout_seconds
-from trader.executor.lineage_classic.executor import TradeUi
+from trader.executor.lineage_classic.executor import (
+    LineageClassicExecutor,
+    TradeUi,
+    buyer_ocr_action,
+    customer_name_prefix_matches,
+    region_center,
+)
 
 
 ORDER = {
@@ -137,6 +143,48 @@ class _Vision:
 
 
 class LineageNavigationTest(unittest.TestCase):
+    def test_buyer_ocr_at_90_or_above_auto_accepts_only_matching_name(self):
+        self.assertEqual("accept", buyer_ocr_action("홍길동이", "홍길동", 90.0))
+        self.assertEqual("review", buyer_ocr_action("홍길순", "홍길동", 99.0))
+
+    def test_buyer_ocr_below_90_always_needs_human_review(self):
+        self.assertEqual("review", buyer_ocr_action("홍길동", "홍길동", 89.9))
+        self.assertEqual("review", buyer_ocr_action("", "홍길동", -1.0))
+
+    def test_trade_fixed_action_regions_use_the_provided_centers(self):
+        self.assertEqual((537, 551), region_center(TradeUi.REQUEST_ACCEPT_REGION))
+        self.assertEqual((568, 551), region_center(TradeUi.REQUEST_REJECT_REGION))
+        self.assertEqual((537, 551), region_center(TradeUi.FINAL_ACCEPT_REGION))
+        self.assertEqual((568, 551), region_center(TradeUi.FINAL_REJECT_REGION))
+
+    def test_customer_name_uses_expected_prefix_and_allows_korean_particles(self):
+        self.assertTrue(customer_name_prefix_matches("홍길동이", "홍길동"))
+        self.assertTrue(customer_name_prefix_matches("홍길동가", "홍길동"))
+        self.assertTrue(customer_name_prefix_matches("홍길동이[가]", "홍길동"))
+        self.assertTrue(customer_name_prefix_matches("Buyer 27 이", "buyer27"))
+        self.assertFalse(customer_name_prefix_matches("홍길순이", "홍길동"))
+        self.assertFalse(customer_name_prefix_matches("", "홍길동"))
+
+    def test_item_transfers_use_detail_quantities_and_inventory_positions(self):
+        executor = LineageClassicExecutor(object())
+        order = {
+            "asset_type": "item",
+            "details": [
+                {"item_id": 11, "item_name": "红水", "quantity": 3},
+                {"item_id": 12, "item_name": "蓝水", "quantity": 2},
+            ],
+            "item_positions": [
+                {"item_id": 11, "x": 620, "y": 80},
+                {"item_id": 12, "x": 660, "y": 80},
+            ],
+        }
+
+        transfers = executor._build_transfers(order, object())
+
+        self.assertEqual([((620, 80), 3), ((660, 80), 2)], [
+            (transfer.source, transfer.quantity) for transfer in transfers
+        ])
+
     def test_trade_timeout_uses_order_value_and_safe_bounds(self):
         self.assertEqual(300, trade_timeout_seconds({}))
         self.assertEqual(600, trade_timeout_seconds({"trade_timeout_seconds": 600}))

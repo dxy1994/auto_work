@@ -18,6 +18,7 @@ public enum DeliveryState {
     OFFERED("offered", "pending", "已发送交易指派"),
     ASSIGNED("assigned", "pending", "Worker已接受，执行中"),
     WAITING_ASSIGNMENT("waiting_assignment", "pending", "offer被拒/过期，待重新指派"),
+    WAIT_WEB_CONFIRM("wait_web_confirm", "processing", "游戏交易完成，等待网站确认"),
     COMPLETED("completed", "completed", "游戏内交易已完成"),
     REVIEW_REQUIRED("review_required", "pending", "交易结果不确定，需要人工复核"),
     SUSPENDED("suspended", "pending", "交易取消或不可自动重试，等人工处理");
@@ -45,6 +46,7 @@ public enum DeliveryState {
                 "offered|pending", OFFERED,
                 "assigned|pending", ASSIGNED,
                 "waiting_assignment|pending", WAITING_ASSIGNMENT,
+                "wait_web_confirm|processing", WAIT_WEB_CONFIRM,
                 "completed|completed", COMPLETED,
                 "review_required|pending", REVIEW_REQUIRED,
                 "suspended|pending", SUSPENDED);

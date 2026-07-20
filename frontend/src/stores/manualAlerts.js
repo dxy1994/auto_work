@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { getManualAlerts } from '../api'
+import { decideBuyerReview as sendBuyerReviewDecision, getManualAlerts } from '../api'
 
 const POLL_INTERVAL_MS = 5000
 const REMINDER_INTERVAL_MS = 20000
@@ -17,6 +17,8 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
   const voiceConsentRequired = ref(false)
   const voiceConsentGranted = ref(false)
   const lastUpdatedAt = ref(null)
+  const reviewDialogVisible = ref(false)
+  const reviewDecisionLoading = ref(false)
 
   let pollTimer = null
   let reminderTimer = null
@@ -31,6 +33,9 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     && 'SpeechSynthesisUtterance' in window
   ))
   const hasAlerts = computed(() => total.value > 0)
+  const currentBuyerReview = computed(() => (
+    items.value.find(item => item.entity_type === 'buyer_review') || null
+  ))
 
   function signatureOf(nextItems, nextTotal) {
     return `${nextTotal}|${nextItems.map(item => (
@@ -135,6 +140,11 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
       lastSignature = nextSignature
       fetchError.value = ''
       lastUpdatedAt.value = response.polled_at || new Date().toISOString()
+      if (currentBuyerReview.value && !reviewDecisionLoading.value) {
+        reviewDialogVisible.value = true
+      } else if (!currentBuyerReview.value) {
+        reviewDialogVisible.value = false
+      }
 
       if (!nextTotal) {
         if (!voiceConsentRequired.value) cancelSpeech()
@@ -149,6 +159,23 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     } finally {
       requestPending = false
       loading.value = false
+    }
+  }
+
+  async function decideBuyerReview(item, approved) {
+    if (!item || reviewDecisionLoading.value) return null
+    reviewDecisionLoading.value = true
+    try {
+      const response = await sendBuyerReviewDecision(item.entity_id, {
+        review_id: item.review_id,
+        approved: Boolean(approved),
+      })
+      reviewDialogVisible.value = false
+      await refresh()
+      return response
+    } finally {
+      reviewDecisionLoading.value = false
+      if (currentBuyerReview.value) reviewDialogVisible.value = true
     }
   }
 
@@ -189,11 +216,15 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     voiceConsentRequired,
     voiceConsentGranted,
     lastUpdatedAt,
+    reviewDialogVisible,
+    reviewDecisionLoading,
     speechSupported,
     hasAlerts,
+    currentBuyerReview,
     refresh,
     speak,
     grantVoiceConsent,
+    decideBuyerReview,
     start,
     stop,
   }

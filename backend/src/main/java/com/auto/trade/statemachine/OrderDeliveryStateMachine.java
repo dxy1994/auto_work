@@ -100,10 +100,10 @@ public class OrderDeliveryStateMachine {
                 DeliveryState.WAITING_ASSIGNMENT,
                 new StartFailedAction(assignmentService, machineService, gameAccountService, agentRegistry));
 
-        // 交易完成
-        register(DeliveryState.ASSIGNED, DeliveryEvent.TRADE_COMPLETED,
-                DeliveryState.COMPLETED,
-                new TradeCompletedAction(assignmentService, machineService, gameAccountService,
+        // 游戏内交易完成，网站侧确认流程后续实现。
+        register(DeliveryState.ASSIGNED, DeliveryEvent.GAME_TRADE_COMPLETED,
+                DeliveryState.WAIT_WEB_CONFIRM,
+                new GameTradeCompletedAction(assignmentService, machineService, gameAccountService,
                         agentRegistry, tradeCompletionService));
 
         // 交易取消

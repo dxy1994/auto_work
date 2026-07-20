@@ -66,6 +66,10 @@ public class GameItemOrder {
 
     private LocalDateTime gameDeliveredAt;
 
+    private String gameTradeScreenshot;
+
+    private LocalDateTime gameTradeScreenshotAt;
+
     private LocalDateTime websiteConfirmedAt;
 
     private String lastErrorCode;

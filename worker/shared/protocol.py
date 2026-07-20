@@ -20,6 +20,8 @@ TYPE_CHECK_ORDERS = "check_orders"
 TYPE_ORDER_DETECTED = "order_detected"
 TYPE_TRADE_OFFER_DECISION = "trade_offer_decision"
 TYPE_TRADE_STATUS = "trade_status"
+TYPE_TRADE_BUYER_REVIEW = "trade_buyer_review"
+TYPE_TRADE_GAME_SCREENSHOT = "trade_game_screenshot"
 TYPE_GREETING_RESULT = "greeting_result"
 
 # 中控 → Worker
@@ -31,6 +33,8 @@ TYPE_GREETING = "greeting"
 TYPE_TRADE_OFFER = "trade_offer"
 TYPE_TRADE_START = "trade_start"
 TYPE_TRADE_CANCEL = "trade_cancel"
+TYPE_TRADE_BUYER_REVIEW_DECISION = "trade_buyer_review_decision"
+TYPE_TRADE_GAME_SCREENSHOT_SAVED = "trade_game_screenshot_saved"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -113,6 +117,24 @@ def trade_status_msg(assignment_id: str, status: str,
         "status": status,
         "message": message,
         "error_code": error_code,
+    }
+
+
+def trade_buyer_review_msg(assignment_id: str, review: dict) -> dict:
+    return {
+        "type": TYPE_TRADE_BUYER_REVIEW,
+        "assignment_id": assignment_id,
+        **review,
+    }
+
+
+def trade_game_screenshot_msg(
+        assignment_id: str, request_id: str, screenshot_data_url: str) -> dict:
+    return {
+        "type": TYPE_TRADE_GAME_SCREENSHOT,
+        "assignment_id": assignment_id,
+        "request_id": request_id,
+        "screenshot_data_url": screenshot_data_url,
     }
 
 

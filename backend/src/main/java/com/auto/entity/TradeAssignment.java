@@ -29,6 +29,14 @@ public class TradeAssignment {
     private LocalDateTime acceptedAt;
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
+    private String buyerReviewId;
+    private String buyerReviewStatus;
+    private String expectedBuyerName;
+    private String observedBuyerName;
+    private Double buyerOcrConfidence;
+    private String buyerReviewScreenshot;
+    private LocalDateTime buyerReviewRequestedAt;
+    private LocalDateTime buyerReviewDecidedAt;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import math
 import os
 import random
@@ -188,6 +189,12 @@ class Vision(Protocol):
     def read_text(self, region: tuple[int, int, int, int]) -> str: ...
 
 
+@dataclass(frozen=True)
+class OcrResult:
+    text: str
+    confidence: float
+
+
 class TemplateVision:
     def __init__(self, window: ClientWindow, image_dir: Optional[Path] = None):
         if cv2 is None or ImageGrab is None:
@@ -233,14 +240,25 @@ class TemplateVision:
         pixel = self._capture((x, y, x + 1, y + 1))[0, 0]
         return int(pixel[0]), int(pixel[1]), int(pixel[2])
 
+    def capture_data_url(self, region: tuple[int, int, int, int]) -> str:
+        success, encoded = cv2.imencode(".png", self._capture(region))
+        if not success:
+            raise NavigationError("交易申请截图编码失败")
+        payload = base64.b64encode(encoded.tobytes()).decode("ascii")
+        return f"data:image/png;base64,{payload}"
+
     def read_text(self, region: tuple[int, int, int, int]) -> str:
+        result = self.read_text_result(region)
+        return result.text if result.confidence >= OCR_MIN_CONFIDENCE else ""
+
+    def read_text_result(self, region: tuple[int, int, int, int]) -> OcrResult:
         try:
             import pytesseract
         except ImportError:
             if not self._ocr_warning_printed:
                 print("[Lineage] pytesseract 未安装，将通过切区结果缓存确认当前大区")
                 self._ocr_warning_printed = True
-            return ""
+            return OcrResult("", -1.0)
         source = self._capture(region)
         gray = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
         scaled = cv2.resize(gray, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
@@ -251,30 +269,30 @@ class TemplateVision:
                 if not self._ocr_warning_printed:
                     print("[Lineage] 未安装 kor.traineddata，韩语 OCR 已禁用")
                     self._ocr_warning_printed = True
-                return ""
+                return OcrResult("", -1.0)
             data = pytesseract.image_to_data(
                 enhanced,
                 lang="kor",
                 config="--oem 1 --psm 7",
                 output_type=pytesseract.Output.DICT,
             )
-            text, confidence = confident_ocr_text(data, OCR_MIN_CONFIDENCE)
-            if text:
+            text, confidence = raw_ocr_text(data)
+            if text and confidence >= OCR_MIN_CONFIDENCE:
                 print(
                     f"[Lineage] 韩语 OCR 通过: text='{_printable(text)}' "
                     f"min_confidence={confidence:.1f}"
                 )
-            elif confidence >= 0:
+            elif text:
                 print(
                     f"[Lineage] 韩语 OCR 置信度不足: {confidence:.1f} "
-                    f"< {OCR_MIN_CONFIDENCE:.1f}，按识别失败处理"
+                    f"< {OCR_MIN_CONFIDENCE:.1f}，转人工确认"
                 )
-            return text
+            return OcrResult(text, confidence)
         except Exception as exc:
             if not self._ocr_warning_printed:
                 print(f"[Lineage] OCR 不可用，将执行一次安全切区: {exc}")
                 self._ocr_warning_printed = True
-            return ""
+            return OcrResult("", -1.0)
 
 
 def _normalized_region(value: str) -> str:
@@ -283,6 +301,14 @@ def _normalized_region(value: str) -> str:
 
 def confident_ocr_text(data: dict, minimum_confidence: float) -> tuple[str, float]:
     """仅当所有非空 OCR 词块均达到门槛时返回文本。"""
+    text, confidence = raw_ocr_text(data)
+    if confidence < minimum_confidence:
+        return "", confidence
+    return text, confidence
+
+
+def raw_ocr_text(data: dict) -> tuple[str, float]:
+    """返回 OCR 原始文本及所有非空词块中的最低置信度。"""
     tokens: list[tuple[str, float]] = []
     for raw_text, raw_confidence in zip(data.get("text", []), data.get("conf", [])):
         token = str(raw_text).strip()
@@ -296,8 +322,6 @@ def confident_ocr_text(data: dict, minimum_confidence: float) -> tuple[str, floa
     if not tokens:
         return "", -1.0
     lowest_confidence = min(confidence for _, confidence in tokens)
-    if lowest_confidence < minimum_confidence:
-        return "", lowest_confidence
     return " ".join(token for token, _ in tokens), lowest_confidence
 
 

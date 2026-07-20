@@ -28,7 +28,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(AgentWebSocketHandler.class);
     private static final String ATTR_MACHINE_ID = "machineId";
-    private static final int MAX_MESSAGE_CHARS = 32 * 1024;
+    private static final int MAX_MESSAGE_CHARS = 4 * 1024 * 1024;
 
     private final AgentRegistry registry;
     private final ObjectMapper objectMapper;
@@ -53,7 +53,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
     @SuppressWarnings("unchecked")
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
         if (message.getPayloadLength() > MAX_MESSAGE_CHARS) {
-            log.warn("[Agent] 忽略超过 32KiB 的上行消息");
+            log.warn("[Agent] 忽略超过 4MiB 的上行消息");
             return;
         }
         Map<String, Object> raw;
@@ -87,6 +87,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                 case "task_result" -> registry.handleTaskResult(raw, session);
                 case "trade_offer_decision" -> handleTradeDecision(session, raw);
                 case "trade_status" -> handleTradeStatus(session, raw);
+                case "trade_buyer_review" -> handleTradeBuyerReview(session, raw);
+                case "trade_game_screenshot" -> handleTradeGameScreenshot(session, raw);
                 case "order_detected" -> handleOrderDetected(session, raw);
                 case "check_orders" -> handleCheckOrders(session, raw);
                 case "greeting_result" -> handleGreetingResult(raw);
@@ -148,6 +150,54 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                     str(raw.get("error_code")));
         } catch (IllegalStateException e) {
             log.warn("[Trade] 忽略无效交易状态 machine_id={}: {}", machineId, e.getMessage());
+        }
+    }
+
+    private void handleTradeBuyerReview(WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+            log.warn("[Trade] 忽略非当前机器会话的买家审核请求 machine_id={}", machineId);
+            return;
+        }
+        Object confidence = raw.get("ocr_confidence");
+        tradeCoordinator.handleBuyerReview(
+                str(raw.get("assignment_id")),
+                machineId,
+                str(raw.get("review_id")),
+                str(raw.get("observed_buyer")),
+                confidence instanceof Number number ? number.doubleValue() : -1.0,
+                str(raw.get("screenshot_data_url")));
+    }
+
+    private void handleTradeGameScreenshot(WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        String requestId = str(raw.get("request_id"));
+        boolean success = false;
+        String error = null;
+        try {
+            if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+                throw new IllegalStateException("不是当前机器会话");
+            }
+            tradeCoordinator.handleGameTradeScreenshot(
+                    str(raw.get("assignment_id")),
+                    machineId,
+                    str(raw.get("screenshot_data_url")));
+            success = true;
+        } catch (Exception e) {
+            error = e.getMessage();
+            log.warn("[Trade] 游戏交易截图保存失败 machine_id={}: {}", machineId, error);
+        }
+        try {
+            Map<String, Object> response = new java.util.LinkedHashMap<>();
+            response.put("type", "trade_game_screenshot_saved");
+            response.put("request_id", requestId);
+            response.put("success", success);
+            response.put("error", error);
+            synchronized (session) {
+                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
+            }
+        } catch (Exception e) {
+            log.warn("[Trade] 游戏交易截图保存回执发送失败: {}", e.getMessage());
         }
     }
 

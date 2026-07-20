@@ -5,6 +5,7 @@ import com.auto.common.PageRequests;
 import com.auto.entity.*;
 import com.auto.service.*;
 import com.auto.trade.GreetingDispatchRequested;
+import com.auto.trade.TradeDispatchCoordinator;
 import com.auto.trade.statemachine.DeliveryEvent;
 import com.auto.trade.statemachine.OrderDeliveryStateMachine;
 import com.auto.ws.AgentRegistry;
@@ -46,6 +47,8 @@ public class OrderController {
     private final AgentRegistry registry;
     private final ObjectMapper objectMapper;
     private final OrderDeliveryStateMachine deliveryStateMachine;
+    private final TradeAssignmentService tradeAssignmentService;
+    private final TradeDispatchCoordinator tradeCoordinator;
 
     public OrderController(GameItemOrderService orderService, GameItemOrderDetailService detailService,
                            GameItemService itemService, GameRegionService regionService,
@@ -57,7 +60,9 @@ public class OrderController {
                            PlatformService websiteService,
                            AgentRegistry registry,
                            ObjectMapper objectMapper,
-                           OrderDeliveryStateMachine deliveryStateMachine) {
+                           OrderDeliveryStateMachine deliveryStateMachine,
+                           TradeAssignmentService tradeAssignmentService,
+                           TradeDispatchCoordinator tradeCoordinator) {
         this.orderService = orderService;
         this.detailService = detailService;
         this.itemService = itemService;
@@ -71,6 +76,8 @@ public class OrderController {
         this.registry = registry;
         this.objectMapper = objectMapper;
         this.deliveryStateMachine = deliveryStateMachine;
+        this.tradeAssignmentService = tradeAssignmentService;
+        this.tradeCoordinator = tradeCoordinator;
     }
 
     private String genOrderNo() {
@@ -88,6 +95,8 @@ public class OrderController {
     private Map<String, Object> toFullMap(GameItemOrder order, List<GameItemOrderDetail> details) {
         Map<String, Object> map = objectMapper.convertValue(order, Map.class);
         map.put("details", details);
+        TradeAssignment review = latestBuyerReview(order.getId());
+        map.put("buyer_review", review == null ? null : toBuyerReviewMap(review));
         return map;
     }
 
@@ -101,7 +110,18 @@ public class OrderController {
             @RequestParam(name = "page", defaultValue = "1") int page,
             @RequestParam(name = "page_size", defaultValue = "20") int pageSize) {
         IPage<GameItemOrder> result = orderService.search(gameId, status, keyword, PageRequests.of(page, pageSize));
-        return Map.of("total", result.getTotal(), "items", result.getRecords());
+        List<Map<String, Object>> items = result.getRecords().stream()
+                .map(this::toOrderListMap)
+                .toList();
+        return Map.of("total", result.getTotal(), "items", items);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> toOrderListMap(GameItemOrder order) {
+        Map<String, Object> map = objectMapper.convertValue(order, Map.class);
+        map.remove("game_trade_screenshot");
+        map.remove("gameTradeScreenshot");
+        return map;
     }
 
     /**
@@ -113,10 +133,20 @@ public class OrderController {
         LambdaQueryWrapper<GameItemOrder> query = manualAlertQuery()
                 .orderByAsc(GameItemOrder::getUpdatedAt)
                 .last("LIMIT 200");
-        List<Map<String, Object>> items = orderService.list(query).stream()
+        List<Map<String, Object>> items = new ArrayList<>(orderService.list(query).stream()
                 .map(this::toManualAlert)
-                .toList();
-        long total = orderService.count(manualAlertQuery());
+                .toList());
+        List<TradeAssignment> buyerReviews = tradeAssignmentService.list(
+                new LambdaQueryWrapper<TradeAssignment>()
+                        .eq(TradeAssignment::getBuyerReviewStatus, "pending")
+                        .orderByAsc(TradeAssignment::getBuyerReviewRequestedAt)
+                        .last("LIMIT 200"));
+        buyerReviews.stream().map(this::toBuyerReviewAlert).forEach(items::add);
+        items.sort(Comparator.comparing(
+                item -> String.valueOf(item.getOrDefault("occurred_at", ""))));
+        long total = orderService.count(manualAlertQuery())
+                + tradeAssignmentService.count(new LambdaQueryWrapper<TradeAssignment>()
+                        .eq(TradeAssignment::getBuyerReviewStatus, "pending"));
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("total", total);
         response.put("items", items);
@@ -173,11 +203,79 @@ public class OrderController {
         return item;
     }
 
+    private Map<String, Object> toBuyerReviewAlert(TradeAssignment assignment) {
+        GameItemOrder order = orderService.getById(assignment.getOrderId());
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", "buyer_review:" + assignment.getBuyerReviewId());
+        item.put("entity_type", "buyer_review");
+        item.put("entity_id", assignment.getOrderId());
+        item.put("assignment_id", assignment.getAssignmentId());
+        item.put("review_id", assignment.getBuyerReviewId());
+        item.put("order_no", order == null ? null : order.getOrderNo());
+        item.put("source_order_no", order == null ? null : order.getSourceOrderNo());
+        item.put("buyer_character", assignment.getExpectedBuyerName());
+        item.put("expected_buyer", assignment.getExpectedBuyerName());
+        item.put("observed_buyer", assignment.getObservedBuyerName());
+        item.put("ocr_confidence", assignment.getBuyerOcrConfidence());
+        item.put("screenshot_data_url", assignment.getBuyerReviewScreenshot());
+        item.put("severity", "critical");
+        item.put("title", "交易客户需要人工确认");
+        item.put("message", "OCR 置信度不足或玩家名不匹配，请根据用户名和游戏截图决定是否接受交易");
+        item.put("occurred_at", assignment.getBuyerReviewRequestedAt());
+        return item;
+    }
+
+    private TradeAssignment latestBuyerReview(Integer orderId) {
+        return tradeAssignmentService.getOne(
+                new LambdaQueryWrapper<TradeAssignment>()
+                        .eq(TradeAssignment::getOrderId, orderId)
+                        .isNotNull(TradeAssignment::getBuyerReviewId)
+                        .orderByDesc(
+                                TradeAssignment::getBuyerReviewRequestedAt,
+                                TradeAssignment::getId)
+                        .last("LIMIT 1"), false);
+    }
+
+    private Map<String, Object> toBuyerReviewMap(TradeAssignment assignment) {
+        Map<String, Object> review = new LinkedHashMap<>();
+        review.put("review_id", assignment.getBuyerReviewId());
+        review.put("status", assignment.getBuyerReviewStatus());
+        review.put("expected_buyer", assignment.getExpectedBuyerName());
+        review.put("observed_buyer", assignment.getObservedBuyerName());
+        review.put("ocr_confidence", assignment.getBuyerOcrConfidence());
+        review.put("screenshot_data_url", assignment.getBuyerReviewScreenshot());
+        review.put("requested_at", assignment.getBuyerReviewRequestedAt());
+        review.put("decided_at", assignment.getBuyerReviewDecidedAt());
+        return review;
+    }
+
     @GetMapping("/{orderId}")
     public Map<String, Object> get(@PathVariable Integer orderId) {
         GameItemOrder o = orderService.getById(orderId);
         if (o == null) throw ApiException.notFound("订单不存在");
         return toFullMap(o, detailService.findByOrderIdOrderById(orderId));
+    }
+
+    @PostMapping("/{orderId}/buyer-review")
+    public Map<String, Object> decideBuyerReview(
+            @PathVariable Integer orderId,
+            @RequestBody Map<String, Object> body) {
+        String reviewId = body.get("review_id") == null
+                ? null : body.get("review_id").toString();
+        if (reviewId == null || reviewId.isBlank() || !(body.get("approved") instanceof Boolean)) {
+            throw ApiException.badRequest("review_id 和 approved 不能为空");
+        }
+        try {
+            TradeAssignment assignment = tradeCoordinator.decideBuyerReview(
+                    orderId, reviewId, Boolean.TRUE.equals(body.get("approved")));
+            return Map.of(
+                    "review_id", reviewId,
+                    "status", assignment.getBuyerReviewStatus(),
+                    "message", Boolean.TRUE.equals(body.get("approved"))
+                            ? "已同意，交易流程继续" : "已拒绝，Worker 将继续等待买家");
+        } catch (IllegalStateException e) {
+            throw ApiException.conflict(e.getMessage());
+        }
     }
 
     /** 重新招呼：适用于订单交付状态为 greeting 且总订单未完成/未取消。 */

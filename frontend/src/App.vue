@@ -148,6 +148,50 @@
     </template>
   </el-dialog>
 
+  <el-dialog
+    v-model="manualAlerts.reviewDialogVisible"
+    title="确认交易申请客户"
+    width="650px"
+    align-center
+    :show-close="false"
+    :close-on-click-modal="false"
+    :close-on-press-escape="false"
+  >
+    <template v-if="manualAlerts.currentBuyerReview">
+      <el-alert
+        title="OCR 置信度不足或玩家名不匹配，本次必须由人工判断"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+      <div class="buyer-review-names">
+        <div><span>订单客户名</span><strong>{{ manualAlerts.currentBuyerReview.expected_buyer || '-' }}</strong></div>
+        <div><span>OCR 识别（仅参考）</span><strong>{{ manualAlerts.currentBuyerReview.observed_buyer || '未识别' }}</strong></div>
+        <div><span>OCR 置信度</span><strong>{{ formatConfidence(manualAlerts.currentBuyerReview.ocr_confidence) }}</strong></div>
+      </div>
+      <el-image
+        class="buyer-review-image"
+        :src="manualAlerts.currentBuyerReview.screenshot_data_url"
+        :preview-src-list="[manualAlerts.currentBuyerReview.screenshot_data_url]"
+        fit="contain"
+      />
+    </template>
+    <template #footer>
+      <el-button
+        type="danger"
+        size="large"
+        :loading="manualAlerts.reviewDecisionLoading"
+        @click="handleBuyerReview(false)"
+      >不同意并拒绝申请</el-button>
+      <el-button
+        type="success"
+        size="large"
+        :loading="manualAlerts.reviewDecisionLoading"
+        @click="handleBuyerReview(true)"
+      >同意并继续交易</el-button>
+    </template>
+  </el-dialog>
+
   <el-drawer
     v-model="manualAlerts.drawerVisible"
     title="待人工处理"
@@ -220,6 +264,23 @@
           <span v-if="item.buyer_character">· 买家 {{ item.buyer_character }}</span>
         </div>
         <p>{{ item.message }}</p>
+        <template v-if="item.entity_type === 'buyer_review'">
+          <div class="alert-review-line">
+            订单客户：<strong>{{ item.expected_buyer || '-' }}</strong>
+            · OCR：<strong>{{ item.observed_buyer || '未识别' }}</strong>
+            · {{ formatConfidence(item.ocr_confidence) }}
+          </div>
+          <el-image
+            class="alert-review-image"
+            :src="item.screenshot_data_url"
+            :preview-src-list="[item.screenshot_data_url]"
+            fit="contain"
+          />
+          <div class="alert-review-actions">
+            <el-button type="danger" :loading="manualAlerts.reviewDecisionLoading" @click="handleBuyerReview(false, item)">不同意</el-button>
+            <el-button type="success" :loading="manualAlerts.reviewDecisionLoading" @click="handleBuyerReview(true, item)">同意</el-button>
+          </div>
+        </template>
         <div class="manual-alert-footer">
           <el-tag v-if="item.error_code" type="danger" size="small">{{ item.error_code }}</el-tag>
           <el-button link type="primary" @click="openAlertOrder(item)">查看并处理</el-button>
@@ -231,6 +292,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { useManualAlertStore } from './stores/manualAlerts'
 
@@ -250,6 +312,20 @@ function severityLabel(severity) {
 function formatTime(value) {
   if (!value) return '-'
   return String(value).replace('T', ' ').slice(0, 19)
+}
+
+function formatConfidence(value) {
+  const confidence = Number(value)
+  return Number.isFinite(confidence) && confidence >= 0 ? `${confidence.toFixed(1)}%` : '无法识别'
+}
+
+async function handleBuyerReview(approved, item = manualAlerts.currentBuyerReview) {
+  try {
+    const response = await manualAlerts.decideBuyerReview(item, approved)
+    if (response) ElMessage.success(response.message)
+  } catch (error) {
+    ElMessage.error(error.message || '审核决定提交失败')
+  }
 }
 
 function openAlertOrder(item) {
@@ -349,4 +425,12 @@ html, body, #app { height: 100%; margin: 0; padding: 0; }
 .manual-alert-order { margin-top: 10px; color: #606266; font-size: 13px; }
 .manual-alert-card p { margin: 8px 0; color: #303133; line-height: 1.6; }
 .manual-alert-footer { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
+.buyer-review-names { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px 0 14px; }
+.buyer-review-names div { padding: 12px; border-radius: 8px; background: #f5f7fa; }
+.buyer-review-names span { display: block; margin-bottom: 6px; color: #909399; font-size: 12px; }
+.buyer-review-names strong { color: #303133; word-break: break-all; }
+.buyer-review-image, .alert-review-image { width: 100%; min-height: 100px; border: 1px solid #dcdfe6; border-radius: 8px; background: #111827; }
+.alert-review-line { margin: 8px 0; color: #606266; font-size: 13px; }
+.alert-review-image { min-height: 76px; max-height: 150px; }
+.alert-review-actions { display: flex; justify-content: flex-end; margin: 10px 0; }
 </style>
