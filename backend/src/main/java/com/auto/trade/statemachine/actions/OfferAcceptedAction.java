@@ -32,5 +32,13 @@ public class OfferAcceptedAction implements TransitionAction {
             assignment.setAcceptedAt(LocalDateTime.now());
             assignmentService.updateById(assignment);
         }
+        order.setAssignmentId(assignmentId);
+        if (context.get("machineId") instanceof Number machineId) {
+            order.setAssignedMachineId(machineId.intValue());
+        }
+        if (context.get("gameAccountId") instanceof Number gameAccountId) {
+            order.setGameAccountId(gameAccountId.intValue());
+        }
+        order.setAssignedAt(LocalDateTime.now());
     }
 }

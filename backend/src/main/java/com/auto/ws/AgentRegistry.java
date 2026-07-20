@@ -4,10 +4,12 @@ import com.auto.entity.Machine;
 import com.auto.service.MachineService;
 import com.auto.trade.TradeOffer;
 import com.auto.trade.WorkerRuntimeStatus;
+import com.auto.trade.MachineSessionLost;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -48,9 +50,12 @@ public class AgentRegistry {
 
     private final ObjectMapper objectMapper;
     private final MachineService machineService;
-    public AgentRegistry(ObjectMapper objectMapper, MachineService machineService) {
+    private final ApplicationEventPublisher eventPublisher;
+    public AgentRegistry(ObjectMapper objectMapper, MachineService machineService,
+                         ApplicationEventPublisher eventPublisher) {
         this.objectMapper = objectMapper;
         this.machineService = machineService;
+        this.eventPublisher = eventPublisher;
     }
 
     /** 任务镜像。 */
@@ -106,6 +111,8 @@ public class AgentRegistry {
             } catch (Exception e) {
                 log.warn("[Agent] 关闭被替换会话失败 machine_id={}: {}", machineId, e.getMessage());
             }
+            eventPublisher.publishEvent(new MachineSessionLost(
+                    machineId, "worker 连接已被新会话替换"));
         }
     }
 
@@ -182,6 +189,7 @@ public class AgentRegistry {
         runtimeStatuses.remove(machineId);
         machineRoles.remove(machineId);
         failTasksForMachine(machineId, "worker 断线，任务中断");
+        eventPublisher.publishEvent(new MachineSessionLost(machineId, "worker 断线"));
     }
 
     private void failTasksForMachine(int machineId, String message) {

@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,7 +44,7 @@ public class MarketplaceOrderIngestionService {
     private final GameItemOrderService orderService;
     private final TradeEventService eventService;
     private final GameService gameService;
-    private final GreetingDispatchService greetingDispatchService;
+    private final ApplicationEventPublisher eventPublisher;
     private final GameItemService gameItemService;
     private final ItemBundleRelationService bundleItemService;
     private final GameItemOrderDetailService orderDetailService;
@@ -55,7 +56,7 @@ public class MarketplaceOrderIngestionService {
             GameItemOrderService orderService,
             TradeEventService eventService,
             GameService gameService,
-            GreetingDispatchService greetingDispatchService,
+            ApplicationEventPublisher eventPublisher,
             GameItemService gameItemService,
             ItemBundleRelationService bundleItemService,
             GameItemOrderDetailService orderDetailService,
@@ -65,7 +66,7 @@ public class MarketplaceOrderIngestionService {
         this.orderService = orderService;
         this.eventService = eventService;
         this.gameService = gameService;
-        this.greetingDispatchService = greetingDispatchService;
+        this.eventPublisher = eventPublisher;
         this.gameItemService = gameItemService;
         this.bundleItemService = bundleItemService;
         this.orderDetailService = orderDetailService;
@@ -116,6 +117,7 @@ public class MarketplaceOrderIngestionService {
         GameItemOrder order = new GameItemOrder();
         order.setOrderNo("MP-" + UUID.randomUUID().toString().replace("-", ""));
         order.setWebsiteId(account.getWebsiteId());
+        order.setPlatformAccountId(accountId);
         order.setSourceOrderNo(message.sourceOrderNo());
         order.setGameId(gameId);
         order.setRegionId(regionId);
@@ -207,10 +209,9 @@ public class MarketplaceOrderIngestionService {
             final int finalAccountId = accountId;
             final String finalSourceOrderNo = message.sourceOrderNo();
             final String finalPlatform = message.platform();
-            new Thread(() -> greetingDispatchService.dispatch(
+            eventPublisher.publishEvent(new GreetingDispatchRequested(
                     machineId, finalOrderId, finalGameId, finalRegionId,
-                    finalWebsiteId, finalAccountId, finalSourceOrderNo, finalPlatform),
-                    "greeting-dispatch-" + finalOrderId).start();
+                    finalWebsiteId, finalAccountId, finalSourceOrderNo, finalPlatform));
         }
 
         return order;

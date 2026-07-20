@@ -8,6 +8,7 @@ import com.auto.service.TradeAssignmentService;
 import com.auto.trade.statemachine.DeliveryState;
 import com.auto.trade.statemachine.TransitionAction;
 import com.auto.ws.AgentRegistry;
+import com.auto.trade.TradeCompletionService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 
 import java.time.LocalDateTime;
@@ -20,15 +21,18 @@ public class TradeCompletedAction implements TransitionAction {
     private final MachineService machineService;
     private final GameAccountService gameAccountService;
     private final AgentRegistry agentRegistry;
+    private final TradeCompletionService tradeCompletionService;
 
     public TradeCompletedAction(TradeAssignmentService assignmentService,
                                 MachineService machineService,
                                 GameAccountService gameAccountService,
-                                AgentRegistry agentRegistry) {
+                                AgentRegistry agentRegistry,
+                                TradeCompletionService tradeCompletionService) {
         this.assignmentService = assignmentService;
         this.machineService = machineService;
         this.gameAccountService = gameAccountService;
         this.agentRegistry = agentRegistry;
+        this.tradeCompletionService = tradeCompletionService;
     }
 
     @Override
@@ -37,7 +41,8 @@ public class TradeCompletedAction implements TransitionAction {
         int machineId = ((Number) context.get("machineId")).intValue();
         int gameAccountId = ((Number) context.get("gameAccountId")).intValue();
 
-        finishAssignment(assignmentId, "simulation_completed");
+        tradeCompletionService.complete(order);
+        finishAssignment(assignmentId, "completed");
         ResourceHelper.release(machineService, gameAccountService, agentRegistry, machineId, gameAccountId);
     }
 

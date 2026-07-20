@@ -9,6 +9,7 @@ import com.auto.trade.statemachine.actions.*;
 import com.auto.ws.AgentRegistry;
 import com.auto.service.MachineService;
 import com.auto.service.GameAccountService;
+import com.auto.trade.TradeCompletionService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -35,7 +36,8 @@ public class OrderDeliveryStateMachine {
             TradeAssignmentService assignmentService,
             MachineService machineService,
             GameAccountService gameAccountService,
-            AgentRegistry agentRegistry) {
+            AgentRegistry agentRegistry,
+            TradeCompletionService tradeCompletionService) {
 
         this.orderService = orderService;
         this.eventService = eventService;
@@ -86,6 +88,13 @@ public class OrderDeliveryStateMachine {
                 DeliveryState.WAITING_ASSIGNMENT,
                 new OfferExpiredAction(assignmentService, machineService, gameAccountService, agentRegistry));
 
+        WorkerDisconnectedAction workerDisconnectedAction = new WorkerDisconnectedAction(
+                assignmentService, machineService, gameAccountService, agentRegistry);
+        register(DeliveryState.OFFERED, DeliveryEvent.WORKER_DISCONNECTED,
+                DeliveryState.WAITING_ASSIGNMENT, workerDisconnectedAction);
+        register(DeliveryState.ASSIGNED, DeliveryEvent.WORKER_DISCONNECTED,
+                DeliveryState.WAITING_ASSIGNMENT, workerDisconnectedAction);
+
         // trade_start 下发失败
         register(DeliveryState.ASSIGNED, DeliveryEvent.START_FAILED,
                 DeliveryState.SUSPENDED,
@@ -93,8 +102,9 @@ public class OrderDeliveryStateMachine {
 
         // 交易完成
         register(DeliveryState.ASSIGNED, DeliveryEvent.TRADE_COMPLETED,
-                DeliveryState.SUSPENDED,
-                new TradeCompletedAction(assignmentService, machineService, gameAccountService, agentRegistry));
+                DeliveryState.COMPLETED,
+                new TradeCompletedAction(assignmentService, machineService, gameAccountService,
+                        agentRegistry, tradeCompletionService));
 
         // 交易取消
         register(DeliveryState.ASSIGNED, DeliveryEvent.TRADE_CANCELLED,

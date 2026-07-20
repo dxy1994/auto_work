@@ -13,18 +13,18 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import java.time.LocalDateTime;
 import java.util.Map;
 
-/** Worker 拒绝 offer：更新 assignment、释放资源。 */
-public class OfferRejectedAction implements TransitionAction {
+/** Worker 会话丢失：中断当前指派并释放机器、游戏账号。 */
+public class WorkerDisconnectedAction implements TransitionAction {
 
     private final TradeAssignmentService assignmentService;
     private final MachineService machineService;
     private final GameAccountService gameAccountService;
     private final AgentRegistry agentRegistry;
 
-    public OfferRejectedAction(TradeAssignmentService assignmentService,
-                               MachineService machineService,
-                               GameAccountService gameAccountService,
-                               AgentRegistry agentRegistry) {
+    public WorkerDisconnectedAction(TradeAssignmentService assignmentService,
+                                    MachineService machineService,
+                                    GameAccountService gameAccountService,
+                                    AgentRegistry agentRegistry) {
         this.assignmentService = assignmentService;
         this.machineService = machineService;
         this.gameAccountService = gameAccountService;
@@ -32,33 +32,26 @@ public class OfferRejectedAction implements TransitionAction {
     }
 
     @Override
-    public void execute(GameItemOrder order, DeliveryState from, DeliveryState to, Map<String, Object> context) {
+    public void execute(GameItemOrder order, DeliveryState from, DeliveryState to,
+                        Map<String, Object> context) {
         String assignmentId = (String) context.get("assignmentId");
-        String reason = (String) context.getOrDefault("reason", "worker_rejected");
         int machineId = ((Number) context.get("machineId")).intValue();
         int gameAccountId = ((Number) context.get("gameAccountId")).intValue();
 
-        finishAssignment(assignmentId, "rejected", reason);
-        ResourceHelper.release(machineService, gameAccountService, agentRegistry, machineId, gameAccountId);
-        clearCurrentAssignment(order);
-    }
-
-    private void clearCurrentAssignment(GameItemOrder order) {
-        order.setAssignmentId(null);
-        order.setAssignedMachineId(null);
-        order.setGameAccountId(null);
-        order.setAssignedAt(null);
-    }
-
-    private void finishAssignment(String assignmentId, String status, String reason) {
         TradeAssignment assignment = assignmentService.getOne(
                 new LambdaQueryWrapper<TradeAssignment>()
                         .eq(TradeAssignment::getAssignmentId, assignmentId), false);
         if (assignment != null) {
-            assignment.setStatus(status);
-            assignment.setRejectReason(reason);
+            assignment.setStatus("interrupted");
+            assignment.setRejectReason((String) context.getOrDefault("reason", "worker_disconnected"));
             assignment.setFinishedAt(LocalDateTime.now());
             assignmentService.updateById(assignment);
         }
+        ResourceHelper.release(
+                machineService, gameAccountService, agentRegistry, machineId, gameAccountId);
+        order.setAssignmentId(null);
+        order.setAssignedMachineId(null);
+        order.setGameAccountId(null);
+        order.setAssignedAt(null);
     }
 }

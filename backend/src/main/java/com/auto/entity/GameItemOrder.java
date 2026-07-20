@@ -25,6 +25,9 @@ public class GameItemOrder {
 
     private Integer websiteId;
 
+    /** 实际采集该订单的平台账号，用于后续招呼和平台确认。 */
+    private Integer platformAccountId;
+
     private String sourceOrderNo;
 
     private Integer gameId;

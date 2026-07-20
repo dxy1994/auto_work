@@ -10,6 +10,7 @@ import java.util.Map;
 public class ManualDispatchAction implements TransitionAction {
     @Override
     public void execute(GameItemOrder order, DeliveryState from, DeliveryState to, Map<String, Object> context) {
-        // no-op
+        order.setLastErrorCode(null);
+        order.setLastErrorMessage(null);
     }
 }

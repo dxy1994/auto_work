@@ -22,6 +22,7 @@ from shared.client import AgentClient
 from shared.reporter import Reporter
 from trader.status import RuntimeStatus
 from trader.gate import TradeTaskGate
+from trader.executor.registry import EXECUTOR_REGISTRY
 
 # 安装时间戳 print
 clock.install()
@@ -40,8 +41,16 @@ async def _dispatch_message(msg, ctx: AppContext):
 
     if mtype == "trade_offer":
         assignment_id = msg.get("assignment_id")
+        order = msg.get("order") or {}
+        game_code = order.get("game_code")
+        executor = EXECUTOR_REGISTRY.get(game_code)
+        if executor is None:
+            reporter.report_trade_offer_decision(
+                assignment_id, False,
+                f"executor_not_configured:{game_code or 'unknown'}")
+            return
         accepted, reason = trade_task_gate.offer(
-            assignment_id, msg.get("execution_token"))
+            assignment_id, msg.get("execution_token"), order)
         if accepted:
             runtime_status.update(
                 executor_status="reserved",
@@ -59,21 +68,27 @@ async def _dispatch_message(msg, ctx: AppContext):
             )
             reporter.report_trade_status(
                 assignment_id, "started", "trade executor started")
-
-            # TODO: 按 game_id 路由到对应 executor 执行真实交易
-            # game_id = msg.get("game_id")
-            # executor = _get_executor(game_id)
-            # result = await executor.execute(msg.get("order"))
-            # ...
-
-            # 临时占位：模拟完成
-            reporter.report_trade_status(
-                assignment_id, "simulation_completed", "no game input executed (placeholder)")
-            trade_task_gate.complete(assignment_id)
-            runtime_status.update(
-                executor_status="idle",
-                current_assignment_id=None,
-            )
+            order = trade_task_gate.current_order(assignment_id) or {}
+            executor = EXECUTOR_REGISTRY.get(order.get("game_code"))
+            try:
+                if executor is None:
+                    raise RuntimeError("executor disappeared after offer acceptance")
+                result = await executor.execute(order)
+                success = bool(result.get("success"))
+                reporter.report_trade_status(
+                    assignment_id,
+                    "completed" if success else "failed",
+                    result.get("message", ""),
+                )
+            except Exception as exc:
+                reporter.report_trade_status(
+                    assignment_id, "failed", f"executor error: {exc}")
+            finally:
+                trade_task_gate.complete(assignment_id)
+                runtime_status.update(
+                    executor_status="idle",
+                    current_assignment_id=None,
+                )
         else:
             reporter.report_trade_status(
                 assignment_id, "start_rejected", "assignment or token mismatch")

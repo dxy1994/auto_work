@@ -47,5 +47,9 @@ public class OfferExpiredAction implements TransitionAction {
             assignmentService.updateById(assignment);
         }
         ResourceHelper.release(machineService, gameAccountService, agentRegistry, machineId, gameAccountId);
+        order.setAssignmentId(null);
+        order.setAssignedMachineId(null);
+        order.setGameAccountId(null);
+        order.setAssignedAt(null);
     }
 }

@@ -10,8 +10,9 @@ class TradeTaskGate:
         self._status = "idle"
         self._assignment_id = None
         self._token = None
+        self._order = None
 
-    def offer(self, assignment_id, token):
+    def offer(self, assignment_id, token, order=None):
         if not assignment_id or not token:
             return False, "invalid_offer"
         with self._lock:
@@ -19,6 +20,7 @@ class TradeTaskGate:
                 self._status = "offered"
                 self._assignment_id = assignment_id
                 self._token = token
+                self._order = order
                 return True, "accepted"
             if (self._status == "offered"
                     and self._assignment_id == assignment_id
@@ -45,6 +47,12 @@ class TradeTaskGate:
             self._clear()
             return True
 
+    def current_order(self, assignment_id):
+        with self._lock:
+            if self._assignment_id != assignment_id:
+                return None
+            return self._order
+
     def cancel(self, assignment_id):
         with self._lock:
             if self._status == "idle" or self._assignment_id != assignment_id:
@@ -63,3 +71,4 @@ class TradeTaskGate:
         self._status = "idle"
         self._assignment_id = None
         self._token = None
+        self._order = None

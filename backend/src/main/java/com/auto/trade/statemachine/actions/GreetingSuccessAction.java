@@ -10,6 +10,7 @@ import java.util.Map;
 public class GreetingSuccessAction implements TransitionAction {
     @Override
     public void execute(GameItemOrder order, DeliveryState from, DeliveryState to, Map<String, Object> context) {
-        // 状态变更由状态机处理，交易指派由调用方串联
+        order.setLastErrorCode(null);
+        order.setLastErrorMessage(null);
     }
 }

@@ -181,6 +181,7 @@ CREATE TABLE `game_item_orders`  (
   `id` int NOT NULL AUTO_INCREMENT,
   `order_no` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '订单编号(全局唯一)',
   `website_id` int NULL DEFAULT NULL COMMENT '来源网站ID',
+  `platform_account_id` int NULL DEFAULT NULL COMMENT '来源平台账号ID',
   `source_order_no` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '平台订单号',
   `game_id` int NOT NULL COMMENT '关联游戏ID',
   `region_id` int NOT NULL COMMENT '关联大区ID',
@@ -220,6 +221,7 @@ CREATE TABLE `game_item_orders`  (
   INDEX `idx_game`(`game_id` ASC) USING BTREE,
   INDEX `idx_machine`(`assigned_machine_id` ASC) USING BTREE,
   INDEX `idx_delivery_status`(`delivery_status` ASC) USING BTREE,
+  INDEX `idx_platform_account_id`(`platform_account_id` ASC) USING BTREE,
   INDEX `idx_assignment_id`(`assignment_id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 22 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '游戏物品订单主表' ROW_FORMAT = DYNAMIC;
 

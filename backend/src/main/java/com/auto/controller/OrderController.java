@@ -4,10 +4,12 @@ import com.auto.common.ApiException;
 import com.auto.common.PageRequests;
 import com.auto.entity.*;
 import com.auto.service.*;
-import com.auto.trade.GreetingDispatchService;
+import com.auto.trade.GreetingDispatchRequested;
+import com.auto.ws.AgentRegistry;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpStatus;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import tools.jackson.databind.ObjectMapper;
@@ -35,20 +37,22 @@ public class OrderController {
     private final GameRegionService regionService;
     private final GameRegionInventoryService inventoryService;
     private final GameRegionInventoryShopPriceService shopPriceService;
-    private final GreetingDispatchService greetingDispatchService;
+    private final ApplicationEventPublisher eventPublisher;
     private final PlatformAccountService accountService;
     private final MachinePlatformAccountService machinePlatformAccountService;
     private final PlatformService websiteService;
+    private final AgentRegistry registry;
     private final ObjectMapper objectMapper;
 
     public OrderController(GameItemOrderService orderService, GameItemOrderDetailService detailService,
                            GameItemService itemService, GameRegionService regionService,
                            GameRegionInventoryService inventoryService,
                            GameRegionInventoryShopPriceService shopPriceService,
-                           GreetingDispatchService greetingDispatchService,
+                           ApplicationEventPublisher eventPublisher,
                            PlatformAccountService accountService,
                            MachinePlatformAccountService machinePlatformAccountService,
                            PlatformService websiteService,
+                           AgentRegistry registry,
                            ObjectMapper objectMapper) {
         this.orderService = orderService;
         this.detailService = detailService;
@@ -56,10 +60,11 @@ public class OrderController {
         this.regionService = regionService;
         this.inventoryService = inventoryService;
         this.shopPriceService = shopPriceService;
-        this.greetingDispatchService = greetingDispatchService;
+        this.eventPublisher = eventPublisher;
         this.accountService = accountService;
         this.machinePlatformAccountService = machinePlatformAccountService;
         this.websiteService = websiteService;
+        this.registry = registry;
         this.objectMapper = objectMapper;
     }
 
@@ -115,20 +120,27 @@ public class OrderController {
             throw ApiException.badRequest("订单已" + ("completed".equals(orderStatus) ? "完成" : "取消") + "，无法重新招呼");
         }
 
-        // 通过 website 账户找到招呼用的 Web 端机器（非游戏交易机器）
-        Integer accountId = null;
+        // 严格使用订单来源平台账号，避免同一平台多账号时串号发送招呼。
+        Integer accountId = order.getPlatformAccountId();
+        if (accountId == null) {
+            throw ApiException.badRequest("历史订单缺少来源平台账号，请先补充 platform_account_id");
+        }
+        PlatformAccount sourceAccount = accountService.getById(accountId);
+        if (sourceAccount == null
+                || !order.getWebsiteId().equals(sourceAccount.getWebsiteId())
+                || !Integer.valueOf(1).equals(sourceAccount.getIsActive())) {
+            throw ApiException.badRequest("订单来源平台账号不存在、已停用或与来源平台不匹配");
+        }
+
         Integer machineId = null;
-        for (PlatformAccount acc : accountService.findAllActive()) {
-            if (!acc.getWebsiteId().equals(order.getWebsiteId())) continue;
-            for (MachinePlatformAccount ma : machinePlatformAccountService.findByAccountIdActive(acc.getId())) {
-                accountId = acc.getId();
+        for (MachinePlatformAccount ma : machinePlatformAccountService.findByAccountIdActive(accountId)) {
+            if (registry.pickAgent(ma.getMachineId()) != null) {
                 machineId = ma.getMachineId();
                 break;
             }
-            if (accountId != null) break;
         }
-        if (accountId == null || machineId == null) {
-            throw ApiException.badRequest("未找到该网站关联的 Web 端机器，请先在机器管理中将机器绑定到对应账户");
+        if (machineId == null) {
+            throw ApiException.badRequest("订单来源账号没有已绑定且在线的 Web 端机器");
         }
 
         // 根据网站 URL 判断平台类型
@@ -141,20 +153,15 @@ public class OrderController {
             else if (url.contains("barotem")) platform = "barotem";
         }
 
-        // 异步派发招呼
-        final int finalMachineId = machineId;
-        final int finalAccountId = accountId;
-        final int finalOrderId = order.getId();
-        final int finalGameId = order.getGameId() != null ? order.getGameId() : -1;
-        final int finalRegionId = order.getRegionId() != null ? order.getRegionId() : -1;
-        final int finalWebsiteId = order.getWebsiteId();
-        final String finalSourceOrderNo = order.getSourceOrderNo() != null ? order.getSourceOrderNo() : "";
-        final String finalPlatform = platform;
-
-        new Thread(() -> greetingDispatchService.dispatch(
-                finalMachineId, finalOrderId, finalGameId, finalRegionId,
-                finalWebsiteId, finalAccountId, finalSourceOrderNo, finalPlatform),
-                "re-greeting-dispatch-" + finalOrderId).start();
+        eventPublisher.publishEvent(new GreetingDispatchRequested(
+                machineId,
+                order.getId(),
+                order.getGameId() != null ? order.getGameId() : -1,
+                order.getRegionId() != null ? order.getRegionId() : -1,
+                order.getWebsiteId(),
+                accountId,
+                order.getSourceOrderNo() != null ? order.getSourceOrderNo() : "",
+                platform));
 
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("status", "started");

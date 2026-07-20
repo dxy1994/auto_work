@@ -21,6 +21,7 @@ import com.auto.trade.statemachine.OrderDeliveryStateMachine;
 import com.auto.ws.AgentRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.context.event.EventListener;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.scheduling.annotation.Scheduled;
 
@@ -126,12 +127,13 @@ public class TradeDispatchCoordinator {
                 candidate.gameAccountId(),
                 token,
                 leaseExpiresAt,
-                orderPayload(order));
+                orderPayload(order, game));
 
         // 状态机驱动状态转换
         Map<String, Object> ctx = new HashMap<>();
         ctx.put("assignmentId", assignmentId);
         ctx.put("message", "总控发送交易指派");
+        order.setAssignmentId(assignmentId);
         stateMachine.fire(order, event, ctx);
 
         // 指派相关副作用
@@ -169,8 +171,10 @@ public class TradeDispatchCoordinator {
             // 状态机：offered → assigned
             GameItemOrder order = orderService.getById(offer.orderId());
             Map<String, Object> ctx = new HashMap<>();
-            ctx.put("assignmentId", assignmentId);
-            ctx.put("message", "Worker 接受交易指派");
+        ctx.put("assignmentId", assignmentId);
+        ctx.put("machineId", machineId);
+        ctx.put("gameAccountId", offer.gameAccountId());
+        ctx.put("message", "Worker 接受交易指派");
             stateMachine.fire(order, DeliveryEvent.OFFER_ACCEPTED, ctx);
             acceptedAssignments.add(assignmentId);
 
@@ -203,11 +207,17 @@ public class TradeDispatchCoordinator {
         ctx.put("gameAccountId", offer.gameAccountId());
         ctx.put("message", message);
 
-        if ("simulation_completed".equals(status)) {
+        if ("completed".equals(status)) {
             stateMachine.fire(order, DeliveryEvent.TRADE_COMPLETED, ctx);
             pendingOffers.remove(assignmentId);
             acceptedAssignments.remove(assignmentId);
-        } else if ("start_rejected".equals(status) || "cancelled".equals(status)) {
+        } else if ("failed".equals(status)
+                || "start_rejected".equals(status)
+                || "cancelled".equals(status)) {
+            if ("failed".equals(status)) {
+                ctx.put("errorCode", "TRADE_EXECUTION_FAILED");
+                ctx.put("errorMessage", message);
+            }
             stateMachine.fire(order, DeliveryEvent.TRADE_CANCELLED, ctx);
             pendingOffers.remove(assignmentId);
             acceptedAssignments.remove(assignmentId);
@@ -233,6 +243,18 @@ public class TradeDispatchCoordinator {
                             expireOffer(offer);
                         }
                     }
+                });
+    }
+
+    /** 会话丢失后清除无法继续使用的明文令牌和内存指派。 */
+    @EventListener
+    public void discardLostMachineOffers(MachineSessionLost event) {
+        pendingOffers.values().stream()
+                .filter(offer -> offer.machineId() == event.machineId())
+                .toList()
+                .forEach(offer -> {
+                    pendingOffers.remove(offer.assignmentId(), offer);
+                    acceptedAssignments.remove(offer.assignmentId());
                 });
     }
 
@@ -334,10 +356,11 @@ public class TradeDispatchCoordinator {
         return offer;
     }
 
-    private Map<String, Object> orderPayload(GameItemOrder order) {
+    private Map<String, Object> orderPayload(GameItemOrder order, Game game) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("order_id", order.getId());
         payload.put("game_id", order.getGameId());
+        payload.put("game_code", game.getCode());
         payload.put("region_id", order.getRegionId());
         payload.put("buyer_character", order.getBuyerCharacter());
         payload.put("asset_type", order.getAssetType());

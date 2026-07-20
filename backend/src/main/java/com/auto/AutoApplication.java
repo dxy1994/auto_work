@@ -3,6 +3,7 @@ package com.auto;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
@@ -11,6 +12,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * <p>支持网站管理、多账号管理、分布式 worker 自动化登录（经 WebSocket 下发任务）。
  */
 @SpringBootApplication
+@EnableAsync
 @EnableScheduling
 @MapperScan("com.auto.mapper")
 public class AutoApplication {

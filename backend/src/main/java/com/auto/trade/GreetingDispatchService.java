@@ -150,10 +150,8 @@ public class GreetingDispatchService {
             return;
         }
 
-        // 子订单已解析：通过状态机转入 offered，然后自动发起交易指派
-        stateMachine.fire(order, DeliveryEvent.GREETING_SUCCESS,
-                Map.of("message", "招呼成功，开始自动交易指派"));
-
+        // 子订单已解析：由交易协调器完成 greeting → offered 的唯一状态迁移，
+        // 避免这里提前迁移后，协调器因订单已是 offered 而拒绝指派。
         try {
             TradeOffer offer = tradeDispatchCoordinator.dispatch(orderId);
             log.info("[Greeting] 自动交易指派已发起 order_id={} assignment_id={} machine_id={}",

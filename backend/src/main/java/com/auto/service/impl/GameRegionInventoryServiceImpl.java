@@ -37,4 +37,12 @@ public class GameRegionInventoryServiceImpl extends ServiceImpl<GameRegionInvent
     public List<GameRegionInventory> findByItemId(Integer itemId) {
         return list(new LambdaQueryWrapper<GameRegionInventory>().eq(GameRegionInventory::getItemId, itemId));
     }
+
+    @Override
+    public GameRegionInventory findByRegionIdAndItemId(Integer regionId, Integer itemId) {
+        return getOne(new LambdaQueryWrapper<GameRegionInventory>()
+                .eq(GameRegionInventory::getRegionId, regionId)
+                .eq(GameRegionInventory::getItemId, itemId)
+                .eq(GameRegionInventory::getIsActive, 1), false);
+    }
 }

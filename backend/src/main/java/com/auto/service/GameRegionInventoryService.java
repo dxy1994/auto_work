@@ -19,4 +19,6 @@ public interface GameRegionInventoryService extends IService<GameRegionInventory
     List<GameRegionInventory> findByRegionId(Integer regionId);
 
     List<GameRegionInventory> findByItemId(Integer itemId);
+
+    GameRegionInventory findByRegionIdAndItemId(Integer regionId, Integer itemId);
 }
