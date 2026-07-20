@@ -1,6 +1,6 @@
 -- 已有数据库升级：记录订单实际来源平台账号，避免重新招呼时串号。
 ALTER TABLE `game_item_orders`
-    ADD COLUMN IF NOT EXISTS `platform_account_id` int NULL COMMENT '来源平台账号ID' AFTER `website_id`;
+    ADD COLUMN `platform_account_id` int NULL COMMENT '来源平台账号ID' AFTER `website_id`;
 
 SET @idx_exists = (
     SELECT COUNT(1)
