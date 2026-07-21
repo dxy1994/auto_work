@@ -1,8 +1,7 @@
 # ═══════════════════════════════════════════════
-# 全量依赖 — 开发环境一键安装
-# 生产部署请按角色选择安装：
-#   Monitor: pip install -r requirements-common.txt -r requirements-monitor.txt
-#   Trader:  pip install -r requirements-common.txt -r requirements-trader.txt
+# 全量依赖 — 仅供开发/测试环境
+# 生产主机只能选择 requirements-monitor.txt 或
+# requirements-game-executor.txt，不应安装本文件。
 # ═══════════════════════════════════════════════
--r requirements-common.txt
 -r requirements-monitor.txt
+-r requirements-game-executor.txt

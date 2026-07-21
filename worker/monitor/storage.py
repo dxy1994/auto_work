@@ -11,7 +11,7 @@ import tempfile
 import zipfile
 from typing import Optional
 
-import shared.config as config
+from monitor import config
 
 _EXCLUDE_DIRS = {
     "Cache", "GPUCache", "Code Cache", "DawnGraphiteCache",

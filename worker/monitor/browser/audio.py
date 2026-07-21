@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-import shared.config as config
+from monitor import config
 from monitor import storage as storage_sync
 
 # 项目根目录（worker 的上一级），用于解析可选的自定义音频文件

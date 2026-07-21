@@ -504,7 +504,7 @@ public class TradeDispatchCoordinator {
             MachineGameAccount mg = mgByAccountId.get(account.getId());
             if (mg == null) continue;
             int machineId = mg.getMachineId();
-            if (!agentRegistry.isAgentTrader(machineId)) continue;
+            if (!agentRegistry.isAgentGameExecutor(machineId)) continue;
             WorkerRuntimeStatus runtime = agentRegistry.getRuntimeStatus(machineId);
             if (runtime == null) continue;
             boolean runtimeIdentityUnknown = runtime.gameAccountId() == null && runtime.gameId() == null;
@@ -617,9 +617,7 @@ public class TradeDispatchCoordinator {
         payload.put("region_id", order.getRegionId());
         GameRegion region = gameRegionService.getById(order.getRegionId());
         if (region != null) {
-            payload.put("region_name", region.getName());
-            payload.put("region_code", region.getCode());
-            payload.put("region_sort_order", region.getSortOrder());
+            appendRegionNavigationPayload(payload, region);
         }
         payload.put("buyer_character", order.getBuyerCharacter());
         payload.put("asset_type", order.getAssetType());
@@ -660,6 +658,14 @@ public class TradeDispatchCoordinator {
         payload.put("details", details);
         payload.put("item_positions", positions);
         return payload;
+    }
+
+    static void appendRegionNavigationPayload(Map<String, Object> payload, GameRegion region) {
+        payload.put("region_name", region.getName());
+        payload.put("region_code", region.getCode());
+        payload.put("region_sort_order", region.getSortOrder());
+        payload.put("region_select_x", region.getSelectX());
+        payload.put("region_select_y", region.getSelectY());
     }
 
     private String newExecutionToken() {

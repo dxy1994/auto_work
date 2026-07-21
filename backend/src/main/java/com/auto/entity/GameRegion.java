@@ -27,6 +27,11 @@ public class GameRegion {
 
     private Integer sortOrder;
 
+    /** 800x600 游戏客户区内的大区选择点击坐标。 */
+    private Integer selectX;
+
+    private Integer selectY;
+
     private Integer isActive = 1;
 
     @TableField(fill = FieldFill.INSERT)

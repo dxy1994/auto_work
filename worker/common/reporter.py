@@ -7,7 +7,7 @@ import threading
 import uuid
 from typing import Optional
 
-from shared.protocol import (
+from common.protocol import (
     task_status_msg, task_result_msg, task_event_msg,
     check_orders_msg, order_detected_msg,
     trade_offer_decision_msg, trade_status_msg, trade_buyer_review_msg,

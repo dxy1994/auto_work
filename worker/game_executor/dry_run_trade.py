@@ -5,8 +5,8 @@
 但不会进行网络请求，也不会移动、点击鼠标或发送键盘按键。
 
 运行：
-    python -m trader.dry_run_trade
-    python -m trader.dry_run_trade --amount 2500000 --buyer DryRunBuyer
+    python -m game_executor.dry_run_trade
+    python -m game_executor.dry_run_trade --amount 2500000 --buyer DryRunBuyer
 """
 
 import argparse
@@ -18,12 +18,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shared.context import AppContext
-from trader.executor.lineage_classic import LineageClassicExecutor
-from trader.executor.registry import ExecutorRegistry
-from trader.gate import TradeTaskGate
-from trader.status import RuntimeStatus
-import trader.main as trader_main
+from common.context import AppContext
+from game_executor.executor.lineage_classic import LineageClassicExecutor
+from game_executor.executor.registry import ExecutorRegistry
+from game_executor.gate import TradeTaskGate
+from game_executor.status import RuntimeStatus
+import game_executor.main as executor_main
 
 
 class LogOnlyHardwareController:
@@ -177,6 +177,8 @@ def build_test_order(amount, buyer):
         "region_name": "测试大区",
         "region_code": "DRY_RUN_REGION",
         "region_sort_order": 1,
+        "region_select_x": 310,
+        "region_select_y": 154,
         "buyer_character": buyer,
         "asset_type": "adena",
         "asset_amount": amount,
@@ -209,10 +211,10 @@ async def run_dry_trade(order):
         order=order,
         safety="窗口/OCR/截图正常；ESP32 键鼠指令强制阻断",
     )
-    original_registry = trader_main.EXECUTOR_REGISTRY
-    trader_main.EXECUTOR_REGISTRY = registry
+    original_registry = executor_main.EXECUTOR_REGISTRY
+    executor_main.EXECUTOR_REGISTRY = registry
     try:
-        await trader_main._dispatch_message(
+        await executor_main._dispatch_message(
             {
                 "type": "trade_offer",
                 "assignment_id": assignment_id,
@@ -221,7 +223,7 @@ async def run_dry_trade(order):
             },
             context,
         )
-        await trader_main._dispatch_message(
+        await executor_main._dispatch_message(
             {
                 "type": "trade_start",
                 "assignment_id": assignment_id,
@@ -234,7 +236,7 @@ async def run_dry_trade(order):
             raise RuntimeError("测试交易任务未启动")
         await active["task"]
     finally:
-        trader_main.EXECUTOR_REGISTRY = original_registry
+        executor_main.EXECUTOR_REGISTRY = original_registry
 
     reporter._log(
         "dry_run_finished",

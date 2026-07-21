@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from trader.executor.base import BaseGameExecutor
+from game_executor.executor.base import BaseGameExecutor
 
 
 class ExecutorRegistry:

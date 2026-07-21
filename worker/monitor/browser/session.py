@@ -16,7 +16,7 @@ from typing import Optional, Dict
 
 from patchright.async_api import async_playwright, Page, Browser, BrowserContext
 
-import shared.config as config
+from monitor import config
 from monitor import storage as storage_sync
 
 PLAYWRIGHT_HEADLESS = config.PLAYWRIGHT_HEADLESS

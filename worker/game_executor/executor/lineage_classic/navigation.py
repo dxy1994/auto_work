@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import math
 import os
-import random
 import re
 import sys
 import time
@@ -14,7 +13,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
-from trader.executor.lineage_classic.paddle_ocr import recognize_korean
+from game_executor.executor.lineage_classic.paddle_ocr import (
+    recognize_korean,
+    recognize_korean_boxes,
+)
 
 try:
     import cv2
@@ -84,57 +86,37 @@ class TargetRegion:
     region_id: int
     name: str
     code: str
-    sort_order: int
+    select_x: Optional[int]
+    select_y: Optional[int]
+    sort_order: int = 0
 
     @classmethod
     def from_order(cls, order: dict) -> "TargetRegion":
         try:
+            raw_x = order.get("region_select_x")
+            raw_y = order.get("region_select_y")
+            if (raw_x is None) != (raw_y is None):
+                raise NavigationError("后台订单的大区选择坐标 X、Y 必须同时提供")
             target = cls(
                 region_id=int(order["region_id"]),
                 name=str(order.get("region_name") or "").strip(),
                 code=str(order.get("region_code") or "").strip(),
-                sort_order=int(order["region_sort_order"]),
+                select_x=int(raw_x) if raw_x is not None else None,
+                select_y=int(raw_y) if raw_y is not None else None,
+                sort_order=int(order.get("region_sort_order") or 0),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise NavigationError("后台订单缺少有效的大区定位信息") from exc
-        if target.region_id <= 0 or target.sort_order <= 0:
-            raise NavigationError("后台订单的大区 ID 或排序号无效")
+        if target.region_id <= 0:
+            raise NavigationError("后台订单的大区 ID 无效")
+        if target.select_x is not None and not (
+            0 <= target.select_x < CLIENT_SIZE[0]
+            and 0 <= target.select_y < CLIENT_SIZE[1]
+        ):
+            raise NavigationError("后台订单的大区选择坐标超出 800x600 客户区")
         if not target.name and not target.code:
             raise NavigationError("后台订单缺少大区名称和代码")
         return target
-
-
-@dataclass(frozen=True)
-class ServerPoint:
-    x: int
-    y: int
-
-
-class ServerListLayout:
-    """29 个大区按排序号分布为左右两列、每列最多 15 行。"""
-
-    LEFT_X = int(os.getenv("LINEAGE_SERVER_LEFT_X", "310"))
-    RIGHT_X = int(os.getenv("LINEAGE_SERVER_RIGHT_X", "470"))
-    FIRST_Y = int(os.getenv("LINEAGE_SERVER_FIRST_Y", "154"))
-    ROW_PITCH = float(os.getenv("LINEAGE_SERVER_ROW_PITCH", "18.5"))
-    MAX_SORT_ORDER = 30
-
-    @classmethod
-    def point(cls, sort_order: int) -> ServerPoint:
-        if not 1 <= sort_order <= cls.MAX_SORT_ORDER:
-            raise NavigationError(f"不支持的大区排序号: {sort_order}")
-        zero_based = sort_order - 1
-        row = zero_based // 2
-        x = cls.LEFT_X if zero_based % 2 == 0 else cls.RIGHT_X
-        return ServerPoint(x=x, y=int(cls.FIRST_Y + row * cls.ROW_PITCH + 0.5))
-
-    @classmethod
-    def jittered_point(cls, sort_order: int, rng: random.Random) -> ServerPoint:
-        point = cls.point(sort_order)
-        return ServerPoint(
-            x=point.x + rng.randint(-30, 30),
-            y=point.y + rng.randint(-3, 3),
-        )
 
 
 class ClientWindow:
@@ -189,6 +171,7 @@ class Vision(Protocol):
     def find(self, template: str, region: tuple[int, int, int, int], threshold: float = 0.84) -> Optional[tuple[int, int]]: ...
     def pixel(self, point: tuple[int, int]) -> tuple[int, int, int]: ...
     def read_text(self, region: tuple[int, int, int, int]) -> str: ...
+    def find_text(self, target: TargetRegion, region: tuple[int, int, int, int]) -> Optional[tuple[int, int]]: ...
 
 
 @dataclass(frozen=True)
@@ -278,6 +261,40 @@ class TemplateVision:
                 self._ocr_warning_printed = True
             return OcrResult("", -1.0)
 
+    def find_text(
+        self,
+        target: TargetRegion,
+        region: tuple[int, int, int, int],
+    ) -> Optional[tuple[int, int]]:
+        source = self._capture(region)
+        scale = 4
+        border = 12
+        scaled = cv2.resize(source, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        enhanced = cv2.copyMakeBorder(
+            scaled, border, border, border, border, cv2.BORDER_REPLICATE
+        )
+        try:
+            boxes = recognize_korean_boxes(enhanced)
+        except Exception as exc:
+            if not self._ocr_warning_printed:
+                print(f"[Lineage] PaddleOCR 不可用，无法按文字定位大区: {exc}")
+                self._ocr_warning_printed = True
+            return None
+        for box in boxes:
+            if box.confidence < OCR_MIN_CONFIDENCE or not region_text_matches(box.text, target):
+                continue
+            center_x, center_y = box.center
+            point = (
+                region[0] + int((center_x - border) / scale + 0.5),
+                region[1] + int((center_y - border) / scale + 0.5),
+            )
+            print(
+                f"[Lineage] OCR 定位大区 text='{_printable(box.text)}' "
+                f"confidence={box.confidence:.1f} coordinate=({point[0]},{point[1]})"
+            )
+            return point
+        return None
+
 
 def _normalized_region(value: str) -> str:
     return "".join(ch.casefold() for ch in value if ch.isalnum())
@@ -311,7 +328,6 @@ class LineageSessionNavigator:
         window: ClientWindow,
         vision: Vision,
         runtime_status=None,
-        rng: Optional[random.Random] = None,
         sleep: Callable[[float], None] = time.sleep,
         cancelled: Optional[Callable[[], bool]] = None,
     ):
@@ -319,7 +335,6 @@ class LineageSessionNavigator:
         self.window = window
         self.vision = vision
         self.runtime_status = runtime_status
-        self.rng = rng or random.Random()
         self.sleep = sleep
         self.cancelled = cancelled or (lambda: False)
         self._known_region_id: Optional[int] = None
@@ -430,12 +445,27 @@ class LineageSessionNavigator:
             raise NavigationError("退出登录后未进入选择服务器界面")
 
     def _select_server(self, target: TargetRegion) -> None:
-        point = ServerListLayout.jittered_point(target.sort_order, self.rng)
+        left, top, right, bottom = Ui.SERVER_REGION
+        if target.select_x is not None and target.select_y is not None:
+            point = (target.select_x, target.select_y)
+            source = "总控配置"
+        else:
+            point = self.vision.find_text(target, Ui.SERVER_REGION)
+            if point is None:
+                raise NavigationError(
+                    f"大区未配置坐标，OCR 也未找到目标大区: {target.name or target.code}"
+                )
+            source = "OCR 定位"
+        if not (left <= point[0] < right and top <= point[1] < bottom):
+            raise NavigationError(
+                f"大区选择坐标 ({point[0]},{point[1]}) 不在服务器列表安全区域内"
+            )
         print(
-            f"[Lineage] 选择大区 id={target.region_id} name='{_printable(target.name)}' "
-            f"sort={target.sort_order} click=({point.x},{point.y})"
+            f"[Lineage] 选择大区 id={target.region_id} "
+            f"target='{_printable(target.name or target.code)}' source={source} "
+            f"coordinate=({point[0]},{point[1]})"
         )
-        self._click((point.x, point.y))
+        self._click(point)
         confirm = self._wait_for(
             lambda: self._find(Ui.SERVER_CONFIRM, Ui.SERVER_REGION),
             timeout=5,

@@ -43,7 +43,7 @@ public class AgentRegistry {
     private final Map<String, Long> retiredTaskIds = new ConcurrentHashMap<>();
     /** machine_id -> Worker 最近一次游戏运行态。 */
     private final Map<Integer, WorkerRuntimeStatus> runtimeStatuses = new ConcurrentHashMap<>();
-    /** machine_id -> Worker 角色（monitor / trader）。 */
+    /** machine_id -> Worker 角色（monitor / game_executor）。 */
     private final Map<Integer, String> machineRoles = new ConcurrentHashMap<>();
     private static final long TASK_ID_QUARANTINE_MS = 30 * 60 * 1000L;
     private final Object taskLock = new Object();
@@ -158,8 +158,8 @@ public class AgentRegistry {
         return machineRoles.get(machineId);
     }
 
-    public boolean isAgentTrader(int machineId) {
-        return "trader".equals(machineRoles.get(machineId));
+    public boolean isAgentGameExecutor(int machineId) {
+        return WorkerRuntimeStatus.isGameExecutorRole(machineRoles.get(machineId));
     }
 
     public boolean isAgentOnline(int machineId) {

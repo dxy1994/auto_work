@@ -25,11 +25,11 @@ from typing import Optional, List
 
 from patchright.async_api import Page
 
-import shared.config as config
+from monitor import config
 from monitor.browser.audio import play_alert_audio_async
 from monitor.browser.session import BrowserSession
 from monitor.monitoring.worker import PageWorker
-from shared.reporter import Reporter
+from common.reporter import Reporter
 
 PLAYWRIGHT_HEADLESS = config.PLAYWRIGHT_HEADLESS
 

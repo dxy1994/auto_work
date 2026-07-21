@@ -1,26 +1,26 @@
 import os
-import random
 import sys
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from trader.executor.lineage_classic.navigation import (
+from game_executor.executor.lineage_classic.navigation import (
     LineageSessionNavigator,
-    ServerListLayout,
+    NavigationError,
     TargetRegion,
     TemplateVision,
     Ui,
     WINDOW_TITLE_RE,
     region_text_matches,
 )
-from trader.executor.lineage_classic.paddle_ocr import (
+from game_executor.executor.lineage_classic.paddle_ocr import (
     build_paddle_ocr_engine,
+    paddle_ocr_boxes,
     paddle_ocr_text,
 )
-from trader.executor.lineage_classic.policy import trade_timeout_seconds
-from trader.executor.lineage_classic.executor import (
+from game_executor.executor.lineage_classic.policy import trade_timeout_seconds
+from game_executor.executor.lineage_classic.executor import (
     LineageClassicExecutor,
     TradeUi,
     buyer_ocr_action,
@@ -35,6 +35,8 @@ ORDER = {
     "region_name": "冥王哈迪斯",
     "region_code": "아툰",
     "region_sort_order": 11,
+    "region_select_x": 310,
+    "region_select_y": 154,
 }
 
 
@@ -84,7 +86,14 @@ class _Vision:
         Ui.GOLD_TEMPLATES[0]: (680, 200),
     }
 
-    def __init__(self, state="game", current_text="别的大区", inventory_open=False):
+    def __init__(
+        self,
+        state="game",
+        current_text="别的大区",
+        inventory_open=False,
+        server_text=None,
+        ocr_point=(310, 154),
+    ):
         self.state = state
         self.current_text = current_text
         self.inventory_open = inventory_open
@@ -92,6 +101,9 @@ class _Vision:
         self.exit_panel_open = False
         self.server_selected = False
         self.character_selected = False
+        self.server_text = server_text or ORDER["region_code"]
+        self.ocr_point = ocr_point
+        self.find_text_calls = 0
 
     def find(self, template, _region, threshold=0.84):
         if template == Ui.IN_GAME:
@@ -122,7 +134,15 @@ class _Vision:
         return (20, 20, 20) if self.character_selected else (0, 0, 0)
 
     def read_text(self, _region):
-        return self.current_text if self.state == "game" else ""
+        if self.state == "game":
+            return self.current_text
+        if self.state == "server":
+            return self.server_text
+        return ""
+
+    def find_text(self, _target, _region):
+        self.find_text_calls += 1
+        return self.ocr_point
 
     def clicked(self, point):
         if point == self.CENTERS[Ui.MENU_BUTTON]:
@@ -228,19 +248,69 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual("26.07.15.2001", match.group("version"))
         self.assertEqual("jyz27a@gmail.com", match.group("account"))
 
-    def test_server_points_follow_two_column_order(self):
-        self.assertEqual((310, 154), tuple(vars(ServerListLayout.point(1)).values()))
-        self.assertEqual((470, 154), tuple(vars(ServerListLayout.point(2)).values()))
-        self.assertEqual((310, 173), tuple(vars(ServerListLayout.point(3)).values()))
-        self.assertEqual((310, 413), tuple(vars(ServerListLayout.point(29)).values()))
+    def test_target_region_uses_coordinates_from_central_order(self):
+        target = TargetRegion.from_order(ORDER)
+        self.assertEqual((310, 154), (target.select_x, target.select_y))
 
-    def test_server_point_jitter_stays_within_required_bounds(self):
-        base = ServerListLayout.point(11)
-        rng = random.Random(7)
-        for _ in range(100):
-            point = ServerListLayout.jittered_point(11, rng)
-            self.assertLessEqual(abs(point.x - base.x), 30)
-            self.assertLessEqual(abs(point.y - base.y), 3)
+    def test_target_region_allows_no_coordinates_but_rejects_partial_or_out_of_bounds(self):
+        missing = {key: value for key, value in ORDER.items() if key != "region_select_x"}
+        with self.assertRaises(NavigationError):
+            TargetRegion.from_order(missing)
+        with self.assertRaises(NavigationError):
+            TargetRegion.from_order({**ORDER, "region_select_x": 800})
+        without_coordinates = {
+            key: value for key, value in ORDER.items()
+            if key not in {"region_select_x", "region_select_y"}
+        }
+        target = TargetRegion.from_order(without_coordinates)
+        self.assertIsNone(target.select_x)
+        self.assertIsNone(target.select_y)
+
+    def test_server_selection_prefers_exact_central_coordinate_without_ocr(self):
+        vision = _Vision(state="server", server_text="켄라우헬", ocr_point=None)
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware, _Window(), vision, sleep=lambda _seconds: None
+        )
+
+        navigator._select_server(TargetRegion.from_order(ORDER))
+
+        self.assertEqual(ORDER["region_select_x"], hardware.moves[0][0])
+        self.assertEqual(ORDER["region_select_y"], hardware.moves[0][1])
+        self.assertEqual(0, vision.find_text_calls)
+        self.assertEqual("character", vision.state)
+
+    def test_server_selection_falls_back_to_ocr_when_coordinate_is_missing(self):
+        order = {
+            key: value for key, value in ORDER.items()
+            if key not in {"region_select_x", "region_select_y"}
+        }
+        vision = _Vision(state="server", ocr_point=(470, 173))
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware, _Window(), vision, sleep=lambda _seconds: None
+        )
+
+        navigator._select_server(TargetRegion.from_order(order))
+
+        self.assertEqual((470, 173), hardware.moves[0])
+        self.assertEqual(1, vision.find_text_calls)
+
+    def test_server_selection_without_coordinate_stops_when_ocr_finds_nothing(self):
+        order = {
+            key: value for key, value in ORDER.items()
+            if key not in {"region_select_x", "region_select_y"}
+        }
+        vision = _Vision(state="server", ocr_point=None)
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware, _Window(), vision, sleep=lambda _seconds: None
+        )
+
+        with self.assertRaisesRegex(NavigationError, "OCR 也未找到"):
+            navigator._select_server(TargetRegion.from_order(order))
+
+        self.assertEqual([], hardware.moves)
 
     def test_ocr_matches_name_or_korean_code(self):
         target = TargetRegion.from_order(ORDER)
@@ -267,6 +337,20 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual("아툰", text)
         self.assertAlmostEqual(97.4, confidence)
 
+    def test_paddle_ocr_extracts_text_box_centers(self):
+        boxes = paddle_ocr_boxes([{
+            "res": {
+                "rec_texts": ["아툰"],
+                "rec_scores": [0.974],
+                "rec_polys": [[[40, 20], [120, 20], [120, 44], [40, 44]]],
+            }
+        }])
+
+        self.assertEqual(1, len(boxes))
+        self.assertEqual("아툰", boxes[0].text)
+        self.assertAlmostEqual(97.4, boxes[0].confidence)
+        self.assertEqual((80.0, 32.0), boxes[0].center)
+
     def test_paddle_ocr_engine_is_forced_to_cpu(self):
         calls = []
 
@@ -292,7 +376,7 @@ class LineageNavigationTest(unittest.TestCase):
         vision = _Vision(current_text=ORDER["region_code"], inventory_open=False)
         window = _Window()
         navigator = LineageSessionNavigator(
-            _Hardware(vision), window, vision, rng=random.Random(1), sleep=lambda _seconds: None
+            _Hardware(vision), window, vision, sleep=lambda _seconds: None
         )
 
         target = navigator.ensure_target_region(ORDER)
@@ -307,7 +391,7 @@ class LineageNavigationTest(unittest.TestCase):
         vision = _Vision(current_text="켄라우헬", inventory_open=False)
         hardware = _Hardware(vision)
         navigator = LineageSessionNavigator(
-            hardware, _Window(), vision, rng=random.Random(3), sleep=lambda _seconds: None
+            hardware, _Window(), vision, sleep=lambda _seconds: None
         )
 
         navigator.ensure_target_region(ORDER)
@@ -317,12 +401,10 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertTrue(vision.character_selected)
         self.assertTrue(vision.inventory_open)
         self.assertEqual("game", vision.state)
-        base = ServerListLayout.point(ORDER["region_sort_order"])
-        server_clicks = [
-            point for point in hardware.moves
-            if abs(point[0] - base.x) <= 30 and abs(point[1] - base.y) <= 3
-        ]
-        self.assertEqual(1, len(server_clicks))
+        self.assertEqual(
+            1,
+            hardware.moves.count((ORDER["region_select_x"], ORDER["region_select_y"])),
+        )
 
 
 if __name__ == "__main__":

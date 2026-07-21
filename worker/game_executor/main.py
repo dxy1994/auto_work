@@ -1,9 +1,8 @@
-"""
-交易型 Worker 入口：连接总控、注册本机、心跳保活、执行游戏交易指令。
+"""游戏执行 Worker 入口：连接总控、注册本机、心跳保活、执行游戏交易指令。
 
 不包含浏览器、订单监控、招呼发送能力。
 
-运行：python -m worker.trader.main
+运行：python -m game_executor.main
 """
 import asyncio
 import json
@@ -13,19 +12,19 @@ import sys
 # ── 让 worker 目录内模块可平铺导入 ──
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import websockets
-
-from shared import clock
-from shared import config
-from shared.context import AppContext
-from shared.client import AgentClient
-from shared.reporter import Reporter
-from trader.status import RuntimeStatus
-from trader.gate import TradeTaskGate
-from trader.executor.registry import EXECUTOR_REGISTRY
-from trader.executor.hardware.controller import HardwareController
-from trader.executor.lineage_classic import LineageClassicExecutor
-from trader.executor.lineage_classic.policy import execution_timeout_seconds
+from common import clock
+from common import config
+from common.context import AppContext
+from common.client import AgentClient
+from common.reporter import Reporter
+from common.autostart import handle_autostart_args
+from game_executor.status import RuntimeStatus
+from game_executor.gate import TradeTaskGate
+from game_executor.executor.registry import EXECUTOR_REGISTRY
+from game_executor.executor.hardware.controller import HardwareController
+from game_executor.executor.lineage_classic import LineageClassicExecutor
+from game_executor.executor.lineage_classic.policy import execution_timeout_seconds
+from game_executor import config as executor_config
 
 # 安装时间戳 print
 clock.install()
@@ -207,14 +206,14 @@ async def _dispatch_message(msg, ctx: AppContext):
         if not callable(submit_review) or not submit_review(
             msg.get("review_id"), bool(msg.get("approved"))
         ):
-            print(f"[Trader] 忽略已失效的买家审核决定: {msg.get('review_id')}")
+            print(f"[GameExecutor] 忽略已失效的买家审核决定: {msg.get('review_id')}")
 
     elif mtype == "trade_game_screenshot_saved":
         reporter.deliver_trade_game_screenshot_saved(
             msg.get("request_id"), bool(msg.get("success")))
 
     else:
-        print(f"[Trader] 未知消息类型: {mtype}")
+        print(f"[GameExecutor] 未知消息类型: {mtype}")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -233,15 +232,17 @@ async def _heartbeat(client, ctx: AppContext):
         await client.send({
             "type": "heartbeat",
             "runtime": {
-                "role": "trader",
+                "role": "game_executor",
                 **ctx.runtime_status.snapshot(),
             },
         })
 
 
 async def _connect_once(ctx: AppContext):
+    import websockets
+
     info = config.get_machine_info()
-    info["role"] = "trader"
+    info["role"] = "game_executor"
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
         loop = asyncio.get_event_loop()
         client = AgentClient(ws, loop)
@@ -249,7 +250,7 @@ async def _connect_once(ctx: AppContext):
         ctx.reporter = reporter
 
         await client.send({"type": "register", **info})
-        print(f"[Trader] 已连接总控，注册中: {info}")
+        print(f"[GameExecutor] 已连接总控，注册中: {info}")
 
         hb = asyncio.create_task(_heartbeat(client, ctx))
         try:
@@ -259,7 +260,7 @@ async def _connect_once(ctx: AppContext):
                 except Exception:
                     continue
                 if msg.get("type") == "registered":
-                    print(f"[Trader] 注册成功 machine_id={msg.get('machine_id')}")
+                    print(f"[GameExecutor] 注册成功 machine_id={msg.get('machine_id')}")
                     continue
                 await _dispatch_message(msg, ctx)
         finally:
@@ -280,9 +281,9 @@ async def main_loop():
     ctx.trade_task_gate = trade_task_gate
 
     if EXECUTOR_REGISTRY.get("lineage_classic") is None:
-        hardware = HardwareController(config.ESP32_HOST)
+        hardware = HardwareController(executor_config.ESP32_HOST)
         if not hardware.connect():
-            raise RuntimeError("failed to connect trader hardware controller")
+            raise RuntimeError("failed to connect game executor hardware controller")
         executor = LineageClassicExecutor(hardware, runtime_status)
         EXECUTOR_REGISTRY.register(executor)
         await asyncio.to_thread(executor.probe_runtime)
@@ -291,11 +292,18 @@ async def main_loop():
         try:
             await _connect_once(ctx)
         except Exception as e:
-            print(f"[Trader] 连接断开/失败: {e}，{config.RECONNECT_INTERVAL}s 后重连")
+            print(f"[GameExecutor] 连接断开/失败: {e}，{config.RECONNECT_INTERVAL}s 后重连")
         await asyncio.sleep(config.RECONNECT_INTERVAL)
 
 
 def start():
-    """供顶层 main.py 调用的入口。"""
-    print(f"[Trader] 启动，总控地址: {config.BACKEND_WS_URL}")
+    """启动独立的游戏执行 Worker。"""
+    print(f"[GameExecutor] 启动，总控地址: {config.BACKEND_WS_URL}")
     asyncio.run(main_loop())
+
+
+if __name__ == "__main__":
+    autostart_result = handle_autostart_args("auto-game-executor")
+    if autostart_result is not None:
+        sys.exit(autostart_result)
+    start()

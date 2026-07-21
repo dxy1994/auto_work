@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 set "PROJECT_ROOT=%~dp0.."
 for %%i in ("%PROJECT_ROOT%") do set "PROJECT_ROOT=%%~fi"
 set "WORKER_DIR=%PROJECT_ROOT%\worker"
-set "VENV_PYTHON=%PROJECT_ROOT%\.venv\Scripts\python.exe"
+set "VENV_PYTHON=%PROJECT_ROOT%\.venv-monitor\Scripts\python.exe"
 set "ENV_FILE=%WORKER_DIR%\.env"
 
 echo ========================================
@@ -20,8 +20,7 @@ if not exist "%ENV_FILE%" (
     copy /y "%WORKER_DIR%\.env.monitor.example" "%ENV_FILE%" >nul 2>&1
     if errorlevel 1 (
         echo        [警告] 模板不存在，将使用默认配置
-        echo        WORKER_ROLE=monitor > "%ENV_FILE%"
-        echo        BACKEND_WS_URL=ws://127.0.0.1:8000/api/agent/ws >> "%ENV_FILE%"
+        echo        BACKEND_WS_URL=ws://127.0.0.1:8000/api/agent/ws > "%ENV_FILE%"
     )
     echo        .env 已创建，请根据需要修改配置后重新运行
     echo        编辑: notepad "%ENV_FILE%"
@@ -40,7 +39,7 @@ if not exist "%VENV_PYTHON%" (
         pause
         exit /b 1
     )
-    python -m venv "%PROJECT_ROOT%\.venv"
+    python -m venv "%PROJECT_ROOT%\.venv-monitor"
     if errorlevel 1 (
         echo        [错误] 虚拟环境创建失败
         pause
@@ -51,10 +50,9 @@ if not exist "%VENV_PYTHON%" (
     echo        虚拟环境已就绪
 )
 
-:: 2. 安装 Monitor 专用依赖（不含浏览器等 Trader 不需要的包）
+:: 2. 安装监控端独立依赖（不含游戏执行/OCR/HID）
 echo.
 echo [2/5] 安装 Monitor 依赖...
-"%VENV_PYTHON%" -m pip install -r "%WORKER_DIR%\requirements-common.txt" --quiet
 "%VENV_PYTHON%" -m pip install -r "%WORKER_DIR%\requirements-monitor.txt" --quiet
 if errorlevel 1 (
     echo        [警告] 部分依赖安装失败，尝试继续...
@@ -100,6 +98,5 @@ echo ========================================
 echo.
 
 cd /d "%WORKER_DIR%"
-set WORKER_ROLE=monitor
-"%VENV_PYTHON%" main.py
+"%VENV_PYTHON%" -m monitor.main
 pause

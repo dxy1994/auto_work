@@ -20,7 +20,7 @@
       每一步仅打印出“点击的位置”或“鼠标移动轨迹”。
 
 运行：
-    python -m trader.executor.lineage_classic_demo 1000000
+    python -m game_executor.executor.lineage_classic.lineage_classic_demo 1000000
     （最后的数字为要输入的交易参数，可省略，默认 1000000）
 """
 import math
@@ -277,7 +277,7 @@ class ScreenCapture:
 class DryRunHardwareController:
     """演示用键鼠控制器。
 
-    接口与 trader.executor.hardware.controller.HardwareController 保持一致，
+    接口与 game_executor.executor.hardware.controller.HardwareController 保持一致，
     但所有动作仅打印“位置 / 轨迹”，绝不发送任何真实指令。
     """
 

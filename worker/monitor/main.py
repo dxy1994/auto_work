@@ -4,7 +4,7 @@
 
 不包含游戏交易执行能力。
 
-运行：python -m worker.monitor.main
+运行：python -m monitor.main
 """
 import asyncio
 import json
@@ -15,13 +15,12 @@ import threading
 # ── 让 worker 目录内模块可平铺导入 ──
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import websockets
-
-from shared import clock
-from shared import config
-from shared.context import AppContext
-from shared.client import AgentClient
-from shared.reporter import Reporter
+from common import clock
+from common import config
+from common.context import AppContext
+from common.client import AgentClient
+from common.reporter import Reporter
+from common.autostart import handle_autostart_args
 from monitor.task_manager import TaskManager
 
 # 安装时间戳 print
@@ -158,6 +157,8 @@ async def _heartbeat(client, ctx: AppContext):
 
 
 async def _connect_once(ctx: AppContext):
+    import websockets
+
     info = config.get_machine_info()
     info["role"] = "monitor"
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
@@ -202,6 +203,13 @@ async def main_loop():
 
 
 def start():
-    """供顶层 main.py 调用的入口。"""
+    """启动独立的监控 Worker。"""
     print(f"[Monitor] 启动，总控地址: {config.BACKEND_WS_URL}")
     asyncio.run(main_loop())
+
+
+if __name__ == "__main__":
+    autostart_result = handle_autostart_args("auto-monitor")
+    if autostart_result is not None:
+        sys.exit(autostart_result)
+    start()

@@ -6,11 +6,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from trader.executor.registry import ExecutorRegistry
-from trader.gate import TradeTaskGate
-from trader.main import _dispatch_message
-from trader.status import RuntimeStatus
-from shared.context import AppContext
+from game_executor.executor.registry import ExecutorRegistry
+from game_executor.gate import TradeTaskGate
+from game_executor.main import _dispatch_message
+from game_executor.status import RuntimeStatus
+from common.context import AppContext
 
 
 class _Executor:
@@ -21,7 +21,7 @@ class _Executor:
         return {"success": True, "message": "ok", "duration_ms": 1}
 
 
-class TraderCoreTest(unittest.TestCase):
+class GameExecutorCoreTest(unittest.TestCase):
     def test_registry_resolves_game_code_case_insensitively(self):
         registry = ExecutorRegistry()
         executor = _Executor()
@@ -80,7 +80,7 @@ class _CancellableExecutor(_Executor):
         self.cancelled.set()
 
 
-class TraderDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
+class GameExecutorDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
     async def test_start_does_not_block_receive_loop_and_cancel_reaches_executor(self):
         registry = ExecutorRegistry()
         executor = _CancellableExecutor()
@@ -92,7 +92,7 @@ class TraderDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
         ctx.trade_task_gate = TradeTaskGate()
         order = {"order_id": 42, "game_code": "lineage_classic", "trade_timeout_seconds": 30}
 
-        with patch("trader.main.EXECUTOR_REGISTRY", registry):
+        with patch("game_executor.main.EXECUTOR_REGISTRY", registry):
             await _dispatch_message({
                 "type": "trade_offer",
                 "assignment_id": "assignment-1",

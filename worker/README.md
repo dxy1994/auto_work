@@ -1,64 +1,103 @@
-# Worker
+# Worker 分布式部署
 
-Worker 通过 WebSocket 连接总控，执行网站自动化任务，并上报本机游戏客户端与交易执行器运行态。
+Worker 已拆成三个互相有明确边界的模块：
 
-## 天堂经典版自动交易
-
-正式 `LineageClassicExecutor` 在 Trader 启动时注册，通过 ESP32 HTTP HID
-接口执行切区、等待买家交易申请、放入 Adena 和确认操作。硬件不可达或指令失败时不会伪报成功。
-
-协议消息：
-
-- `trade_offer`：总控发出带 30 秒租约的候选指派，不代表授权执行。
-- `trade_offer_decision`：Worker 根据本机游戏和执行状态接受或拒绝。
-- `trade_start`：总控确认预占成功后，使用同一临时令牌授权开始。
-- `trade_status`：Worker 上报进度、取消和分类后的终态。
-- `trade_cancel`：总控取消尚未完成的本机交易任务。
-
-执行令牌只在总控内存和 WebSocket 消息中短暂存在，数据库仅保存 SHA-256 摘要。Worker 同时只允许一个活动交易指派，重复消息按 assignment ID 和令牌幂等校验。
-
-天堂导航按 800×600 客户区相对坐标完成以下检查：
-
-- 识别 `Lineage Classic - <版本> [LIVE] - Login [<账号>]` 窗口；
-- OCR 比对当前大区，无法可靠识别时执行一次安全切区；
-- 通过重新登录、角色界面退出登录进入服务器列表；
-- 按 `region_sort_order` 的固定两列点位选择服务器，并施加横向 ±30、纵向 ±3 像素偏移；
-- 选择角色并登录，最后通过未选中/选中金币模板确认物品栏已打开。
-
-总控会随订单下发 `region_name`、`region_code` 和 `region_sort_order`。OCR 使用
-PaddleOCR 的 `PP-OCRv5_mobile_det + korean_PP-OCRv5_mobile_rec` 轻量模型，
-并固定在 CPU 上推理；模型不可用时仍可切区并用
-本进程中的已确认大区缓存完成后续判断。首次运行会下载官方模型到 PaddleOCR 缓存。
-服务器列表的左右列 X、首行 Y 和行距可通过 `.env.trader.example` 中的
-`LINEAGE_SERVER_*` 参数按实机截图校准。
-韩语 OCR 默认要求所有有效词块的最低置信度不低于 90，文本相似度不低于 0.90；
-可通过 `LINEAGE_OCR_MIN_CONFIDENCE` 和 `LINEAGE_REGION_TEXT_SIMILARITY` 向上调整，程序强制
-保底为 90/0.90；低于门槛时一律按识别失败处理并进入安全切区流程。
-
-招呼发送成功后总控立即派发交易任务，Worker 应先完成切区和物品栏检查，再等待买家
-发起游戏内交易。等待时长使用订单下发的 `trade_timeout_seconds`（游戏管理配置，默认
-300 秒，范围 30–7200 秒）。超时结果使用 `timed_out` 上报，后台释放机器和游戏账号，
-订单转为 `suspended` 并记录 `TRADE_REQUEST_TIMEOUT`。
-
-执行进度会持久化为 `preparing / switching_region / waiting_buyer / trading /
-verifying`。Worker 和后台各有一层总执行 watchdog；进入 `trading` 后如果超时、
-断线或无法确认结果，订单进入 `review_required`，不会自动重试造成重复交付。
-交易弹窗、确认按钮、取消按钮和最终确认提示均使用不低于 0.90 的模板置信度。
-只有最终确认后相关交易元素消失，并连续三帧检测到已回到游戏主界面时，
-才上报 `completed`；否则转人工复核，不会伪报成功。
-
-使用正式窗口识别、OCR、截图和交易编排，但阻断 ESP32 键鼠指令的订单干跑：
-
-```bash
-python -m trader.dry_run_trade --amount 1000000 --buyer DryRunBuyer
+```text
+worker/
+├─ common/          # 公共 WebSocket、协议、上报、时钟和主机信息
+├─ monitor/         # 网站订单监控、浏览器登录、招呼发送
+└─ game_executor/   # 游戏窗口、OCR、ESP32 HID、交易状态机
 ```
 
-该入口在当前进程内运行 `trade_offer → trade_start → 正式执行器` 编排。
-原本要发送的鼠标和键盘动作会写入日志并返回成功，但不会发往 ESP32；
-其他识别与等待行为保持正常。
+`monitor` 和 `game_executor` 是两个独立进程、两个独立依赖集和两个独立 EXE，
+应部署在不同主机。公共模块只提供通信与基础设施，不启动任何业务角色。
+统一的 `worker/main.py` 已停用，避免误把两个角色运行在同一安装环境。
 
-运行 Worker 单元测试：
+## 监控主机
 
-```bash
-PYTHONPYCACHEPREFIX=/tmp/auto-work-pycache python3 -m unittest discover -s tests -v
+监控主机只负责网站订单检测和招呼，不包含 PaddleOCR、游戏窗口或 ESP32 代码。
+
+```bat
+copy worker\.env.monitor.example worker\.env
+scripts\start-monitor.bat
+```
+
+直接运行：
+
+```bat
+cd worker
+python -m monitor.main
+```
+
+独立依赖：`worker/requirements-monitor.txt`。
+
+## 游戏执行主机
+
+游戏执行主机只负责接收交易指派、识别游戏画面和执行游戏交易，
+不安装浏览器自动化、网站适配器或招呼模块。
+
+```bat
+copy worker\.env.game-executor.example worker\.env
+scripts\start-game-executor.bat
+```
+
+直接运行：
+
+```bat
+cd worker
+python -m game_executor.main
+```
+
+独立依赖：`worker/requirements-game-executor.txt`。
+游戏执行端向总控注册的角色是 `game_executor`；总控仍兼容升级前的 `trader`。
+
+大区点击坐标在总控“大区管理”中按 800×600 游戏客户区坐标录入，并随每次交易指令
+下发给游戏执行机。执行机优先直接使用总控坐标；未配置坐标时，才扫描服务器列表并
+通过 OCR 文本框定位大区中心。OCR 未找到目标或最终坐标越界时会停止流程。
+
+## OCR
+
+游戏执行端使用 CPU 模式 PaddleOCR：
+
+- 检测：`PP-OCRv5_mobile_det`
+- 韩文识别：`korean_PP-OCRv5_mobile_rec`
+- Windows CPU 下关闭 oneDNN/MKLDNN，避免 Paddle 3.3.1 推理异常
+
+首次运行会下载官方模型到 PaddleX 缓存。韩文 OCR 默认要求最低词块置信度不低于
+90，文本相似度不低于 0.90；可通过 `LINEAGE_OCR_MIN_CONFIDENCE` 和
+`LINEAGE_REGION_TEXT_SIMILARITY` 向上调整。
+
+## 无键鼠干跑
+
+在游戏执行主机上可以运行正式交易编排，但强制阻断 ESP32 键鼠指令：
+
+```bat
+cd worker
+python -m game_executor.dry_run_trade --amount 1000000 --buyer DryRunBuyer
+```
+
+日志末尾必须显示 `sent_hid_actions=0`。该入口使用本地测试订单，不消费中控订单。
+
+## 独立打包
+
+分别构建：
+
+```bat
+scripts\build-monitor-exe.bat
+scripts\build-game-executor-exe.bat
+```
+
+输出：
+
+- `worker/dist/monitor/auto-monitor.exe`
+- `worker/dist/game-executor/auto-game-executor.exe`
+
+`scripts/build-worker-exe.bat` 仅是同时构建上述两个独立产物的开发机快捷入口，
+不会生成包含两个角色的统一 EXE。部署时只能把对应角色的 EXE 和 `.env` 放到目标主机。
+
+## 测试
+
+```bat
+cd worker
+python -m unittest discover -s tests -v
 ```

@@ -12,8 +12,12 @@ public record WorkerRuntimeStatus(
         String currentAssignmentId,
         String uiHealth) {
 
-    public boolean isTrader() {
-        return "trader".equals(role);
+    public boolean isGameExecutor() {
+        return isGameExecutorRole(role);
+    }
+
+    public static boolean isGameExecutorRole(String role) {
+        return "game_executor".equals(role) || "trader".equals(role);
     }
 
     public boolean isMonitor() {

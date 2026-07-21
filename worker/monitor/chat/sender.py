@@ -97,7 +97,8 @@ async def _do_send_web_chat(session, chat_url: str, scripts: list,
             return {"success": False, "message": "聊天页面加载超时，输入框或发送按钮未找到"}
 
         # 图片相对路径补全：优先 STORAGE_PUBLIC_BASE_URL，为空则走后端代理
-        from shared.config import STORAGE_PUBLIC_BASE_URL, BACKEND_WS_URL
+        from common.config import BACKEND_WS_URL
+        from monitor.config import STORAGE_PUBLIC_BASE_URL
         from urllib.parse import urlparse
         if STORAGE_PUBLIC_BASE_URL:
             image_base = STORAGE_PUBLIC_BASE_URL.rstrip("/")

@@ -56,6 +56,7 @@ public class GameRegionController {
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     public GameRegion create(@RequestBody GameRegion payload) {
+        validateSelectCoordinates(payload);
         if (regionService.findByGameIdAndCode(payload.getGameId(), payload.getCode()) != null) {
             throw ApiException.badRequest("该游戏下大区编码 " + payload.getCode() + " 已存在");
         }
@@ -91,9 +92,12 @@ public class GameRegionController {
     public GameRegion update(@PathVariable Integer regionId, @RequestBody GameRegion payload) {
         GameRegion r = regionService.getById(regionId);
         if (r == null) throw ApiException.notFound("大区不存在");
+        validateSelectCoordinates(payload);
         if (payload.getName() != null) r.setName(payload.getName());
         if (payload.getCode() != null) r.setCode(payload.getCode());
         if (payload.getSortOrder() != null) r.setSortOrder(payload.getSortOrder());
+        r.setSelectX(payload.getSelectX());
+        r.setSelectY(payload.getSelectY());
         if (payload.getIsActive() != null) r.setIsActive(payload.getIsActive());
         regionService.updateById(r);
         return r;
@@ -105,5 +109,17 @@ public class GameRegionController {
         GameRegion r = regionService.getById(regionId);
         if (r == null) throw ApiException.notFound("大区不存在");
         regionService.removeById(regionId);
+    }
+
+    private void validateSelectCoordinates(GameRegion payload) {
+        Integer x = payload.getSelectX();
+        Integer y = payload.getSelectY();
+        if (x == null && y == null) return;
+        if (x == null || y == null) {
+            throw ApiException.badRequest("大区选择坐标 X、Y 必须同时填写");
+        }
+        if (x < 0 || x >= 800 || y < 0 || y >= 600) {
+            throw ApiException.badRequest("大区选择坐标必须位于 800x600 游戏客户区内");
+        }
     }
 }

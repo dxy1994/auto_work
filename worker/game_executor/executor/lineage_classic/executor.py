@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Optional
 
-from trader.executor.base import BaseGameExecutor
-from trader.executor.lineage_classic.navigation import (
+from game_executor.executor.base import BaseGameExecutor
+from game_executor.executor.lineage_classic.navigation import (
     ClientWindow,
     NavigationCancelled,
     NavigationError,
@@ -20,7 +20,7 @@ from trader.executor.lineage_classic.navigation import (
     Ui,
     build_navigator,
 )
-from trader.executor.lineage_classic.policy import trade_timeout_seconds
+from game_executor.executor.lineage_classic.policy import trade_timeout_seconds
 
 
 class TradeUi:

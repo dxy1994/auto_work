@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════
-# Trader 专用依赖 — 比 Monitor 轻量得多，不需要浏览器
-# 安装: pip install -r requirements-common.txt -r requirements-trader.txt
+# 游戏执行端独立依赖 — 不包含浏览器监控组件
+# 安装: pip install -r requirements-game-executor.txt
 # ═══════════════════════════════════════════════
+-r requirements-common.txt
 # pyserial>=3.5                # ESP32C3 串口通信（固件就绪后启用）
 opencv-contrib-python==4.10.0.84
 Pillow>=10,<13

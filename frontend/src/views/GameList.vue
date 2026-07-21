@@ -106,6 +106,11 @@
       <el-table :data="regionList" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
         <el-table-column prop="code" label="编码" width="120" />
         <el-table-column prop="name" label="大区名称" min-width="150" />
+        <el-table-column label="选区坐标" width="100" align="center">
+          <template #default="{ row }">
+            {{ row.select_x != null && row.select_y != null ? `${row.select_x}, ${row.select_y}` : '未配置' }}
+          </template>
+        </el-table-column>
         <el-table-column prop="sort_order" label="排序" width="70" align="center" />
         <el-table-column label="操作" width="220">
           <template #default="{ row }">
@@ -121,7 +126,7 @@
       </el-table>
 
       <!-- 大区编辑弹窗 -->
-      <el-dialog v-model="regionEditVisible" :title="regionIsEdit ? '编辑大区' : '新增大区'" width="400px" append-to-body destroy-on-close>
+      <el-dialog v-model="regionEditVisible" :title="regionIsEdit ? '编辑大区' : '新增大区'" width="520px" append-to-body destroy-on-close>
         <el-form :model="regionForm" label-width="80px" ref="regionFormRef" :rules="regionRules">
           <el-form-item label="大区名称" prop="name">
             <el-input v-model="regionForm.name" placeholder="如：华东一区" />
@@ -129,6 +134,18 @@
           <el-form-item label="编码" prop="code">
             <el-input v-model="regionForm.code" placeholder="如 huadong_1" />
           </el-form-item>
+          <el-form-item label="选区坐标">
+            <div class="coordinate-inputs">
+              <el-form-item prop="select_x">
+                <el-input-number v-model="regionForm.select_x" :min="0" :max="799" :step="1" placeholder="X" />
+              </el-form-item>
+              <span>×</span>
+              <el-form-item prop="select_y">
+                <el-input-number v-model="regionForm.select_y" :min="0" :max="599" :step="1" placeholder="Y" />
+              </el-form-item>
+            </div>
+          </el-form-item>
+          <el-alert title="优先使用配置坐标；留空时由工作机 OCR 定位大区" type="info" :closable="false" show-icon />
           <el-form-item v-if="regionIsEdit" label="排序">
             <el-input-number v-model="regionForm.sort_order" :min="0" :max="999" />
           </el-form-item>
@@ -432,11 +449,18 @@ const regionIsEdit = ref(false)
 const regionEditId = ref(null)
 const regionSubmitting = ref(false)
 const regionFormRef = ref(null)
+const validateCoordinatePair = (_rule, _value, callback) => {
+  const onlyOneProvided = (regionForm.select_x == null) !== (regionForm.select_y == null)
+  if (onlyOneProvided) callback(new Error('X、Y 坐标必须同时填写或同时留空'))
+  else callback()
+}
 const regionRules = {
   name: [{ required: true, message: '请输入大区名称', trigger: 'blur' }],
   code: [{ required: true, message: '请输入编码', trigger: 'blur' }],
+  select_x: [{ validator: validateCoordinatePair, trigger: 'change' }],
+  select_y: [{ validator: validateCoordinatePair, trigger: 'change' }],
 }
-const defaultRegionForm = () => ({ name: '', code: '' })
+const defaultRegionForm = () => ({ name: '', code: '', select_x: null, select_y: null })
 const regionForm = reactive(defaultRegionForm())
 
 // 生成随机大区编码（8位大写字母+数字，如 A3K9M7XQ）
@@ -656,4 +680,10 @@ onMounted(fetchList)
 .toolbar .el-button { margin-left: auto; }
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 .region-toolbar { margin-bottom: 12px; }
+.coordinate-inputs {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.coordinate-inputs .el-input-number { width: 120px; }
 </style>

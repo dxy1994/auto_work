@@ -10,7 +10,7 @@
 import threading
 import traceback
 
-from shared.reporter import Reporter
+from common.reporter import Reporter
 
 
 def handle_greeting(msg: dict, reporter: Reporter,

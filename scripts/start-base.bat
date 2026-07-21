@@ -26,7 +26,7 @@ REM ── 等待 RustFS 就绪 ──
 echo.
 echo 等待 RustFS 就绪...
 :wait_rustfs
-curl -sf http://127.0.0.1:9000/ >nul 2>&1
+curl -sf http://127.0.0.1:9000/health >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     <nul set /p =.
     timeout /t 3 /nobreak >nul
