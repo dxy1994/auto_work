@@ -40,7 +40,7 @@ services:
     volumes:
       - rustfs_data:/data
     healthcheck:
-      test: ["CMD", "sh", "-c", "curl -f http://localhost:9000/ || wget -q -O /dev/null http://localhost:9000/ || exit 1"]
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:9000/health || wget -q -O /dev/null http://localhost:9000/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10

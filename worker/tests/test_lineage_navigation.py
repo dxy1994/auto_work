@@ -2,6 +2,7 @@ import os
 import random
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -12,8 +13,11 @@ from trader.executor.lineage_classic.navigation import (
     TemplateVision,
     Ui,
     WINDOW_TITLE_RE,
-    confident_ocr_text,
     region_text_matches,
+)
+from trader.executor.lineage_classic.paddle_ocr import (
+    build_paddle_ocr_engine,
+    paddle_ocr_text,
 )
 from trader.executor.lineage_classic.policy import trade_timeout_seconds
 from trader.executor.lineage_classic.executor import (
@@ -245,21 +249,44 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertFalse(region_text_matches("아", target))
         self.assertFalse(region_text_matches("켄라우헬", target))
 
-    def test_ocr_rejects_entire_result_when_any_token_is_below_threshold(self):
-        text, confidence = confident_ocr_text(
-            {"text": ["아툰", "서버"], "conf": ["96.2", "89.9"]},
-            minimum_confidence=90,
-        )
-        self.assertEqual("", text)
+    def test_paddle_ocr_returns_lowest_token_confidence_on_0_to_100_scale(self):
+        text, confidence = paddle_ocr_text([{
+            "res": {
+                "rec_texts": ["아툰", "서버"],
+                "rec_scores": [0.962, 0.899],
+            }
+        }])
+        self.assertEqual("아툰 서버", text)
         self.assertEqual(89.9, confidence)
 
-    def test_ocr_accepts_only_when_all_tokens_have_high_confidence(self):
-        text, confidence = confident_ocr_text(
-            {"text": ["아툰"], "conf": ["97.4"]},
-            minimum_confidence=90,
-        )
+    def test_paddle_ocr_reads_result_json_property(self):
+        class Result:
+            json = {"res": {"rec_texts": ["아툰"], "rec_scores": [0.974]}}
+
+        text, confidence = paddle_ocr_text([Result()])
         self.assertEqual("아툰", text)
-        self.assertEqual(97.4, confidence)
+        self.assertAlmostEqual(97.4, confidence)
+
+    def test_paddle_ocr_engine_is_forced_to_cpu(self):
+        calls = []
+
+        class FakePaddleOCR:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+        with mock.patch.dict(
+            sys.modules,
+            {"paddleocr": type("Module", (), {"PaddleOCR": FakePaddleOCR})},
+        ):
+            build_paddle_ocr_engine()
+
+        self.assertEqual("cpu", calls[0]["device"])
+        self.assertFalse(calls[0]["enable_mkldnn"])
+        self.assertEqual("PP-OCRv5_mobile_det", calls[0]["text_detection_model_name"])
+        self.assertEqual(
+            "korean_PP-OCRv5_mobile_rec",
+            calls[0]["text_recognition_model_name"],
+        )
 
     def test_same_region_only_opens_inventory(self):
         vision = _Vision(current_text=ORDER["region_code"], inventory_open=False)

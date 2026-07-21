@@ -25,8 +25,10 @@ Worker 通过 WebSocket 连接总控，执行网站自动化任务，并上报�
 - 按 `region_sort_order` 的固定两列点位选择服务器，并施加横向 ±30、纵向 ±3 像素偏移；
 - 选择角色并登录，最后通过未选中/选中金币模板确认物品栏已打开。
 
-总控会随订单下发 `region_name`、`region_code` 和 `region_sort_order`。OCR 使用可选的
-Tesseract 运行时；未安装 Tesseract 时仍可切区并用本进程中的已确认大区缓存完成后续判断。
+总控会随订单下发 `region_name`、`region_code` 和 `region_sort_order`。OCR 使用
+PaddleOCR 的 `PP-OCRv5_mobile_det + korean_PP-OCRv5_mobile_rec` 轻量模型，
+并固定在 CPU 上推理；模型不可用时仍可切区并用
+本进程中的已确认大区缓存完成后续判断。首次运行会下载官方模型到 PaddleOCR 缓存。
 服务器列表的左右列 X、首行 Y 和行距可通过 `.env.trader.example` 中的
 `LINEAGE_SERVER_*` 参数按实机截图校准。
 韩语 OCR 默认要求所有有效词块的最低置信度不低于 90，文本相似度不低于 0.90；
@@ -44,6 +46,16 @@ verifying`。Worker 和后台各有一层总执行 watchdog；进入 `trading` �
 交易弹窗、确认按钮、取消按钮和最终确认提示均使用不低于 0.90 的模板置信度。
 只有最终确认后相关交易元素消失，并连续三帧检测到已回到游戏主界面时，
 才上报 `completed`；否则转人工复核，不会伪报成功。
+
+使用正式窗口识别、OCR、截图和交易编排，但阻断 ESP32 键鼠指令的订单干跑：
+
+```bash
+python -m trader.dry_run_trade --amount 1000000 --buyer DryRunBuyer
+```
+
+该入口在当前进程内运行 `trade_offer → trade_start → 正式执行器` 编排。
+原本要发送的鼠标和键盘动作会写入日志并返回成功，但不会发往 ESP32；
+其他识别与等待行为保持正常。
 
 运行 Worker 单元测试：
 

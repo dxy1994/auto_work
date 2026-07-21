@@ -14,6 +14,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
+from trader.executor.lineage_classic.paddle_ocr import recognize_korean
+
 try:
     import cv2
     import numpy as np
@@ -252,77 +254,33 @@ class TemplateVision:
         return result.text if result.confidence >= OCR_MIN_CONFIDENCE else ""
 
     def read_text_result(self, region: tuple[int, int, int, int]) -> OcrResult:
-        try:
-            import pytesseract
-        except ImportError:
-            if not self._ocr_warning_printed:
-                print("[Lineage] pytesseract 未安装，将通过切区结果缓存确认当前大区")
-                self._ocr_warning_printed = True
-            return OcrResult("", -1.0)
         source = self._capture(region)
-        gray = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
-        scaled = cv2.resize(gray, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-        enhanced = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        scaled = cv2.resize(source, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        enhanced = cv2.copyMakeBorder(
+            scaled, 12, 12, 12, 12, cv2.BORDER_REPLICATE
+        )
         try:
-            available = set(pytesseract.get_languages(config=""))
-            if "kor" not in available:
-                if not self._ocr_warning_printed:
-                    print("[Lineage] 未安装 kor.traineddata，韩语 OCR 已禁用")
-                    self._ocr_warning_printed = True
-                return OcrResult("", -1.0)
-            data = pytesseract.image_to_data(
-                enhanced,
-                lang="kor",
-                config="--oem 1 --psm 7",
-                output_type=pytesseract.Output.DICT,
-            )
-            text, confidence = raw_ocr_text(data)
+            text, confidence = recognize_korean(enhanced)
             if text and confidence >= OCR_MIN_CONFIDENCE:
                 print(
-                    f"[Lineage] 韩语 OCR 通过: text='{_printable(text)}' "
+                    f"[Lineage] PaddleOCR 韩语识别通过: text='{_printable(text)}' "
                     f"min_confidence={confidence:.1f}"
                 )
             elif text:
                 print(
-                    f"[Lineage] 韩语 OCR 置信度不足: {confidence:.1f} "
+                    f"[Lineage] PaddleOCR 韩语置信度不足: {confidence:.1f} "
                     f"< {OCR_MIN_CONFIDENCE:.1f}，转人工确认"
                 )
             return OcrResult(text, confidence)
         except Exception as exc:
             if not self._ocr_warning_printed:
-                print(f"[Lineage] OCR 不可用，将执行一次安全切区: {exc}")
+                print(f"[Lineage] PaddleOCR 不可用，将执行一次安全切区: {exc}")
                 self._ocr_warning_printed = True
             return OcrResult("", -1.0)
 
 
 def _normalized_region(value: str) -> str:
     return "".join(ch.casefold() for ch in value if ch.isalnum())
-
-
-def confident_ocr_text(data: dict, minimum_confidence: float) -> tuple[str, float]:
-    """仅当所有非空 OCR 词块均达到门槛时返回文本。"""
-    text, confidence = raw_ocr_text(data)
-    if confidence < minimum_confidence:
-        return "", confidence
-    return text, confidence
-
-
-def raw_ocr_text(data: dict) -> tuple[str, float]:
-    """返回 OCR 原始文本及所有非空词块中的最低置信度。"""
-    tokens: list[tuple[str, float]] = []
-    for raw_text, raw_confidence in zip(data.get("text", []), data.get("conf", [])):
-        token = str(raw_text).strip()
-        if not token:
-            continue
-        try:
-            confidence = float(raw_confidence)
-        except (TypeError, ValueError):
-            confidence = -1.0
-        tokens.append((token, confidence))
-    if not tokens:
-        return "", -1.0
-    lowest_confidence = min(confidence for _, confidence in tokens)
-    return " ".join(token for token, _ in tokens), lowest_confidence
 
 
 def _printable(value: object) -> str:

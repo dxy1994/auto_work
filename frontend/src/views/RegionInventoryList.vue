@@ -2,20 +2,20 @@
   <div class="page-container">
     <!-- 筛选工具栏 -->
     <div class="toolbar">
-      <el-select v-model="filterGameId" placeholder="选择游戏" clearable style="width: 140px" @change="onGameChange">
+      <el-select v-model="filterGameId" class="filter-control filter-game" placeholder="选择游戏" clearable @change="onGameChange">
         <el-option v-for="g in gameList" :key="g.id" :label="g.name" :value="g.id" />
       </el-select>
-      <el-select v-model="filterRegionId" placeholder="选择大区" clearable style="width: 140px" :disabled="!filterGameId" @change="handleSearch">
+      <el-select v-model="filterRegionId" class="filter-control filter-region" placeholder="选择大区" clearable :disabled="!filterGameId" @change="handleSearch">
         <el-option v-for="r in regionList" :key="r.id" :label="r.name" :value="r.id" />
       </el-select>
-      <el-select v-model="filterItemId" placeholder="选择物品" clearable filterable style="width: 160px" :disabled="!filterGameId" @change="handleSearch">
+      <el-select v-model="filterItemId" class="filter-control filter-item" placeholder="选择物品" clearable filterable :disabled="!filterGameId" @change="handleSearch">
         <el-option v-for="i in itemList" :key="i.id" :label="`${i.name} (${i.code})`" :value="i.id" />
       </el-select>
-      <el-select v-model="filterHasStock" placeholder="有无库存" clearable style="width: 110px" @change="handleSearch">
+      <el-select v-model="filterHasStock" class="filter-control filter-stock" placeholder="有无库存" clearable @change="handleSearch">
         <el-option label="有库存" :value="1" />
         <el-option label="无库存" :value="0" />
       </el-select>
-      <el-input v-model="keyword" placeholder="搜索物品名称..." clearable style="width: 180px" @input="handleSearch">
+      <el-input v-model="keyword" class="filter-control filter-search" placeholder="搜索物品名称..." clearable @input="handleSearch">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
     </div>
@@ -24,25 +24,34 @@
     <div class="split-layout">
       <!-- 左面板：库存列表 -->
       <div class="left-panel">
-        <el-table
-          :data="list" border stripe v-loading="loading" row-key="id"
-          highlight-current-row @current-change="onCurrentChange"
-          :max-height="tableMaxHeight"
-        >
-          <el-table-column v-if="!filterRegionId" prop="region_name" label="大区" width="100" />
-          <el-table-column prop="item_name" label="物品名称" min-width="150" show-overflow-tooltip />
-          <el-table-column label="库存" width="70" align="center">
-            <template #default="{ row }">
-              <span :class="row.stock > 0 ? 'stock-positive' : 'stock-zero'">{{ row.stock }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="进货均价" width="100" align="center">
-            <template #default="{ row }">{{ formatPrice(row.purchase_price) }}</template>
-          </el-table-column>
-          <el-table-column label="更新时间" width="130" align="center">
-            <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
-          </el-table-column>
-        </el-table>
+        <div class="panel-heading">
+          <div>
+            <span class="panel-eyebrow">库存目录</span>
+            <strong>大区物品</strong>
+          </div>
+          <span class="result-count">{{ total }} 条</span>
+        </div>
+        <div class="table-shell">
+          <el-table
+            :data="list" border stripe v-loading="loading" row-key="id"
+            highlight-current-row @current-change="onCurrentChange"
+            height="100%"
+          >
+            <el-table-column v-if="!filterRegionId" prop="region_name" label="大区" width="82" show-overflow-tooltip />
+            <el-table-column prop="item_name" label="物品名称" min-width="120" show-overflow-tooltip />
+            <el-table-column label="库存" width="60" align="center">
+              <template #default="{ row }">
+                <span :class="row.stock > 0 ? 'stock-positive' : 'stock-zero'">{{ row.stock }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="进货均价" width="84" align="right">
+              <template #default="{ row }">{{ formatPrice(row.purchase_price) }}</template>
+            </el-table-column>
+            <el-table-column label="更新时间" width="108" align="center">
+              <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
         <div class="pagination-wrap" v-if="total > 0">
           <el-pagination
             v-model:current-page="page" :page-size="pageSize" :total="total"
@@ -93,37 +102,37 @@
                 </el-button>
               </div>
               <el-table :data="shopPrices" border stripe size="small" v-loading="shopPriceLoading" max-height="300">
-                <el-table-column label="商铺" min-width="140">
+                <el-table-column label="商铺" min-width="130">
                   <template #default="{ row }">
                     <span>{{ getAccountLabel(row.account_id) }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="出货价" width="130" align="center">
+                <el-table-column label="出货价" width="112" align="center">
                   <template #default="{ row }">
                     <el-input-number
                       v-model="row.selling_price"
                       :min="0" :precision="2" :controls-position="'right'"
-                      size="small" style="width: 105px"
+                      size="small" class="price-input"
                       @change="onShopPriceChange(row)"
                     />
                   </template>
                 </el-table-column>
-                <el-table-column label="最低价" width="130" align="center">
+                <el-table-column label="最低价" width="112" align="center">
                   <template #default="{ row }">
                     <el-input-number
                       v-model="row.min_selling_price"
                       :min="0" :precision="2" :controls-position="'right'"
-                      size="small" style="width: 105px"
+                      size="small" class="price-input"
                       @change="onShopPriceChange(row)"
                     />
                   </template>
                 </el-table-column>
-                <el-table-column label="最高价" width="130" align="center">
+                <el-table-column label="最高价" width="112" align="center">
                   <template #default="{ row }">
                     <el-input-number
                       v-model="row.max_selling_price"
                       :min="0" :precision="2" :controls-position="'right'"
-                      size="small" style="width: 105px"
+                      size="small" class="price-input"
                       @change="onShopPriceChange(row)"
                     />
                   </template>
@@ -158,13 +167,20 @@
                   <template #header><span class="card-title">出库</span></template>
                   <el-form :model="stockOutForm" label-width="80px" size="small">
                     <el-form-item label="出库数量">
-                      <el-input-number v-model="stockOutForm.quantity" :min="1" :max="stockOutForm.current_stock" :step="1" style="width: 100%" />
+                      <el-input-number
+                        v-model="stockOutForm.quantity"
+                        :min="1"
+                        :max="stockOutMax"
+                        :step="1"
+                        :disabled="!canStockOut"
+                        style="width: 100%"
+                      />
                     </el-form-item>
                     <el-form-item label="出库原因">
-                      <el-input v-model="stockOutForm.reason" type="textarea" :rows="3" placeholder="必填：请说明出库原因" />
+                      <el-input v-model="stockOutForm.reason" type="textarea" :rows="3" placeholder="必填：请说明出库原因" :disabled="!canStockOut" />
                     </el-form-item>
                     <el-form-item>
-                      <el-button type="danger" :loading="stockOutLoading" @click="doStockOut">确认出库</el-button>
+                      <el-button type="danger" :loading="stockOutLoading" :disabled="!canStockOut" @click="doStockOut">确认出库</el-button>
                     </el-form-item>
                   </el-form>
                 </el-card>
@@ -239,9 +255,6 @@ const filterRegionId = ref(null)
 const filterItemId = ref(null)
 const filterHasStock = ref(1)
 const loading = ref(false)
-
-// ── 表格高度 ──
-const tableMaxHeight = ref(600)
 
 // ── 当前选中行 ──
 const currentRow = ref(null)
@@ -350,10 +363,16 @@ async function doStockIn() {
 
 const stockOutLoading = ref(false)
 const stockOutForm = ref({ quantity: 1, reason: '' })
+const availableStock = computed(() => Math.max(0, Number(stockOutForm.value.current_stock) || 0))
+// InputNumber 要求 min <= max；无库存时保留合法边界并禁用控件。
+const stockOutMax = computed(() => Math.max(1, availableStock.value))
+const canStockOut = computed(() => availableStock.value > 0)
 
 async function doStockOut() {
   const f = stockOutForm.value
+  if (!canStockOut.value) { ElMessage.warning('当前物品暂无可用库存'); return }
   if (!f.quantity || f.quantity <= 0) { ElMessage.warning('请输入出库数量'); return }
+  if (f.quantity > availableStock.value) { ElMessage.warning('出库数量不能超过当前库存'); return }
   if (!f.reason || !f.reason.trim()) { ElMessage.warning('请输入出库原因'); return }
   stockOutLoading.value = true
   try {
@@ -533,21 +552,15 @@ function pad(n) {
   return n < 10 ? '0' + n : n
 }
 
-// ── 响应式高度 ──
-function calcTableHeight() {
-  tableMaxHeight.value = window.innerHeight - 260
-}
-
 onMounted(() => {
   fetchGames()
-  calcTableHeight()
-  window.addEventListener('resize', calcTableHeight)
 })
 </script>
 
 <style scoped>
 .page-container {
-  height: calc(100vh - 100px);
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -556,47 +569,115 @@ onMounted(() => {
 .toolbar {
   display: flex;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  padding: 12px;
   align-items: center;
   flex-wrap: wrap;
   flex-shrink: 0;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(31, 45, 61, 0.04);
+}
+.filter-control { flex: 0 1 auto; }
+.filter-game,
+.filter-region { width: 140px; }
+.filter-item { width: 168px; }
+.filter-stock { width: 112px; }
+.filter-search {
+  width: 190px;
+  margin-left: auto;
 }
 
 /* 左右分栏 */
 .split-layout {
   flex: 1;
-  display: flex;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
+  gap: 14px;
   min-height: 0;
   overflow: hidden;
 }
 
 /* 左面板 */
 .left-panel {
-  flex: 0 0 420px;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(31, 45, 61, 0.04);
 }
-.left-panel .el-table {
+.panel-heading {
+  min-height: 58px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #ebeef5;
+}
+.panel-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.panel-heading strong {
+  color: #303133;
+  font-size: 15px;
+  line-height: 20px;
+}
+.panel-eyebrow {
+  color: #909399;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.08em;
+}
+.result-count {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  color: #409eff;
+  font-size: 12px;
+  line-height: 18px;
+  background: #ecf5ff;
+  border-radius: 12px;
+}
+.table-shell {
   flex: 1;
+  min-height: 0;
+}
+.left-panel :deep(.el-table) {
+  border-left: 0;
+  border-right: 0;
+}
+.left-panel :deep(.el-table__header th.el-table__cell) {
+  background: #f7f9fc;
+  color: #606266;
+}
+.left-panel :deep(.el-table__body tr.current-row > td.el-table__cell) {
+  background: #ecf5ff;
 }
 .pagination-wrap {
   display: flex;
   justify-content: center;
-  margin-top: 10px;
+  padding: 10px 8px;
   flex-shrink: 0;
+  border-top: 1px solid #ebeef5;
 }
 
 /* 右面板 */
 .right-panel {
-  flex: 1;
   overflow-y: auto;
   min-width: 0;
+  min-height: 0;
   background: #fff;
-  border: 1px solid #ebeef5;
-  border-radius: 4px;
-  padding: 16px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 18px;
+  box-shadow: 0 1px 2px rgba(31, 45, 61, 0.04);
 }
 .empty-detail {
   display: flex;
@@ -607,9 +688,12 @@ onMounted(() => {
 
 /* 物品信息卡片 */
 .info-card {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #ebeef5;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  background: linear-gradient(100deg, #f2f8ff 0%, #f8fbff 62%, #fff 100%);
+  border: 1px solid #d9ecff;
+  border-left: 4px solid #409eff;
+  border-radius: 7px;
 }
 .info-card-title {
   font-size: 16px;
@@ -618,9 +702,9 @@ onMounted(() => {
   margin-bottom: 8px;
 }
 .info-card-body {
-  display: flex;
-  gap: 24px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(80px, 1fr));
+  gap: 12px 20px;
 }
 .info-item {
   display: flex;
@@ -651,6 +735,7 @@ onMounted(() => {
   justify-content: flex-end;
   margin-bottom: 10px;
 }
+.price-input { width: 96px; }
 
 /* 出入库表单 */
 .stock-forms {
@@ -659,6 +744,7 @@ onMounted(() => {
 }
 .stock-card {
   flex: 1;
+  min-width: 0;
 }
 .card-title {
   font-weight: 600;
@@ -676,4 +762,42 @@ onMounted(() => {
 
 /* 均价预览 */
 .calc-price { color: #409eff; font-weight: bold; }
+
+@media (max-width: 1180px) {
+  .page-container {
+    height: auto;
+    min-height: 100%;
+  }
+  .split-layout {
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+  }
+  .left-panel {
+    flex: none;
+    height: 480px;
+  }
+  .right-panel {
+    flex: none;
+    min-height: 520px;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 760px) {
+  .toolbar { align-items: stretch; }
+  .filter-control,
+  .filter-game,
+  .filter-region,
+  .filter-item,
+  .filter-stock,
+  .filter-search {
+    width: 100%;
+    margin-left: 0;
+  }
+  .right-panel { padding: 14px; }
+  .info-card-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stock-forms { flex-direction: column; }
+  .detail-tabs :deep(.el-tabs__nav-wrap) { overflow-x: auto; }
+}
 </style>
