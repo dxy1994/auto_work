@@ -488,10 +488,10 @@ public class TradeDispatchCoordinator {
         if (accounts.isEmpty()) return List.of();
 
         List<Integer> accountIds = accounts.stream().map(GameAccount::getId).toList();
-        // 账号与目标大区的绑定决定该机器是否可接单；客户端当前大区允许不同，
-        // Worker 会在交易前根据订单中的目标大区完成切换。
+        // 账号是否支持目标大区已由 findIdleByGameAndRegion 通过 game_account_regions 筛选；
+        // 机器只需关联账号，Worker 会在交易前根据订单中的目标大区完成切换。
         List<MachineGameAccount> machineGames = machineGameService
-                .findByGameAccountIdsAndRegionIdActive(accountIds, order.getRegionId());
+                .findByGameAccountIdsActive(accountIds);
         Map<Integer, MachineGameAccount> mgByAccountId = new HashMap<>();
         Map<Integer, Integer> accountCountByMachine = new HashMap<>();
         for (MachineGameAccount mg : machineGames) {
@@ -633,6 +633,7 @@ public class TradeDispatchCoordinator {
             detail.put("item_name", d.getItemName());
             detail.put("quantity", d.getQuantity());
             detail.put("item_image", d.getItemImage());
+            detail.put("item_selected_image", d.getItemSelectedImage());
             GameItem item = d.getItemId() != null ? itemService.getById(d.getItemId()) : null;
             appendItemRecognitionImage(detail, item, d);
             details.add(detail);
@@ -671,11 +672,19 @@ public class TradeDispatchCoordinator {
             Map<String, Object> detail,
             GameItem currentItem,
             GameItemOrderDetail orderDetail) {
-        String image = currentItem != null ? currentItem.getImage() : null;
-        if (image == null || image.isBlank()) {
-            image = orderDetail.getItemImage();
+        String unselected = currentItem != null ? currentItem.getImage() : null;
+        String selected = currentItem != null ? currentItem.getSelectedImage() : null;
+        if (unselected == null || unselected.isBlank()) {
+            unselected = orderDetail.getItemImage();
         }
-        detail.put("recognition_image_url", image == null || image.isBlank() ? null : image.trim());
+        if (selected == null || selected.isBlank()) {
+            selected = orderDetail.getItemSelectedImage();
+        }
+        unselected = unselected == null || unselected.isBlank() ? null : unselected.trim();
+        selected = selected == null || selected.isBlank() ? null : selected.trim();
+        detail.put("recognition_image_url", unselected); // 兼容升级中的旧 Worker
+        detail.put("recognition_image_unselected_url", unselected);
+        detail.put("recognition_image_selected_url", selected);
     }
 
     private String newExecutionToken() {

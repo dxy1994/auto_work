@@ -387,6 +387,27 @@ def region_text_matches(text: str, target: TargetRegion) -> bool:
     return False
 
 
+def item_recognition_images(detail: dict) -> tuple[str, str]:
+    """返回未选中/选中两张识别图，兼容旧指令中的未选中图片字段。"""
+    label = str(detail.get("item_name") or detail.get("item_id") or "未知物品")
+    unselected = str(
+        detail.get("recognition_image_unselected_url")
+        or detail.get("recognition_image_url")
+        or detail.get("item_image")
+        or ""
+    ).strip()
+    selected = str(
+        detail.get("recognition_image_selected_url")
+        or detail.get("item_selected_image")
+        or ""
+    ).strip()
+    if not unselected:
+        raise NavigationError(f"物品 {label} 缺少未选中状态识别图片")
+    if not selected:
+        raise NavigationError(f"物品 {label} 缺少选中状态识别图片")
+    return unselected, selected
+
+
 class LineageSessionNavigator:
     def __init__(
         self,
@@ -608,9 +629,9 @@ class LineageSessionNavigator:
             self._known_region_id = target.region_id
 
         recognition_images = list(dict.fromkeys(
-            str(detail.get("recognition_image_url") or detail.get("item_image") or "").strip()
+            image
             for detail in (order.get("details") or [])
-            if str(detail.get("recognition_image_url") or detail.get("item_image") or "").strip()
+            for image in item_recognition_images(detail)
         ))
         self.ensure_inventory_open(recognition_images)
         if self.runtime_status is not None:

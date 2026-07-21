@@ -8,7 +8,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game_executor.executor.registry import ExecutorRegistry
 from game_executor.gate import TradeTaskGate
-from game_executor.main import _dispatch_message
+from game_executor.executor.hardware.log_only import LogOnlyHardwareController
+from game_executor.main import (
+    _create_hardware_controller,
+    _dispatch_message,
+    _dry_run_terminal_result,
+)
 from game_executor.status import RuntimeStatus
 from common.context import AppContext
 
@@ -22,6 +27,31 @@ class _Executor:
 
 
 class GameExecutorCoreTest(unittest.TestCase):
+    def test_real_order_dry_run_uses_log_only_hardware(self):
+        with patch("game_executor.main.executor_config.DRY_RUN", True):
+            hardware = _create_hardware_controller()
+
+        self.assertIsInstance(hardware, LogOnlyHardwareController)
+        self.assertTrue(hardware.mouse_move(100, 200))
+        self.assertTrue(hardware.mouse_click())
+        self.assertEqual(2, hardware.planned_actions)
+        self.assertEqual(0, hardware.health_check()["hid_commands_sent"])
+
+    def test_dry_run_terminal_can_never_report_completed(self):
+        executor = type("Executor", (), {
+            "_hw": type("Hardware", (), {"planned_actions": 4})()
+        })()
+
+        result = _dry_run_terminal_result(
+            {"success": True, "status": "wait_web_confirm", "message": "done"},
+            executor,
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual("cancelled", result["status"])
+        self.assertEqual("DRY_RUN_NO_HID", result["error_code"])
+        self.assertIn("planned_actions=4", result["message"])
+
     def test_registry_resolves_game_code_case_insensitively(self):
         registry = ExecutorRegistry()
         executor = _Executor()

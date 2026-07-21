@@ -22,6 +22,7 @@ from game_executor.status import RuntimeStatus
 from game_executor.gate import TradeTaskGate
 from game_executor.executor.registry import EXECUTOR_REGISTRY
 from game_executor.executor.hardware.controller import HardwareController
+from game_executor.executor.hardware.log_only import LogOnlyHardwareController
 from game_executor.executor.lineage_classic import LineageClassicExecutor
 from game_executor.executor.lineage_classic.policy import execution_timeout_seconds
 from game_executor import config as executor_config
@@ -43,6 +44,32 @@ TERMINAL_TRADE_STATUSES = {
     "verification_failed",
     "wait_web_confirm",
 }
+
+
+def _dry_run_terminal_result(result: dict, executor) -> dict:
+    """真实指令演练永远不能上报交易完成。"""
+    planned_actions = getattr(getattr(executor, "_hw", None), "planned_actions", 0)
+    original_status = result.get("status") or (
+        "completed" if result.get("success") else "failed"
+    )
+    original_message = result.get("message", "")
+    return {
+        "success": False,
+        "status": "cancelled",
+        "error_code": "DRY_RUN_NO_HID",
+        "message": (
+            "真实订单日志演练结束，未发送任何 HID 指令；"
+            f"planned_actions={planned_actions}, "
+            f"original_status={original_status}, original_message={original_message}"
+        ),
+        "duration_ms": result.get("duration_ms", 0),
+    }
+
+
+def _create_hardware_controller():
+    if executor_config.DRY_RUN:
+        return LogOnlyHardwareController()
+    return HardwareController(executor_config.ESP32_HOST)
 
 
 async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext):
@@ -76,6 +103,8 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
             executor.execute(order),
             timeout=execution_timeout_seconds(order),
         )
+        if executor_config.DRY_RUN:
+            result = _dry_run_terminal_result(result, executor)
         success = bool(result.get("success"))
         terminal_status = result.get("status", "completed" if success else "failed")
         if terminal_status not in TERMINAL_TRADE_STATUSES:
@@ -88,12 +117,20 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
         )
     except asyncio.TimeoutError:
         executor.cancel()
-        reporter.report_trade_status(
-            assignment_id,
-            "verification_failed",
-            "worker execution watchdog timed out; result may be uncertain",
-            "EXECUTION_WATCHDOG_TIMEOUT",
-        )
+        if executor_config.DRY_RUN:
+            reporter.report_trade_status(
+                assignment_id,
+                "cancelled",
+                "真实订单日志演练达到正式执行超时，未发送任何 HID 指令",
+                "DRY_RUN_NO_HID",
+            )
+        else:
+            reporter.report_trade_status(
+                assignment_id,
+                "verification_failed",
+                "worker execution watchdog timed out; result may be uncertain",
+                "EXECUTION_WATCHDOG_TIMEOUT",
+            )
     except asyncio.CancelledError:
         executor.cancel()
         reporter.report_trade_status(
@@ -243,6 +280,7 @@ async def _connect_once(ctx: AppContext):
 
     info = config.get_machine_info()
     info["role"] = "game_executor"
+    info["execution_mode"] = "dry_run" if executor_config.DRY_RUN else "live"
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
         loop = asyncio.get_event_loop()
         client = AgentClient(ws, loop)
@@ -281,7 +319,7 @@ async def main_loop():
     ctx.trade_task_gate = trade_task_gate
 
     if EXECUTOR_REGISTRY.get("lineage_classic") is None:
-        hardware = HardwareController(executor_config.ESP32_HOST)
+        hardware = _create_hardware_controller()
         if not hardware.connect():
             raise RuntimeError("failed to connect game executor hardware controller")
         executor = LineageClassicExecutor(hardware, runtime_status)
@@ -299,6 +337,11 @@ async def main_loop():
 def start():
     """启动独立的游戏执行 Worker。"""
     print(f"[GameExecutor] 启动，总控地址: {config.BACKEND_WS_URL}")
+    if executor_config.DRY_RUN:
+        print(
+            "[GameExecutor] 警告：真实订单日志演练模式已启用；"
+            "所有等待和识别保持正式行为，HID 指令发送数恒为 0"
+        )
     asyncio.run(main_loop())
 
 

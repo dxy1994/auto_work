@@ -34,9 +34,12 @@
             <el-table :data="row._children || []" border size="small" v-loading="row._childrenLoading" highlight-current-row @current-change="onCurrentChange">
               <el-table-column prop="code" label="编码" width="120" />
               <el-table-column prop="name" label="名称" min-width="150" />
-              <el-table-column label="图片" width="80">
+              <el-table-column label="识别图片" width="110">
                 <template #default="{ row: child }">
-                  <el-image v-if="child.image" :src="child.image" :preview-src-list="[child.image]" style="width:40px;height:40px" fit="cover" />
+                  <div class="recognition-images">
+                    <el-image v-if="child.image" :src="child.image" :preview-src-list="[child.image]" fit="cover" />
+                    <el-image v-if="child.selected_image" :src="child.selected_image" :preview-src-list="[child.selected_image]" fit="cover" />
+                  </div>
                 </template>
               </el-table-column>
               <el-table-column prop="quantity" label="数量" width="70" align="center" />
@@ -59,9 +62,12 @@
       <el-table-column label="所属游戏" width="100">
         <template #default="{ row }">{{ gameNameMap[row.game_id] || '-' }}</template>
       </el-table-column>
-      <el-table-column label="图片" width="80">
+      <el-table-column label="识别图片" width="110">
         <template #default="{ row }">
-          <el-image v-if="row.image" :src="row.image" :preview-src-list="[row.image]" style="width:40px;height:40px" fit="cover" />
+          <div class="recognition-images">
+            <el-image v-if="row.image" :src="row.image" :preview-src-list="[row.image]" fit="cover" />
+            <el-image v-if="row.selected_image" :src="row.selected_image" :preview-src-list="[row.selected_image]" fit="cover" />
+          </div>
         </template>
       </el-table-column>
       <el-table-column prop="position" label="位置坐标" width="120">
@@ -109,7 +115,7 @@
             <el-radio :value="1">套装</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="物品识别图" prop="image">
+        <el-form-item label="未选中图片" prop="image">
           <el-upload
             :auto-upload="false"
             :limit="1"
@@ -120,9 +126,24 @@
             list-type="picture"
           >
             <el-button size="small" type="primary">选择图片</el-button>
-            <template #tip><div class="el-upload__tip">随交易指令下发，用于物品栏模板识别；建议上传紧贴图标边缘的 PNG</div></template>
+            <template #tip><div class="el-upload__tip">物品未被选中时的图标，建议使用紧贴边缘的 PNG</div></template>
           </el-upload>
           <el-input v-if="form.image" v-model="form.image" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
+        </el-form-item>
+        <el-form-item label="选中图片" prop="selected_image">
+          <el-upload
+            :auto-upload="false"
+            :limit="1"
+            accept="image/*"
+            :on-change="handleSelectedImageChange"
+            :on-remove="handleSelectedImageRemove"
+            :file-list="selectedImageFileList"
+            list-type="picture"
+          >
+            <el-button size="small" type="primary">选择图片</el-button>
+            <template #tip><div class="el-upload__tip">物品被选中高亮时的图标，两张图片都会随交易指令下发</div></template>
+          </el-upload>
+          <el-input v-if="form.selected_image" v-model="form.selected_image" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
         </el-form-item>
         <el-form-item label="位置坐标">
           <el-input v-model="form.position" placeholder="如：X:100,Y:200 或 3-5" />
@@ -253,9 +274,16 @@ const isEdit = ref(false)
 const editId = ref(null)
 const submitting = ref(false)
 const formRef = ref(null)
-const validateRecognitionImage = (_rule, _value, callback) => {
+const validateUnselectedImage = (_rule, _value, callback) => {
   if (!form.is_bundle && !form.image && !imageFile.value) {
-    callback(new Error('单品必须上传物品识别图'))
+    callback(new Error('单品必须上传未选中状态图片'))
+  } else {
+    callback()
+  }
+}
+const validateSelectedImage = (_rule, _value, callback) => {
+  if (!form.is_bundle && !form.selected_image && !selectedImageFile.value) {
+    callback(new Error('单品必须上传选中状态图片'))
   } else {
     callback()
   }
@@ -264,11 +292,12 @@ const rules = {
   game_id: [{ required: true, message: '请选择游戏', trigger: 'change' }],
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   code: [{ required: true, message: '请输入编码', trigger: 'blur' }],
-  image: [{ validator: validateRecognitionImage, trigger: 'change' }],
+  image: [{ validator: validateUnselectedImage, trigger: 'change' }],
+  selected_image: [{ validator: validateSelectedImage, trigger: 'change' }],
 }
 
 const defaultForm = () => ({
-  game_id: null, name: '', code: '', image: '', is_bundle: 0,
+  game_id: null, name: '', code: '', image: '', selected_image: '', is_bundle: 0,
   category: '物品', price: 0, position: '', sort_order: 0, remark: '',
 })
 const form = reactive(defaultForm())
@@ -286,6 +315,8 @@ function genItemCode() {
 // 物品图片上传
 const imageFileList = ref([])
 const imageFile = ref(null)
+const selectedImageFileList = ref([])
+const selectedImageFile = ref(null)
 
 function handleImageChange(file) {
   imageFile.value = file.raw
@@ -298,14 +329,31 @@ function handleImageRemove() {
   form.image = ''
 }
 
+function handleSelectedImageChange(file) {
+  selectedImageFile.value = file.raw
+  selectedImageFileList.value = [file]
+}
+
+function handleSelectedImageRemove() {
+  selectedImageFile.value = null
+  selectedImageFileList.value = []
+  form.selected_image = ''
+}
+
 function openItemDialog(row = null) {
   isEdit.value = !!row
   editId.value = row?.id ?? null
   imageFile.value = null
+  selectedImageFile.value = null
   if (row?.image) {
     imageFileList.value = [{ name: row.image.split('/').pop() || 'item.png', url: row.image }]
   } else {
     imageFileList.value = []
+  }
+  if (row?.selected_image) {
+    selectedImageFileList.value = [{ name: row.selected_image.split('/').pop() || 'selected-item.png', url: row.selected_image }]
+  } else {
+    selectedImageFileList.value = []
   }
   const base = row ? { ...row, is_bundle: row.is_bundle ? 1 : 0 } : { ...defaultForm(), game_id: filterGameId.value, code: genItemCode() }
   Object.assign(form, base)
@@ -320,6 +368,10 @@ async function handleSubmit() {
     if (imageFile.value) {
       const res = await uploadFile(imageFile.value)
       if (res.code === 0) form.image = res.url
+    }
+    if (selectedImageFile.value) {
+      const res = await uploadFile(selectedImageFile.value)
+      if (res.code === 0) form.selected_image = res.url
     }
     const data = { ...form }
     if (isEdit.value) {
@@ -452,6 +504,8 @@ onMounted(async () => {
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 .expand-area { padding: 12px 20px; }
 .expand-title { font-weight: 600; margin-bottom: 8px; color: #606266; }
+.recognition-images { display: flex; gap: 4px; }
+.recognition-images .el-image { width: 40px; height: 40px; }
 
 /* 隐藏非套装行的展开图标 */
 :deep(.hide-expand-icon .el-table__expand-icon) {

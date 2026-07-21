@@ -23,8 +23,6 @@ public class MachineGameAccount {
 
     private Integer gameAccountId;
 
-    private Integer regionId;
-
     private Integer priority = 0;
 
     private Integer maxConcurrent = 1;

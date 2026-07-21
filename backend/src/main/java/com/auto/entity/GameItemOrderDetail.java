@@ -28,6 +28,8 @@ public class GameItemOrderDetail {
 
     private String itemImage;
 
+    private String itemSelectedImage;
+
     private Integer quantity = 1;
 
     private BigDecimal unitPrice = BigDecimal.ZERO;

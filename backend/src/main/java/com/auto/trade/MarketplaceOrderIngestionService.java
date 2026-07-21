@@ -344,6 +344,7 @@ public class MarketplaceOrderIngestionService {
         detail.setItemId(item.getId());
         detail.setItemName(item.getName());
         detail.setItemImage(item.getImage());
+        detail.setItemSelectedImage(item.getSelectedImage());
         detail.setQuantity(quantity);
         BigDecimal price = item.getPrice() != null ? item.getPrice() : BigDecimal.ZERO;
         detail.setUnitPrice(price);

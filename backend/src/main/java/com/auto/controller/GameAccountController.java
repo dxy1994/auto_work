@@ -38,12 +38,11 @@ public class GameAccountController {
     public Map<String, Object> list(
             @RequestParam(name = "game_id", required = false) Integer gameId,
             @RequestParam(name = "region_id", required = false) Integer regionId,
-            @RequestParam(name = "machine_id", required = false) Integer machineId,
             @RequestParam(name = "status", required = false) List<String> status,
             @RequestParam(name = "keyword", required = false) String keyword,
             @RequestParam(name = "page", defaultValue = "1") int page,
             @RequestParam(name = "page_size", defaultValue = "20") int pageSize) {
-        IPage<GameAccount> result = gameAccountService.search(gameId, regionId, machineId, status, keyword,
+        IPage<GameAccount> result = gameAccountService.search(gameId, regionId, status, keyword,
                 PageRequests.of(page, pageSize));
         // 为每个账号附加 region_ids
         List<Map<String, Object>> items = new ArrayList<>();
@@ -51,9 +50,7 @@ public class GameAccountController {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("id", a.getId());
             item.put("game_id", a.getGameId());
-            item.put("region_id", a.getRegionId()); // 兼容旧字段
             item.put("region_ids", gameAccountRegionService.findRegionIdsByAccountId(a.getId()));
-            item.put("machine_id", a.getMachineId());
             item.put("account_name", a.getAccountName());
             item.put("account_no", a.getAccountNo());
             item.put("nickname", a.getNickname());
@@ -78,6 +75,7 @@ public class GameAccountController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public GameAccount create(@RequestBody GameAccount payload) {
+        requireRegions(payload.getRegionIds());
         payload.setId(null);
         if (payload.getPassword() != null && !payload.getPassword().isEmpty()) {
             payload.setPassword(crypto.encrypt(payload.getPassword()));
@@ -94,7 +92,6 @@ public class GameAccountController {
     public GameAccount update(@PathVariable Integer accountId, @RequestBody GameAccount payload) {
         GameAccount a = gameAccountService.getById(accountId);
         if (a == null) throw ApiException.notFound("游戏账号不存在");
-        if (payload.getMachineId() != null) a.setMachineId(payload.getMachineId());
         if (payload.getAccountName() != null) a.setAccountName(payload.getAccountName());
         if (payload.getAccountNo() != null) a.setAccountNo(payload.getAccountNo());
         if (payload.getPassword() != null && !payload.getPassword().isEmpty()) {
@@ -105,6 +102,9 @@ public class GameAccountController {
         if (payload.getExtraFields() != null) a.setExtraFields(payload.getExtraFields());
         if (payload.getStatus() != null) a.setStatus(payload.getStatus());
         if (payload.getIsActive() != null) a.setIsActive(payload.getIsActive());
+        if (payload.getRegionIds() != null) {
+            requireRegions(payload.getRegionIds());
+        }
         gameAccountService.updateById(a);
 
         // 同步大区关联
@@ -139,6 +139,12 @@ public class GameAccountController {
             gar.setRegionId(regionId);
             gar.setIsActive(1);
             gameAccountRegionService.save(gar);
+        }
+    }
+
+    private void requireRegions(List<Integer> regionIds) {
+        if (regionIds == null || regionIds.isEmpty() || regionIds.stream().anyMatch(id -> id == null)) {
+            throw ApiException.badRequest("游戏账号至少需要关联一个大区");
         }
     }
 }

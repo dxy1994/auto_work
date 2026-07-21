@@ -30,22 +30,6 @@ public class MachineGameAccountServiceImpl extends ServiceImpl<MachineGameAccoun
     }
 
     @Override
-    public MachineGameAccount findByMachineIdAndGameAccountIdAndRegionId(Integer machineId, Integer gameAccountId, Integer regionId) {
-        return getOne(new LambdaQueryWrapper<MachineGameAccount>()
-                .eq(MachineGameAccount::getMachineId, machineId)
-                .eq(MachineGameAccount::getGameAccountId, gameAccountId)
-                .eq(regionId != null, MachineGameAccount::getRegionId, regionId)
-                .eq(MachineGameAccount::getIsActive, 1), false);
-    }
-
-    @Override
-    public MachineGameAccount findByGameAccountIdActive(Integer gameAccountId) {
-        return getOne(new LambdaQueryWrapper<MachineGameAccount>()
-                .eq(MachineGameAccount::getGameAccountId, gameAccountId)
-                .eq(MachineGameAccount::getIsActive, 1), false);
-    }
-
-    @Override
     public List<MachineGameAccount> findByGameAccountIdsActive(List<Integer> gameAccountIds) {
         if (gameAccountIds == null || gameAccountIds.isEmpty()) return List.of();
         return list(new LambdaQueryWrapper<MachineGameAccount>()
@@ -54,13 +38,4 @@ public class MachineGameAccountServiceImpl extends ServiceImpl<MachineGameAccoun
                 .orderByDesc(MachineGameAccount::getPriority));
     }
 
-    @Override
-    public List<MachineGameAccount> findByGameAccountIdsAndRegionIdActive(List<Integer> gameAccountIds, Integer regionId) {
-        if (gameAccountIds == null || gameAccountIds.isEmpty()) return List.of();
-        return list(new LambdaQueryWrapper<MachineGameAccount>()
-                .in(MachineGameAccount::getGameAccountId, gameAccountIds)
-                .eq(regionId != null, MachineGameAccount::getRegionId, regionId)
-                .eq(MachineGameAccount::getIsActive, 1)
-                .orderByDesc(MachineGameAccount::getPriority));
-    }
 }

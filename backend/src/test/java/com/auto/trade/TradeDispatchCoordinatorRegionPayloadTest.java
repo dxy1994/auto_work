@@ -35,23 +35,28 @@ class TradeDispatchCoordinatorRegionPayloadTest {
     void sendsCurrentDatabaseItemImageForRecognition() {
         GameItem item = new GameItem();
         item.setImage("/uploads/images/current.png");
+        item.setSelectedImage("/uploads/images/current-selected.png");
         GameItemOrderDetail orderDetail = new GameItemOrderDetail();
         orderDetail.setItemImage("/uploads/images/snapshot.png");
+        orderDetail.setItemSelectedImage("/uploads/images/snapshot-selected.png");
         Map<String, Object> payload = new LinkedHashMap<>();
 
         TradeDispatchCoordinator.appendItemRecognitionImage(payload, item, orderDetail);
 
-        assertEquals("/uploads/images/current.png", payload.get("recognition_image_url"));
+        assertEquals("/uploads/images/current.png", payload.get("recognition_image_unselected_url"));
+        assertEquals("/uploads/images/current-selected.png", payload.get("recognition_image_selected_url"));
     }
 
     @Test
     void fallsBackToOrderImageSnapshotWhenCurrentItemHasNoImage() {
         GameItemOrderDetail orderDetail = new GameItemOrderDetail();
         orderDetail.setItemImage("/uploads/images/snapshot.png");
+        orderDetail.setItemSelectedImage("/uploads/images/snapshot-selected.png");
         Map<String, Object> payload = new LinkedHashMap<>();
 
         TradeDispatchCoordinator.appendItemRecognitionImage(payload, null, orderDetail);
 
-        assertEquals("/uploads/images/snapshot.png", payload.get("recognition_image_url"));
+        assertEquals("/uploads/images/snapshot.png", payload.get("recognition_image_unselected_url"));
+        assertEquals("/uploads/images/snapshot-selected.png", payload.get("recognition_image_selected_url"));
     }
 }

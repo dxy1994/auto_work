@@ -153,11 +153,14 @@ public class MachineController {
     @PostMapping("/{machineId}/game-accounts")
     @ResponseStatus(HttpStatus.CREATED)
     public MachineGameAccount addGame(@PathVariable Integer machineId, @RequestBody MachineGameAccount payload) {
-        // 检查是否已存在相同账号+大区的关联
-        MachineGameAccount existing = machineGameService.findByMachineIdAndGameAccountIdAndRegionId(
-                machineId, payload.getGameAccountId(), payload.getRegionId());
+        if (payload.getGameAccountId() == null) {
+            throw ApiException.badRequest("请选择游戏账号");
+        }
+        // 机器只关联账号；账号可用大区由 game_account_regions 统一维护。
+        MachineGameAccount existing = machineGameService.findByMachineIdAndGameAccountId(
+                machineId, payload.getGameAccountId());
         if (existing != null) {
-            throw ApiException.badRequest("该游戏账号（大区）已关联此机器");
+            throw ApiException.badRequest("该游戏账号已关联此机器");
         }
         payload.setId(null);
         payload.setMachineId(machineId);

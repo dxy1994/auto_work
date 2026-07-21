@@ -397,6 +397,7 @@ public class OrderController {
             detail.setItemId(d.itemId);
             detail.setItemName(item.getName());
             detail.setItemImage(item.getImage());
+            detail.setItemSelectedImage(item.getSelectedImage());
             detail.setQuantity(qty);
             detail.setUnitPrice(unitPrice);
             detail.setSubtotal(unitPrice.multiply(BigDecimal.valueOf(qty)));
@@ -478,6 +479,7 @@ public class OrderController {
         detail.setItemId(payload.itemId);
         detail.setItemName(item.getName());
         detail.setItemImage(item.getImage());
+        detail.setItemSelectedImage(item.getSelectedImage());
         detail.setQuantity(qty);
         detail.setUnitPrice(unitPrice);
         detail.setSubtotal(unitPrice.multiply(BigDecimal.valueOf(qty)));

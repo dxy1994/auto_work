@@ -28,6 +28,9 @@ public class GameItem {
 
     private String image;
 
+    /** 游戏物品被选中时的识别图片。 */
+    private String selectedImage;
+
     private Integer isBundle = 0;
 
     private String category;

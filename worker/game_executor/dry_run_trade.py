@@ -14,94 +14,16 @@ import asyncio
 import base64
 import json
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from common.context import AppContext
 from game_executor.executor.lineage_classic import LineageClassicExecutor
+from game_executor.executor.hardware.log_only import LogOnlyHardwareController
 from game_executor.executor.registry import ExecutorRegistry
 from game_executor.gate import TradeTaskGate
 from game_executor.status import RuntimeStatus
 import game_executor.main as executor_main
-
-
-class LogOnlyHardwareController:
-    """保持硬件接口，但绝不向 ESP32 或操作系统发送键鼠指令。"""
-
-    def __init__(self):
-        self._connected = True
-        self.planned_actions = 0
-
-    @property
-    def connected(self):
-        return self._connected
-
-    def connect(self):
-        self._log("connect", mode="log_only", sent=False)
-        return True
-
-    def disconnect(self):
-        self._connected = False
-        self._log("disconnect", sent=False)
-
-    def mouse_move(
-        self, x, y, trajectory="human", jitter_x=5, jitter_y=5
-    ):
-        return self._action(
-            "mouse_move",
-            x=int(x),
-            y=int(y),
-            trajectory=trajectory,
-            jitter_x=jitter_x,
-            jitter_y=jitter_y,
-        )
-
-    def mouse_click(self, button="left"):
-        return self._action("mouse_click", button=button)
-
-    def mouse_double_click(self, button="left"):
-        return self._action("mouse_double_click", button=button)
-
-    def mouse_drag(self, x1, y1, x2, y2):
-        return self._action(
-            "mouse_drag", x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2)
-        )
-
-    def key_press(self, key, duration_ms=100):
-        return self._action("key_press", key=str(key), duration_ms=duration_ms)
-
-    def key_combo(self, keys, duration_ms=100):
-        return self._action("key_combo", keys=list(keys), duration_ms=duration_ms)
-
-    def key_type(self, text, delay_ms=50):
-        return self._action("key_type", text=str(text), delay_ms=delay_ms)
-
-    def wait(self, ms, jitter=0):
-        # 等待属于正常流程，不是键鼠指令，因此保留真实时间行为。
-        delay_ms = max(0, int(ms))
-        self._log("wait", duration_ms=delay_ms, sent=False)
-        time.sleep(delay_ms / 1000.0)
-        return True
-
-    def health_check(self):
-        return {"connected": True, "mode": "log_only", "hid_commands_sent": 0}
-
-    def _action(self, action, **values):
-        self.planned_actions += 1
-        self._log(action, **values, sent=False)
-        return True
-
-    @staticmethod
-    def _log(action, **values):
-        print(
-            "[HID-DRY-RUN] "
-            + json.dumps(
-                {"action": action, **values},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
 
 
 class LocalLogReporter:
@@ -187,7 +109,12 @@ def build_test_order(amount, buyer):
                 "item_id": 999001,
                 "item_name": "Adena（测试）",
                 "quantity": amount,
-                "recognition_image_url": (
+                "recognition_image_unselected_url": (
+                    "data:image/png;base64,"
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                    "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
+                "recognition_image_selected_url": (
                     "data:image/png;base64,"
                     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
                     "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="

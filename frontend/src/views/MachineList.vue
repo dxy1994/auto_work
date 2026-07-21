@@ -97,22 +97,16 @@
     </el-dialog>
 
     <!-- 关联游戏账号抽屉 -->
-    <el-drawer v-model="gameAccountsDrawerVisible" :title="`关联游戏账号 - ${currentMachine?.name || currentMachine?.mac_address || ''}`" size="650px" destroy-on-close>
+    <el-drawer v-model="gameAccountsDrawerVisible" :title="`关联游戏账号 - ${currentMachine?.name || currentMachine?.mac_address || ''}`" size="560px" destroy-on-close>
       <div class="games-toolbar">
-        <el-select v-model="newGameAccountId" placeholder="选择游戏账号" style="width: 240px" filterable @change="onGameAccountChanged">
+        <el-select v-model="newGameAccountId" placeholder="选择游戏账号" style="width: 320px" filterable>
           <el-option v-for="a in allGameAccounts" :key="a.id" :label="`${gameNameMap[a.game_id] || ''} - ${a.account_name} (${a.nickname || '无昵称'})`" :value="a.id" />
-        </el-select>
-        <el-select v-model="newRegionId" placeholder="选择大区" style="width: 180px" filterable :disabled="!newGameAccountId">
-          <el-option v-for="rid in availableRegions" :key="rid" :label="regionNameMap[rid] || rid" :value="rid" />
         </el-select>
         <el-button type="primary" size="small" @click="handleAddGameAccount" :disabled="!newGameAccountId">添加</el-button>
       </div>
       <el-table :data="machineGameAccounts" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
         <el-table-column label="游戏" min-width="100">
           <template #default="{ row }">{{ gameNameMap[row.game_id] || row.game_id }}</template>
-        </el-table-column>
-        <el-table-column label="大区" min-width="100">
-          <template #default="{ row }">{{ regionNameMap[row.region_id] || row.region_id }}</template>
         </el-table-column>
         <el-table-column label="账号" min-width="120">
           <template #default="{ row }">{{ row.account_name }}</template>
@@ -184,7 +178,7 @@ import {
   getMachineGames, addMachineGame, updateMachineGame, removeMachineGame,
   getMachineAccounts, addMachineAccount, removeMachineAccount,
   getAllGames, getAllAccounts, getAllWebsites,
-  getAllRegions, getAllMkDevices, getAllVsDevices, getAllGameAccounts,
+  getAllMkDevices, getAllVsDevices, getAllGameAccounts,
 } from '../api'
 
 const list = ref([])
@@ -199,14 +193,12 @@ function onCurrentChange(row) { currentRow.value = row }
 const allGames = ref([])
 const allAccounts = ref([])
 const allWebsitesData = ref([])
-const allRegions = ref([])
 const allMkDevices = ref([])
 const allVsDevices = ref([])
 const allGameAccounts = ref([])
 const websiteNameMap = computed(() => Object.fromEntries(allWebsitesData.value.map(w => [w.id, w.name])))
 const accountMap = computed(() => Object.fromEntries(allAccounts.value.map(a => [a.id, a])))
 const gameNameMap = computed(() => Object.fromEntries(allGames.value.map(g => [g.id, g.name])))
-const regionNameMap = computed(() => Object.fromEntries(allRegions.value.map(r => [r.id, r.name])))
 const mkDeviceNameMap = computed(() => Object.fromEntries(allMkDevices.value.map(d => [d.id, d.name])))
 const vsDeviceNameMap = computed(() => Object.fromEntries(allVsDevices.value.map(d => [d.id, d.name])))
 const gameAccountMap = computed(() => Object.fromEntries(allGameAccounts.value.map(a => [a.id, a])))
@@ -264,32 +256,23 @@ const gameAccountsDrawerVisible = ref(false)
 const currentMachine = ref(null)
 const machineGameAccounts = ref([])
 const newGameAccountId = ref(null)
-const newRegionId = ref(null)
-const availableRegions = ref([])
-
-function onGameAccountChanged(gaId) {
-  newRegionId.value = null
-  if (!gaId) { availableRegions.value = []; return }
-  const ga = allGameAccounts.value.find(a => a.id === gaId)
-  availableRegions.value = ga?.region_ids || (ga?.region_id ? [ga.region_id] : [])
-}
 
 async function openGameAccountsDrawer(machine) {
-  currentMachine.value = machine; gameAccountsDrawerVisible.value = true; newGameAccountId.value = null; newRegionId.value = null; availableRegions.value = []; await fetchMachineGameAccounts()
+  currentMachine.value = machine; gameAccountsDrawerVisible.value = true; newGameAccountId.value = null; await fetchMachineGameAccounts()
 }
 async function fetchMachineGameAccounts() {
   if (!currentMachine.value) return
   const mgs = await getMachineGames(currentMachine.value.id)
-  // 合并 game_account 信息，优先使用 machine_games 自身的 region_id
+  // 机器关联只保存账号，账号支持的大区由 game_account_regions 统一维护。
   machineGameAccounts.value = mgs.map(mg => {
     const ga = gameAccountMap.value[mg.game_account_id] || {}
-    return { ...mg, game_id: ga.game_id, region_id: mg.region_id || ga.region_id, account_name: ga.account_name }
+    return { ...mg, game_id: ga.game_id, account_name: ga.account_name }
   })
 }
 async function handleAddGameAccount() {
   try {
-    await addMachineGame(currentMachine.value.id, { game_account_id: newGameAccountId.value, region_id: newRegionId.value || null })
-    ElMessage.success('已添加'); newGameAccountId.value = null; newRegionId.value = null; fetchMachineGameAccounts()
+    await addMachineGame(currentMachine.value.id, { game_account_id: newGameAccountId.value })
+    ElMessage.success('已添加'); newGameAccountId.value = null; fetchMachineGameAccounts()
   } catch (e) { ElMessage.error(e.message) }
 }
 async function handleRemoveGame(mgId) { try { await removeMachineGame(mgId); ElMessage.success('已移除'); fetchMachineGameAccounts() } catch (e) { ElMessage.error(e.message) } }
@@ -336,7 +319,6 @@ onMounted(async () => {
   allGames.value = await getAllGames()
   allAccounts.value = await getAllAccounts()
   allWebsitesData.value = await getAllWebsites()
-  allRegions.value = await getAllRegions()
   allMkDevices.value = await getAllMkDevices()
   allVsDevices.value = await getAllVsDevices()
   const gaRes = await getAllGameAccounts()

@@ -19,6 +19,7 @@ from game_executor.executor.lineage_classic.navigation import (
     TemplateVision,
     Ui,
     build_navigator,
+    item_recognition_images,
 )
 from game_executor.executor.lineage_classic.policy import trade_timeout_seconds
 
@@ -386,14 +387,14 @@ class LineageClassicExecutor(BaseGameExecutor):
         for detail in details:
             item_id = detail.get("item_id")
             label = str(detail.get("item_name") or item_id or "未知物品")
-            image = str(
-                detail.get("recognition_image_url") or detail.get("item_image") or ""
-            ).strip()
-            if not image:
-                raise NavigationError(f"物品 {label} 缺少识别图片")
-            source = navigator.vision.find_image(
-                image, Ui.INVENTORY_REGION, threshold=0.90
-            )
+            images = item_recognition_images(detail)
+            source = None
+            for image in images:
+                source = navigator.vision.find_image(
+                    image, Ui.INVENTORY_REGION, threshold=0.90
+                )
+                if source is not None:
+                    break
             if source is None:
                 raise NavigationError(f"物品栏中未识别到物品 {label}")
             quantity_value = (

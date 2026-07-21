@@ -44,7 +44,8 @@ ORDER = {
         "item_id": 1,
         "item_name": "Adena",
         "quantity": 1,
-        "recognition_image_url": "/uploads/images/adena.png",
+        "recognition_image_unselected_url": "/uploads/images/adena.png",
+        "recognition_image_selected_url": "/uploads/images/adena-selected.png",
     }],
 }
 
@@ -115,6 +116,7 @@ class _Vision:
         self.find_text_calls = 0
         self.item_points = item_points or {
             "/uploads/images/adena.png": (680, 200),
+            "/uploads/images/adena-selected.png": (680, 200),
         }
         self.find_image_calls = []
 
@@ -214,9 +216,11 @@ class LineageNavigationTest(unittest.TestCase):
             "asset_type": "item",
             "details": [
                 {"item_id": 11, "item_name": "红水", "quantity": 3,
-                 "recognition_image_url": "/images/red.png"},
+                 "recognition_image_unselected_url": "/images/red.png",
+                 "recognition_image_selected_url": "/images/red-selected.png"},
                 {"item_id": 12, "item_name": "蓝水", "quantity": 2,
-                 "recognition_image_url": "/images/blue.png"},
+                 "recognition_image_unselected_url": "/images/blue.png",
+                 "recognition_image_selected_url": "/images/blue-selected.png"},
             ],
         }
 
@@ -230,7 +234,7 @@ class LineageNavigationTest(unittest.TestCase):
         executor = LineageClassicExecutor(object())
         vision = _Vision(
             inventory_open=True,
-            item_points={"/images/adena.png": (680, 200)},
+            item_points={"/images/adena-selected.png": (680, 200)},
         )
         order = {
             "asset_type": "adena",
@@ -239,7 +243,8 @@ class LineageNavigationTest(unittest.TestCase):
                 "item_id": 1,
                 "item_name": "Adena",
                 "quantity": 1,
-                "recognition_image_url": "/images/adena.png",
+                "recognition_image_unselected_url": "/images/adena.png",
+                "recognition_image_selected_url": "/images/adena-selected.png",
             }],
         }
 
@@ -249,14 +254,19 @@ class LineageNavigationTest(unittest.TestCase):
             (transfer.source, transfer.quantity) for transfer in transfers
         ])
 
-    def test_item_without_recognition_image_is_rejected(self):
+    def test_item_missing_selected_recognition_image_is_rejected(self):
         executor = LineageClassicExecutor(object())
         order = {
             "asset_type": "item",
-            "details": [{"item_id": 11, "item_name": "红水", "quantity": 3}],
+            "details": [{
+                "item_id": 11,
+                "item_name": "红水",
+                "quantity": 3,
+                "recognition_image_unselected_url": "/images/red.png",
+            }],
         }
 
-        with self.assertRaisesRegex(NavigationError, "缺少识别图片"):
+        with self.assertRaisesRegex(NavigationError, "缺少选中状态识别图片"):
             executor._build_transfers(
                 order, SimpleNamespace(vision=_Vision(inventory_open=True))
             )

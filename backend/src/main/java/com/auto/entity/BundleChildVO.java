@@ -13,6 +13,7 @@ public class BundleChildVO {
     private String code;
     private String name;
     private String image;
+    private String selectedImage;
     private BigDecimal price;
     private String category;
     private Integer sortOrder;
@@ -24,6 +25,7 @@ public class BundleChildVO {
         vo.setCode(item.getCode());
         vo.setName(item.getName());
         vo.setImage(item.getImage());
+        vo.setSelectedImage(item.getSelectedImage());
         vo.setPrice(item.getPrice());
         vo.setCategory(item.getCategory());
         vo.setSortOrder(item.getSortOrder());

@@ -24,12 +24,11 @@ public class GameAccountServiceImpl extends ServiceImpl<GameAccountMapper, GameA
     }
 
     @Override
-    public IPage<GameAccount> search(Integer gameId, Integer regionId, Integer machineId,
+    public IPage<GameAccount> search(Integer gameId, Integer regionId,
                                      List<String> status, String keyword, Page<GameAccount> page) {
         LambdaQueryWrapper<GameAccount> w = new LambdaQueryWrapper<>();
         w.eq(GameAccount::getIsActive, 1)
                 .eq(gameId != null, GameAccount::getGameId, gameId)
-                .eq(machineId != null, GameAccount::getMachineId, machineId)
                 .in(status != null && !status.isEmpty(), GameAccount::getStatus, status)
                 .and(keyword != null, q -> q.like(GameAccount::getAccountName, keyword)
                         .or().like(GameAccount::getNickname, keyword));
@@ -64,7 +63,6 @@ public class GameAccountServiceImpl extends ServiceImpl<GameAccountMapper, GameA
                 .in(GameAccount::getId, accountIds)
                 .eq(GameAccount::getStatus, "idle")
                 .eq(GameAccount::getIsActive, 1)
-                .isNotNull(GameAccount::getMachineId)
                 .orderByAsc(GameAccount::getId));
     }
 }

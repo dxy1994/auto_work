@@ -25,10 +25,6 @@ public class GameAccount {
 
     private Integer gameId;
 
-    private Integer regionId;
-
-    private Integer machineId;
-
     private String accountName;
 
     /** 账号（加密存储）。 */

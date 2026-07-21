@@ -9,7 +9,7 @@ import java.util.List;
 
 public interface GameAccountService extends IService<GameAccount> {
 
-    IPage<GameAccount> search(Integer gameId, Integer regionId, Integer machineId,
+    IPage<GameAccount> search(Integer gameId, Integer regionId,
                               List<String> status, String keyword, Page<GameAccount> page);
 
     List<GameAccount> findIdleByGameAndRegion(Integer gameId, Integer regionId);
