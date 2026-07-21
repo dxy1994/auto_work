@@ -187,6 +187,11 @@ def build_test_order(amount, buyer):
                 "item_id": 999001,
                 "item_name": "Adena（测试）",
                 "quantity": amount,
+                "recognition_image_url": (
+                    "data:image/png;base64,"
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                    "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
             }
         ],
         "item_positions": [],

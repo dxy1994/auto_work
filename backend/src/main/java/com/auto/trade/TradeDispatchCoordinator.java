@@ -633,24 +633,23 @@ public class TradeDispatchCoordinator {
             detail.put("item_name", d.getItemName());
             detail.put("quantity", d.getQuantity());
             detail.put("item_image", d.getItemImage());
+            GameItem item = d.getItemId() != null ? itemService.getById(d.getItemId()) : null;
+            appendItemRecognitionImage(detail, item, d);
             details.add(detail);
 
-            // 物品在游戏中的位置坐标
-            if (d.getItemId() != null) {
-                GameItem item = itemService.getById(d.getItemId());
-                if (item != null && item.getPosition() != null && !item.getPosition().isBlank()) {
-                    String[] parts = item.getPosition().trim().split("\\s*,\\s*");
-                    if (parts.length == 2) {
-                        try {
-                            Map<String, Object> pos = new LinkedHashMap<>();
-                            pos.put("item_id", d.getItemId());
-                            pos.put("x", Integer.parseInt(parts[0]));
-                            pos.put("y", Integer.parseInt(parts[1]));
-                            pos.put("image_url", item.getImage());
-                            positions.add(pos);
-                        } catch (NumberFormatException ignored) {
-                            // 位置格式不合法则跳过
-                        }
+            // 旧版执行器仍可读取位置坐标；新版以识别图为准。
+            if (item != null && item.getPosition() != null && !item.getPosition().isBlank()) {
+                String[] parts = item.getPosition().trim().split("\\s*,\\s*");
+                if (parts.length == 2) {
+                    try {
+                        Map<String, Object> pos = new LinkedHashMap<>();
+                        pos.put("item_id", d.getItemId());
+                        pos.put("x", Integer.parseInt(parts[0]));
+                        pos.put("y", Integer.parseInt(parts[1]));
+                        pos.put("image_url", item.getImage());
+                        positions.add(pos);
+                    } catch (NumberFormatException ignored) {
+                        // 位置格式不合法则跳过
                     }
                 }
             }
@@ -666,6 +665,17 @@ public class TradeDispatchCoordinator {
         payload.put("region_sort_order", region.getSortOrder());
         payload.put("region_select_x", region.getSelectX());
         payload.put("region_select_y", region.getSelectY());
+    }
+
+    static void appendItemRecognitionImage(
+            Map<String, Object> detail,
+            GameItem currentItem,
+            GameItemOrderDetail orderDetail) {
+        String image = currentItem != null ? currentItem.getImage() : null;
+        if (image == null || image.isBlank()) {
+            image = orderDetail.getItemImage();
+        }
+        detail.put("recognition_image_url", image == null || image.isBlank() ? null : image.trim());
     }
 
     private String newExecutionToken() {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import math
 import os
 import re
@@ -12,6 +13,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Optional, Protocol
+from urllib.error import URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
+
+from common.config import BACKEND_WS_URL
 
 from game_executor.executor.lineage_classic.paddle_ocr import (
     recognize_korean,
@@ -60,7 +66,6 @@ class Ui:
     CURRENT_REGION_NAME = (64, 450, 133, 468)
     FULL_CLIENT = (0, 0, 800, 600)
 
-    GOLD_TEMPLATES = ("未选中的金币.png", "选中后的金币.png")
     INVENTORY_BUTTON = "物品栏按钮.png"
     IN_GAME = "已进入游戏.png"
     MENU_BUTTON = "切换菜单按钮.png"
@@ -172,6 +177,7 @@ class Vision(Protocol):
     def pixel(self, point: tuple[int, int]) -> tuple[int, int, int]: ...
     def read_text(self, region: tuple[int, int, int, int]) -> str: ...
     def find_text(self, target: TargetRegion, region: tuple[int, int, int, int]) -> Optional[tuple[int, int]]: ...
+    def find_image(self, image_source: str, region: tuple[int, int, int, int], threshold: float = 0.90) -> Optional[tuple[int, int]]: ...
 
 
 @dataclass(frozen=True)
@@ -187,6 +193,7 @@ class TemplateVision:
         self.window = window
         self.image_dir = image_dir or Path(__file__).with_name("images")
         self._templates: dict[str, object] = {}
+        self._dynamic_templates: dict[str, object] = {}
         self._ocr_warning_printed = False
 
     def _capture(self, region: tuple[int, int, int, int]):
@@ -211,6 +218,10 @@ class TemplateVision:
     def find(self, template: str, region: tuple[int, int, int, int], threshold: float = 0.84) -> Optional[tuple[int, int]]:
         source = self._capture(region)
         needle = self._template(template)
+        return self._match_template(source, needle, region, threshold)
+
+    @staticmethod
+    def _match_template(source, needle, region, threshold: float) -> Optional[tuple[int, int]]:
         height, width = needle.shape[:2]
         if source.shape[0] < height or source.shape[1] < width:
             return None
@@ -219,6 +230,61 @@ class TemplateVision:
         if confidence < threshold:
             return None
         return region[0] + location[0] + width // 2, region[1] + location[1] + height // 2
+
+    @staticmethod
+    def _absolute_image_url(image_source: str) -> str:
+        parsed = urlparse(image_source)
+        if parsed.scheme in {"http", "https"}:
+            return image_source
+        backend = urlparse(BACKEND_WS_URL)
+        scheme = "https" if backend.scheme == "wss" else "http"
+        return urljoin(f"{scheme}://{backend.netloc}/", image_source)
+
+    def _dynamic_template(self, image_source: str):
+        key = str(image_source or "").strip()
+        if not key:
+            raise NavigationError("订单物品缺少识别图片")
+        if key in self._dynamic_templates:
+            return self._dynamic_templates[key]
+        try:
+            if key.startswith("data:image/"):
+                _header, payload = key.split(",", 1)
+                raw = base64.b64decode(payload, validate=True)
+            else:
+                request = Request(
+                    self._absolute_image_url(key),
+                    headers={
+                        "Accept": "image/*",
+                        "User-Agent": "auto-game-executor/1.0",
+                    },
+                )
+                with urlopen(request, timeout=8) as response:
+                    content_type = response.headers.get_content_type()
+                    if not content_type.startswith("image/"):
+                        raise NavigationError(f"物品识别图片类型无效: {content_type}")
+                    raw = response.read(1_048_577)
+            if len(raw) > 1_048_576:
+                raise NavigationError("物品识别图片超过 1MB")
+            encoded = np.frombuffer(raw, dtype=np.uint8)
+            template = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        except NavigationError:
+            raise
+        except (OSError, URLError, ValueError, binascii.Error) as exc:
+            raise NavigationError(f"加载物品识别图片失败: {key}") from exc
+        if template is None:
+            raise NavigationError(f"无法解码物品识别图片: {key}")
+        self._dynamic_templates[key] = template
+        return template
+
+    def find_image(
+        self,
+        image_source: str,
+        region: tuple[int, int, int, int],
+        threshold: float = 0.90,
+    ) -> Optional[tuple[int, int]]:
+        source = self._capture(region)
+        needle = self._dynamic_template(image_source)
+        return self._match_template(source, needle, region, threshold)
 
     def pixel(self, point: tuple[int, int]) -> tuple[int, int, int]:
         x, y = point
@@ -385,7 +451,7 @@ class LineageSessionNavigator:
             return True
         if self._find(Ui.INVENTORY_BUTTON, Ui.INVENTORY_REGION) is not None:
             return True
-        return any(self._find(name, Ui.INVENTORY_REGION) for name in Ui.GOLD_TEMPLATES)
+        return False
 
     def _is_character_screen(self) -> bool:
         return self._find(Ui.CHARACTER_SCREEN) is not None
@@ -497,19 +563,27 @@ class LineageSessionNavigator:
         if not self._wait_for(self._is_in_game, timeout=30):
             raise NavigationError("角色登录后未进入游戏")
 
-    def ensure_inventory_open(self) -> None:
-        if any(self._find(name, Ui.INVENTORY_REGION) for name in Ui.GOLD_TEMPLATES):
+    def ensure_inventory_open(self, recognition_images: list[str]) -> None:
+        if not recognition_images:
+            raise NavigationError("订单明细缺少物品识别图片")
+        if any(
+            self.vision.find_image(image, Ui.INVENTORY_REGION, threshold=0.90)
+            for image in recognition_images
+        ):
             return
         inventory = self._find(Ui.INVENTORY_BUTTON, Ui.INVENTORY_REGION)
         if inventory is None:
             raise NavigationError("未找到物品栏按钮，无法打开物品栏")
         self._click(inventory)
         found = self._wait_for(
-            lambda: any(self._find(name, Ui.INVENTORY_REGION) for name in Ui.GOLD_TEMPLATES),
+            lambda: any(
+                self.vision.find_image(image, Ui.INVENTORY_REGION, threshold=0.90)
+                for image in recognition_images
+            ),
             timeout=5,
         )
         if not found:
-            raise NavigationError("点击物品栏按钮后未识别到金币")
+            raise NavigationError("点击物品栏按钮后未识别到订单物品")
 
     def ensure_target_region(self, order: dict) -> TargetRegion:
         target = TargetRegion.from_order(order)
@@ -533,7 +607,12 @@ class LineageSessionNavigator:
                 )
             self._known_region_id = target.region_id
 
-        self.ensure_inventory_open()
+        recognition_images = list(dict.fromkeys(
+            str(detail.get("recognition_image_url") or detail.get("item_image") or "").strip()
+            for detail in (order.get("details") or [])
+            if str(detail.get("recognition_image_url") or detail.get("item_image") or "").strip()
+        ))
+        self.ensure_inventory_open(recognition_images)
         if self.runtime_status is not None:
             self.runtime_status.update(
                 game_id=order.get("game_id"),

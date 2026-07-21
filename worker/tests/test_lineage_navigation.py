@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,6 +38,14 @@ ORDER = {
     "region_sort_order": 11,
     "region_select_x": 310,
     "region_select_y": 154,
+    "asset_type": "adena",
+    "asset_amount": 1000000,
+    "details": [{
+        "item_id": 1,
+        "item_name": "Adena",
+        "quantity": 1,
+        "recognition_image_url": "/uploads/images/adena.png",
+    }],
 }
 
 
@@ -83,7 +92,6 @@ class _Vision:
         Ui.SERVER_SCREEN: (390, 117),
         Ui.SERVER_CONFIRM: (500, 410),
         Ui.INVENTORY_BUTTON: (750, 300),
-        Ui.GOLD_TEMPLATES[0]: (680, 200),
     }
 
     def __init__(
@@ -93,6 +101,7 @@ class _Vision:
         inventory_open=False,
         server_text=None,
         ocr_point=(310, 154),
+        item_points=None,
     ):
         self.state = state
         self.current_text = current_text
@@ -104,6 +113,10 @@ class _Vision:
         self.server_text = server_text or ORDER["region_code"]
         self.ocr_point = ocr_point
         self.find_text_calls = 0
+        self.item_points = item_points or {
+            "/uploads/images/adena.png": (680, 200),
+        }
+        self.find_image_calls = []
 
     def find(self, template, _region, threshold=0.84):
         if template == Ui.IN_GAME:
@@ -126,8 +139,6 @@ class _Vision:
             return self.CENTERS[template] if self.state == "character" else None
         if template == Ui.INVENTORY_BUTTON:
             return self.CENTERS[template] if self.state == "game" and not self.inventory_open else None
-        if template in Ui.GOLD_TEMPLATES:
-            return self.CENTERS[Ui.GOLD_TEMPLATES[0]] if self.inventory_open else None
         return None
 
     def pixel(self, _point):
@@ -143,6 +154,10 @@ class _Vision:
     def find_text(self, _target, _region):
         self.find_text_calls += 1
         return self.ocr_point
+
+    def find_image(self, image_source, _region, threshold=0.90):
+        self.find_image_calls.append((image_source, threshold))
+        return self.item_points.get(image_source) if self.inventory_open else None
 
     def clicked(self, point):
         if point == self.CENTERS[Ui.MENU_BUTTON]:
@@ -189,25 +204,62 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertFalse(customer_name_prefix_matches("홍길순이", "홍길동"))
         self.assertFalse(customer_name_prefix_matches("", "홍길동"))
 
-    def test_item_transfers_use_detail_quantities_and_inventory_positions(self):
+    def test_item_transfers_use_images_sent_with_order(self):
         executor = LineageClassicExecutor(object())
+        vision = _Vision(
+            inventory_open=True,
+            item_points={"/images/red.png": (620, 80), "/images/blue.png": (660, 80)},
+        )
         order = {
             "asset_type": "item",
             "details": [
-                {"item_id": 11, "item_name": "红水", "quantity": 3},
-                {"item_id": 12, "item_name": "蓝水", "quantity": 2},
-            ],
-            "item_positions": [
-                {"item_id": 11, "x": 620, "y": 80},
-                {"item_id": 12, "x": 660, "y": 80},
+                {"item_id": 11, "item_name": "红水", "quantity": 3,
+                 "recognition_image_url": "/images/red.png"},
+                {"item_id": 12, "item_name": "蓝水", "quantity": 2,
+                 "recognition_image_url": "/images/blue.png"},
             ],
         }
 
-        transfers = executor._build_transfers(order, object())
+        transfers = executor._build_transfers(order, SimpleNamespace(vision=vision))
 
         self.assertEqual([((620, 80), 3), ((660, 80), 2)], [
             (transfer.source, transfer.quantity) for transfer in transfers
         ])
+
+    def test_gold_uses_database_image_and_asset_amount(self):
+        executor = LineageClassicExecutor(object())
+        vision = _Vision(
+            inventory_open=True,
+            item_points={"/images/adena.png": (680, 200)},
+        )
+        order = {
+            "asset_type": "adena",
+            "asset_amount": 1000000,
+            "details": [{
+                "item_id": 1,
+                "item_name": "Adena",
+                "quantity": 1,
+                "recognition_image_url": "/images/adena.png",
+            }],
+        }
+
+        transfers = executor._build_transfers(order, SimpleNamespace(vision=vision))
+
+        self.assertEqual([((680, 200), 1000000)], [
+            (transfer.source, transfer.quantity) for transfer in transfers
+        ])
+
+    def test_item_without_recognition_image_is_rejected(self):
+        executor = LineageClassicExecutor(object())
+        order = {
+            "asset_type": "item",
+            "details": [{"item_id": 11, "item_name": "红水", "quantity": 3}],
+        }
+
+        with self.assertRaisesRegex(NavigationError, "缺少识别图片"):
+            executor._build_transfers(
+                order, SimpleNamespace(vision=_Vision(inventory_open=True))
+            )
 
     def test_trade_timeout_uses_order_value_and_safe_bounds(self):
         self.assertEqual(300, trade_timeout_seconds({}))
@@ -221,7 +273,6 @@ class LineageNavigationTest(unittest.TestCase):
         except Exception as exc:
             self.skipTest(str(exc))
         templates = (
-            *Ui.GOLD_TEMPLATES,
             Ui.INVENTORY_BUTTON,
             Ui.IN_GAME,
             Ui.MENU_BUTTON,
@@ -239,6 +290,23 @@ class LineageNavigationTest(unittest.TestCase):
         )
         for template in templates:
             self.assertIsNotNone(vision._template(template))
+
+    def test_dynamic_item_template_accepts_data_url_and_is_cached(self):
+        try:
+            vision = TemplateVision(_Window())
+        except Exception as exc:
+            self.skipTest(str(exc))
+        data_url = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+            "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+
+        first = vision._dynamic_template(data_url)
+        second = vision._dynamic_template(data_url)
+
+        self.assertIs(first, second)
+        self.assertEqual((1, 1), first.shape[:2])
 
     def test_window_title_extracts_version_and_login_account(self):
         match = WINDOW_TITLE_RE.search(

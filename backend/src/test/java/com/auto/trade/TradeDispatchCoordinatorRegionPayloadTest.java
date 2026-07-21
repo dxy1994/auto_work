@@ -1,5 +1,7 @@
 package com.auto.trade;
 
+import com.auto.entity.GameItem;
+import com.auto.entity.GameItemOrderDetail;
 import com.auto.entity.GameRegion;
 import org.junit.jupiter.api.Test;
 
@@ -27,5 +29,29 @@ class TradeDispatchCoordinatorRegionPayloadTest {
         assertEquals(11, payload.get("region_sort_order"));
         assertEquals(310, payload.get("region_select_x"));
         assertEquals(154, payload.get("region_select_y"));
+    }
+
+    @Test
+    void sendsCurrentDatabaseItemImageForRecognition() {
+        GameItem item = new GameItem();
+        item.setImage("/uploads/images/current.png");
+        GameItemOrderDetail orderDetail = new GameItemOrderDetail();
+        orderDetail.setItemImage("/uploads/images/snapshot.png");
+        Map<String, Object> payload = new LinkedHashMap<>();
+
+        TradeDispatchCoordinator.appendItemRecognitionImage(payload, item, orderDetail);
+
+        assertEquals("/uploads/images/current.png", payload.get("recognition_image_url"));
+    }
+
+    @Test
+    void fallsBackToOrderImageSnapshotWhenCurrentItemHasNoImage() {
+        GameItemOrderDetail orderDetail = new GameItemOrderDetail();
+        orderDetail.setItemImage("/uploads/images/snapshot.png");
+        Map<String, Object> payload = new LinkedHashMap<>();
+
+        TradeDispatchCoordinator.appendItemRecognitionImage(payload, null, orderDetail);
+
+        assertEquals("/uploads/images/snapshot.png", payload.get("recognition_image_url"));
     }
 }

@@ -379,43 +379,30 @@ class LineageClassicExecutor(BaseGameExecutor):
 
     def _build_transfers(self, order: dict, navigator) -> list[TradeTransfer]:
         asset_type = str(order.get("asset_type") or "").strip().casefold()
-        if asset_type in {"adena", "gold", "金币", "아데나"}:
-            quantity = self._positive_quantity(order.get("asset_amount"), "金币")
-            source = None
-            for template in Ui.GOLD_TEMPLATES:
-                source = navigator.vision.find(
-                    template, Ui.INVENTORY_REGION, threshold=0.90
-                )
-                if source is not None:
-                    break
-            if source is None:
-                raise NavigationError("物品栏中未识别到金币图标")
-            return [TradeTransfer(source=source, quantity=quantity, label="金币")]
-
         details = list(order.get("details") or [])
-        positions = {
-            str(position.get("item_id")): position
-            for position in (order.get("item_positions") or [])
-            if position.get("item_id") is not None
-        }
         if not details:
             raise NavigationError(f"资产类型 {asset_type or 'unknown'} 没有可交易的物品明细")
         transfers: list[TradeTransfer] = []
         for detail in details:
             item_id = detail.get("item_id")
             label = str(detail.get("item_name") or item_id or "未知物品")
-            position = positions.get(str(item_id))
-            if position is None:
-                raise NavigationError(f"物品 {label} 缺少物品栏坐标")
-            try:
-                x = int(position.get("x"))
-                y = int(position.get("y"))
-            except (TypeError, ValueError) as exc:
-                raise NavigationError(f"物品 {label} 坐标无效") from exc
-            if not 0 <= x < 800 or not 0 <= y < 600:
-                raise NavigationError(f"物品 {label} 坐标超出 800x600 客户区")
-            quantity = self._positive_quantity(detail.get("quantity"), label)
-            transfers.append(TradeTransfer(source=(x, y), quantity=quantity, label=label))
+            image = str(
+                detail.get("recognition_image_url") or detail.get("item_image") or ""
+            ).strip()
+            if not image:
+                raise NavigationError(f"物品 {label} 缺少识别图片")
+            source = navigator.vision.find_image(
+                image, Ui.INVENTORY_REGION, threshold=0.90
+            )
+            if source is None:
+                raise NavigationError(f"物品栏中未识别到物品 {label}")
+            quantity_value = (
+                order.get("asset_amount")
+                if asset_type in {"adena", "gold", "金币", "아데나"}
+                else detail.get("quantity")
+            )
+            quantity = self._positive_quantity(quantity_value, label)
+            transfers.append(TradeTransfer(source=source, quantity=quantity, label=label))
         return transfers
 
     @staticmethod

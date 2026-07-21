@@ -109,7 +109,7 @@
             <el-radio :value="1">套装</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="商品图片">
+        <el-form-item label="物品识别图" prop="image">
           <el-upload
             :auto-upload="false"
             :limit="1"
@@ -120,7 +120,7 @@
             list-type="picture"
           >
             <el-button size="small" type="primary">选择图片</el-button>
-            <template #tip><div class="el-upload__tip">支持 jpg/png/gif/webp</div></template>
+            <template #tip><div class="el-upload__tip">随交易指令下发，用于物品栏模板识别；建议上传紧贴图标边缘的 PNG</div></template>
           </el-upload>
           <el-input v-if="form.image" v-model="form.image" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
         </el-form-item>
@@ -253,10 +253,18 @@ const isEdit = ref(false)
 const editId = ref(null)
 const submitting = ref(false)
 const formRef = ref(null)
+const validateRecognitionImage = (_rule, _value, callback) => {
+  if (!form.is_bundle && !form.image && !imageFile.value) {
+    callback(new Error('单品必须上传物品识别图'))
+  } else {
+    callback()
+  }
+}
 const rules = {
   game_id: [{ required: true, message: '请选择游戏', trigger: 'change' }],
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   code: [{ required: true, message: '请输入编码', trigger: 'blur' }],
+  image: [{ validator: validateRecognitionImage, trigger: 'change' }],
 }
 
 const defaultForm = () => ({

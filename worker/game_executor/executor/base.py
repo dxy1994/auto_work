@@ -41,7 +41,7 @@ class BaseGameExecutor(ABC):
                 - buyer_character: 买家角色名
                 - asset_type: 资产类型
                 - asset_amount: 资产数量
-                - details: 子订单明细列表 [{item_id, item_name, quantity, ...}]
+                - details: 子订单明细列表 [{item_id, item_name, quantity, recognition_image_url, ...}]
                 - item_positions: 物品在游戏中的位置坐标 [{item_id, x, y, image_url}]
 
         Returns:
