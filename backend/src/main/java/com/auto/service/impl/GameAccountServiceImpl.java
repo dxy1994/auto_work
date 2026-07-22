@@ -65,4 +65,18 @@ public class GameAccountServiceImpl extends ServiceImpl<GameAccountMapper, GameA
                 .eq(GameAccount::getIsActive, 1)
                 .orderByAsc(GameAccount::getId));
     }
+
+    @Override
+    public List<GameAccount> findActiveByGameAndRegion(Integer gameId, Integer regionId) {
+        List<Integer> accountIds = gameAccountRegionService.findByGameIdAndRegionIdActive(gameId, regionId).stream()
+                .map(GameAccountRegion::getGameAccountId)
+                .distinct()
+                .toList();
+        if (accountIds.isEmpty()) return List.of();
+
+        return list(new LambdaQueryWrapper<GameAccount>()
+                .in(GameAccount::getId, accountIds)
+                .eq(GameAccount::getIsActive, 1)
+                .orderByAsc(GameAccount::getId));
+    }
 }

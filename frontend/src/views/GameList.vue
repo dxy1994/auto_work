@@ -97,7 +97,7 @@
     </el-dialog>
 
     <!-- 大区管理抽屉 -->
-    <el-drawer v-model="regionDrawerVisible" :title="`大区管理 - ${currentGame?.name || ''}`" size="600px" destroy-on-close>
+    <el-drawer v-model="regionDrawerVisible" :title="`大区管理 - ${currentGame?.name || ''}`" size="680px" destroy-on-close>
       <div class="region-toolbar">
         <el-button type="primary" size="small" @click="openRegionEdit()">
           <el-icon><Plus /></el-icon> 新增大区
@@ -106,6 +106,7 @@
       <el-table :data="regionList" border stripe size="small" highlight-current-row @current-change="onCurrentChange" row-key="id">
         <el-table-column prop="code" label="编码" width="120" />
         <el-table-column prop="name" label="大区名称" min-width="150" />
+        <el-table-column prop="select_page" label="页码" width="65" align="center" />
         <el-table-column label="选区坐标" width="100" align="center">
           <template #default="{ row }">
             {{ row.select_x != null && row.select_y != null ? `${row.select_x}, ${row.select_y}` : '未配置' }}
@@ -134,6 +135,9 @@
           <el-form-item label="编码" prop="code">
             <el-input v-model="regionForm.code" placeholder="如 huadong_1" />
           </el-form-item>
+          <el-form-item label="所在页码" prop="select_page">
+            <el-input-number v-model="regionForm.select_page" :min="1" :max="999" :step="1" step-strictly />
+          </el-form-item>
           <el-form-item label="选区坐标">
             <div class="coordinate-inputs">
               <el-form-item prop="select_x">
@@ -145,7 +149,7 @@
               </el-form-item>
             </div>
           </el-form-item>
-          <el-alert title="优先使用配置坐标；留空时由工作机 OCR 定位大区" type="info" :closable="false" show-icon />
+          <el-alert title="页码从 1 开始；工作机会先进入对应页，再使用配置坐标或 OCR 选择大区" type="info" :closable="false" show-icon />
           <el-form-item v-if="regionIsEdit" label="排序">
             <el-input-number v-model="regionForm.sort_order" :min="0" :max="999" />
           </el-form-item>
@@ -457,10 +461,11 @@ const validateCoordinatePair = (_rule, _value, callback) => {
 const regionRules = {
   name: [{ required: true, message: '请输入大区名称', trigger: 'blur' }],
   code: [{ required: true, message: '请输入编码', trigger: 'blur' }],
+  select_page: [{ required: true, message: '请输入所在页码', trigger: 'change' }],
   select_x: [{ validator: validateCoordinatePair, trigger: 'change' }],
   select_y: [{ validator: validateCoordinatePair, trigger: 'change' }],
 }
-const defaultRegionForm = () => ({ name: '', code: '', select_x: null, select_y: null })
+const defaultRegionForm = () => ({ name: '', code: '', select_page: 1, select_x: null, select_y: null })
 const regionForm = reactive(defaultRegionForm())
 
 // 生成随机大区编码（8位大写字母+数字，如 A3K9M7XQ）

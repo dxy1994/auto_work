@@ -74,6 +74,15 @@ public class OrderDeliveryStateMachine {
                 DeliveryState.OFFERED,
                 new GreetingSuccessAction());
 
+        // 没有空闲机器但已有兼容机器正在执行时，进入该机器的持久化队列。
+        QueueAssignmentAction queueAssignmentAction = new QueueAssignmentAction();
+        register(DeliveryState.GREETING, DeliveryEvent.QUEUE_ASSIGNMENT,
+                DeliveryState.QUEUED, queueAssignmentAction);
+        register(DeliveryState.WAITING_ASSIGNMENT, DeliveryEvent.QUEUE_ASSIGNMENT,
+                DeliveryState.QUEUED, queueAssignmentAction);
+        register(DeliveryState.QUEUED, DeliveryEvent.DEQUEUE_ASSIGNMENT,
+                DeliveryState.OFFERED, new DequeueAssignmentAction());
+
         // Worker 接受 offer
         register(DeliveryState.OFFERED, DeliveryEvent.OFFER_ACCEPTED,
                 DeliveryState.ASSIGNED,
@@ -89,6 +98,15 @@ public class OrderDeliveryStateMachine {
                 DeliveryState.WAITING_ASSIGNMENT,
                 new OfferExpiredAction(assignmentService, machineService, gameAccountService, agentRegistry));
 
+        QueuedOfferFailedAction queuedOfferFailedAction = new QueuedOfferFailedAction(
+                assignmentService, machineService, gameAccountService, agentRegistry);
+        register(DeliveryState.OFFERED, DeliveryEvent.QUEUED_OFFER_REJECTED,
+                DeliveryState.QUEUED, queuedOfferFailedAction);
+        register(DeliveryState.OFFERED, DeliveryEvent.QUEUED_OFFER_EXPIRED,
+                DeliveryState.QUEUED, queuedOfferFailedAction);
+        register(DeliveryState.OFFERED, DeliveryEvent.QUEUED_WORKER_DISCONNECTED,
+                DeliveryState.QUEUED, queuedOfferFailedAction);
+
         WorkerDisconnectedAction workerDisconnectedAction = new WorkerDisconnectedAction(
                 assignmentService, machineService, gameAccountService, agentRegistry);
         register(DeliveryState.OFFERED, DeliveryEvent.WORKER_DISCONNECTED,
@@ -100,6 +118,8 @@ public class OrderDeliveryStateMachine {
         register(DeliveryState.ASSIGNED, DeliveryEvent.START_FAILED,
                 DeliveryState.WAITING_ASSIGNMENT,
                 new StartFailedAction(assignmentService, machineService, gameAccountService, agentRegistry));
+        register(DeliveryState.ASSIGNED, DeliveryEvent.QUEUED_START_FAILED,
+                DeliveryState.QUEUED, queuedOfferFailedAction);
 
         // 游戏内交易完成，网站侧确认流程后续实现。
         register(DeliveryState.ASSIGNED, DeliveryEvent.GAME_TRADE_COMPLETED,
@@ -128,8 +148,24 @@ public class OrderDeliveryStateMachine {
                 DeliveryState.OFFERED,
                 new ManualDispatchAction());
 
+        // 状态本身未变化但步骤失败时，先清除错误快照，再执行该步骤原有逻辑。
+        register(DeliveryState.GREETING, DeliveryEvent.RETRY_GREETING,
+                DeliveryState.GREETING,
+                new ResetToGreetingAction());
+        register(DeliveryState.GREETING, DeliveryEvent.RETRY_ASSIGNMENT,
+                DeliveryState.WAITING_ASSIGNMENT,
+                new RetryAssignmentAction());
+
+        // 已明确失败且资源已经释放：从交易指派阶段继续，不重复招呼。
+        register(DeliveryState.SUSPENDED, DeliveryEvent.RETRY_ASSIGNMENT,
+                DeliveryState.WAITING_ASSIGNMENT,
+                new RetryAssignmentAction());
+
         // 人工修复后重置
         register(DeliveryState.GREETING_ABNORMAL, DeliveryEvent.RESET_TO_GREETING,
+                DeliveryState.GREETING,
+                new ResetToGreetingAction());
+        register(DeliveryState.SUSPENDED, DeliveryEvent.RESET_TO_GREETING,
                 DeliveryState.GREETING,
                 new ResetToGreetingAction());
         register(DeliveryState.REVIEW_REQUIRED, DeliveryEvent.RESET_TO_GREETING,

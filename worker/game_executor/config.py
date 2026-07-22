@@ -13,5 +13,16 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
-# true 时仍接收总控真实订单，但所有 HID 动作只写日志。
-DRY_RUN = _env_flag("GAME_EXECUTOR_DRY_RUN", False)
+# 人工操作测试模式：仍接收并执行总控真实订单，识别和终态上报完全真实，
+# 但所有 HID 动作只输出待人工执行的日志。旧变量仅作为安全兼容，避免升级后误发 HID。
+MANUAL_ACTIONS = _env_flag(
+    "GAME_EXECUTOR_MANUAL_ACTIONS",
+    _env_flag("GAME_EXECUTOR_DRY_RUN", False),
+)
+
+try:
+    MANUAL_ACTION_WAIT_SECONDS = max(
+        0.0, float(os.getenv("GAME_EXECUTOR_MANUAL_ACTION_WAIT_SECONDS", "5"))
+    )
+except ValueError:
+    MANUAL_ACTION_WAIT_SECONDS = 5.0

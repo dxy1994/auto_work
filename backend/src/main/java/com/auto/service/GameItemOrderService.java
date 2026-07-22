@@ -10,7 +10,8 @@ import java.util.Set;
 
 public interface GameItemOrderService extends IService<GameItemOrder> {
 
-    IPage<GameItemOrder> search(Integer gameId, String status, String keyword, Page<GameItemOrder> page);
+    IPage<GameItemOrder> search(Integer gameId, String status, String deliveryStatus,
+                                String keyword, Page<GameItemOrder> page);
 
     GameItemOrder findByWebsiteIdAndSourceOrderNo(Integer websiteId, String sourceOrderNo);
 

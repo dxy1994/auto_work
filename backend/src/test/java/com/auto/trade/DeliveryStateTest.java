@@ -20,4 +20,18 @@ class DeliveryStateTest {
                 DeliveryState.GREETING_ABNORMAL,
                 DeliveryState.from("greeting", "abnormal"));
     }
+
+    @Test
+    void manuallyCancelledIsARecognizedOrderState() {
+        assertEquals(
+                DeliveryState.CANCELLED,
+                DeliveryState.from("cancelled", "cancelled"));
+    }
+
+    @Test
+    void queuedIsARecognizedPendingOrderState() {
+        assertEquals(
+                DeliveryState.QUEUED,
+                DeliveryState.from("queued", "pending"));
+    }
 }

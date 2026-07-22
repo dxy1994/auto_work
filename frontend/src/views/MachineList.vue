@@ -39,8 +39,9 @@
       <el-table-column prop="os_info" label="操作系统" width="120" show-overflow-tooltip />
       <el-table-column prop="last_heartbeat" label="最后心跳" width="170" />
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
-      <el-table-column label="操作" width="380" fixed="right">
+      <el-table-column label="操作" width="440" fixed="right">
         <template #default="{ row }">
+          <el-button size="small" type="primary" plain @click="openSessionDrawer(row)">会话</el-button>
           <el-button size="small" @click="openMachineDialog(row)">编辑</el-button>
           <el-button v-if="row.type !== 'account'" size="small" type="success" @click="openGameAccountsDrawer(row)">关联账号</el-button>
           <el-button v-if="row.type !== 'game'" size="small" type="warning" @click="openAccountsDrawer(row)">关联商户</el-button>
@@ -54,6 +55,84 @@
     <div class="pagination-wrap" v-if="total > pageSize">
       <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" @current-change="fetchList" />
     </div>
+
+    <!-- Worker 实时会话抽屉 -->
+    <el-drawer
+      v-model="sessionDrawerVisible"
+      :title="`实时会话 · ${sessionMachine?.name || sessionMachine?.hostname || sessionMachine?.mac_address || ''}`"
+      size="620px"
+      destroy-on-close
+      @closed="closeSessionDrawer"
+    >
+      <div class="session-panel" v-loading="sessionLoading && !sessionInfo">
+        <div v-if="sessionInfo" class="session-status-card" :class="{ 'is-connected': sessionInfo.connected }">
+          <div class="session-status-main">
+            <span class="session-status-dot" aria-hidden="true"></span>
+            <div>
+              <div class="session-status-title">{{ sessionInfo.connected ? 'Worker 会话已连接' : '当前没有活动会话' }}</div>
+              <div class="session-status-subtitle">
+                {{ sessionInfo.connected ? '数据每 5 秒自动刷新' : 'Worker 重新连接后，此处会自动显示会话信息' }}
+              </div>
+            </div>
+          </div>
+          <div class="session-status-actions">
+            <el-tag size="small" :type="sessionInfo.connected ? 'success' : 'info'">{{ roleLabel(sessionInfo.role) }}</el-tag>
+            <el-button size="small" :loading="sessionLoading" @click="fetchMachineSession">立即刷新</el-button>
+          </div>
+        </div>
+
+        <el-alert
+          v-if="sessionInfo?.connected && !sessionInfo?.runtime"
+          class="session-alert"
+          type="info"
+          :closable="false"
+          show-icon
+          title="会话已连接，Worker 尚未上报运行态"
+          description="脚本刚启动时可能短暂出现，收到下一次心跳后会自动更新。"
+        />
+
+        <template v-if="sessionInfo">
+          <div class="session-section-title">连接信息</div>
+          <el-descriptions :column="1" border size="small" class="session-descriptions">
+            <el-descriptions-item label="会话编号"><span class="session-mono">{{ displayValue(sessionInfo.session_id) }}</span></el-descriptions-item>
+            <el-descriptions-item label="连接角色">{{ roleLabel(sessionInfo.role) }}</el-descriptions-item>
+            <el-descriptions-item label="远端地址"><span class="session-mono">{{ displayValue(sessionInfo.remote_address) }}</span></el-descriptions-item>
+            <el-descriptions-item label="连接时间">{{ formatSessionTime(sessionInfo.connected_at) }}</el-descriptions-item>
+            <el-descriptions-item label="最后心跳">{{ formatSessionTime(sessionInfo.last_heartbeat) }}</el-descriptions-item>
+            <el-descriptions-item label="数据库状态">{{ statusLabel(sessionInfo.persisted_status) }}</el-descriptions-item>
+          </el-descriptions>
+
+          <template v-if="sessionInfo.runtime">
+            <div class="session-section-title">实时运行态</div>
+            <el-descriptions :column="1" border size="small" class="session-descriptions">
+              <el-descriptions-item label="客户端状态">{{ runtimeStatusLabel('client_status', sessionInfo.runtime.client_status) }}</el-descriptions-item>
+              <el-descriptions-item label="界面状态">{{ runtimeStatusLabel('ui_health', sessionInfo.runtime.ui_health) }}</el-descriptions-item>
+              <el-descriptions-item label="执行器状态">{{ runtimeStatusLabel('executor_status', sessionInfo.runtime.executor_status) }}</el-descriptions-item>
+              <el-descriptions-item label="当前指派"><span class="session-mono">{{ displayValue(sessionInfo.runtime.current_assignment_id) }}</span></el-descriptions-item>
+              <el-descriptions-item label="游戏 / 账号 / 大区">
+                {{ displayValue(sessionInfo.runtime.game_id) }} / {{ displayValue(sessionInfo.runtime.game_account_id) }} / {{ displayValue(sessionInfo.runtime.region_id) }}
+              </el-descriptions-item>
+              <el-descriptions-item label="游戏角色">{{ displayValue(sessionInfo.runtime.character_name) }}</el-descriptions-item>
+            </el-descriptions>
+          </template>
+
+          <template v-if="sessionInfo.active_tasks?.length">
+            <div class="session-section-title">活动监控任务</div>
+            <el-table :data="sessionInfo.active_tasks" border size="small" class="session-task-table">
+              <el-table-column prop="account_id" label="账号" width="70" />
+              <el-table-column prop="task_id" label="任务编号" min-width="130" show-overflow-tooltip />
+              <el-table-column prop="status" label="状态" width="80" />
+              <el-table-column label="启动时间" width="160">
+                <template #default="{ row }">{{ formatTaskStartTime(row.start_time) }}</template>
+              </el-table-column>
+              <el-table-column prop="message" label="说明" min-width="130" show-overflow-tooltip />
+            </el-table>
+          </template>
+
+          <p class="session-footnote">会话信息来自当前后端进程内存；后端重启后，需要等待 Worker 重新连接并上报心跳。</p>
+        </template>
+      </div>
+    </el-drawer>
 
     <!-- 机器编辑弹窗 -->
     <el-dialog v-model="machineDialogVisible" :title="machineIsEdit ? '编辑机器' : '新增机器'" width="500px" destroy-on-close>
@@ -171,10 +250,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  getMachines, createMachine, updateMachine, deleteMachine,
+  getMachines, getMachineSession, createMachine, updateMachine, deleteMachine,
   getMachineGames, addMachineGame, updateMachineGame, removeMachineGame,
   getMachineAccounts, addMachineAccount, removeMachineAccount,
   getAllGames, getAllAccounts, getAllWebsites,
@@ -218,6 +297,63 @@ async function fetchList() {
   } finally { loading.value = false }
 }
 function handleSearch() { page.value = 1; fetchList() }
+
+// ── Worker 实时会话 ──
+const sessionDrawerVisible = ref(false)
+const sessionMachine = ref(null)
+const sessionInfo = ref(null)
+const sessionLoading = ref(false)
+let sessionRefreshTimer = null
+
+function displayValue(value) { return value === null || value === undefined || value === '' ? '-' : value }
+function formatSessionTime(value) { return value ? String(value).replace('T', ' ') : '-' }
+function formatTaskStartTime(value) {
+  const timestamp = Number(value)
+  return Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp * 1000).toLocaleString() : '-'
+}
+function roleLabel(role) {
+  return { game_executor: '游戏执行器', trader: '游戏执行器', monitor: '订单监控' }[role] || role || '角色未上报'
+}
+function runtimeStatusLabel(field, value) {
+  const labels = {
+    client_status: { logged_in: '已登录（logged_in）', not_ready: '尚未就绪（not_ready）', unknown: '未知（unknown）' },
+    ui_health: { ready: '正常（ready）', unhealthy: '异常（unhealthy）', recovering: '恢复中（recovering）' },
+    executor_status: { idle: '空闲（idle）', busy: '执行中（busy）', running: '执行中（running）' },
+  }
+  return labels[field]?.[value] || displayValue(value)
+}
+function stopSessionRefresh() {
+  if (sessionRefreshTimer !== null) {
+    window.clearInterval(sessionRefreshTimer)
+    sessionRefreshTimer = null
+  }
+}
+async function fetchMachineSession() {
+  const machineId = sessionMachine.value?.id
+  if (!machineId || sessionLoading.value) return
+  sessionLoading.value = true
+  try {
+    const result = await getMachineSession(machineId)
+    if (sessionMachine.value?.id === machineId) sessionInfo.value = result
+  } catch (error) {
+    ElMessage.error(error.message || '会话信息加载失败')
+  } finally {
+    sessionLoading.value = false
+  }
+}
+function openSessionDrawer(machine) {
+  stopSessionRefresh()
+  sessionMachine.value = machine
+  sessionInfo.value = null
+  sessionDrawerVisible.value = true
+  fetchMachineSession()
+  sessionRefreshTimer = window.setInterval(fetchMachineSession, 5000)
+}
+function closeSessionDrawer() {
+  stopSessionRefresh()
+  sessionMachine.value = null
+  sessionInfo.value = null
+}
 
 // ── 机器编辑 ──
 const machineDialogVisible = ref(false)
@@ -325,6 +461,8 @@ onMounted(async () => {
   allGameAccounts.value = gaRes.items || []
   fetchList()
 })
+
+onBeforeUnmount(stopSessionRefresh)
 </script>
 
 <style scoped>
@@ -333,4 +471,23 @@ onMounted(async () => {
 .toolbar .el-button { margin-left: auto; }
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 .games-toolbar { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; }
+.session-panel { min-height: 240px; }
+.session-status-card { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 18px; border: 1px solid #dcdfe6; border-left: 4px solid #909399; border-radius: 8px; background: #f7f8fa; }
+.session-status-card.is-connected { border-color: #b8e3cc; border-left-color: #2f9e62; background: #f2fbf6; }
+.session-status-main, .session-status-actions { display: flex; align-items: center; gap: 12px; }
+.session-status-actions { flex-shrink: 0; }
+.session-status-dot { width: 11px; height: 11px; border-radius: 50%; background: #909399; box-shadow: 0 0 0 5px rgba(144, 147, 153, .12); }
+.is-connected .session-status-dot { background: #2f9e62; box-shadow: 0 0 0 5px rgba(47, 158, 98, .13); }
+.session-status-title { color: #303133; font-size: 16px; font-weight: 650; }
+.session-status-subtitle { margin-top: 4px; color: #73767a; font-size: 12px; }
+.session-alert { margin-top: 16px; }
+.session-section-title { margin: 24px 0 10px; color: #303133; font-size: 14px; font-weight: 650; letter-spacing: .02em; }
+.session-descriptions :deep(.el-descriptions__label) { width: 118px; color: #606266; }
+.session-mono { font-family: Consolas, "SFMono-Regular", monospace; font-size: 12px; }
+.session-task-table { width: 100%; }
+.session-footnote { margin: 18px 2px 0; color: #909399; font-size: 12px; line-height: 1.6; }
+@media (max-width: 760px) {
+  .session-status-card { align-items: flex-start; flex-direction: column; }
+  .session-status-actions { width: 100%; justify-content: space-between; }
+}
 </style>

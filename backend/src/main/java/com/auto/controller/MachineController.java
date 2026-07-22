@@ -10,6 +10,7 @@ import com.auto.service.MachineGameAccountService;
 import com.auto.service.MachineService;
 import com.auto.service.MouseKeyboardDeviceService;
 import com.auto.service.VideoStreamDeviceService;
+import com.auto.ws.AgentRegistry;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -29,16 +30,19 @@ public class MachineController {
     private final MachinePlatformAccountService machineAccountService;
     private final MouseKeyboardDeviceService mkDeviceService;
     private final VideoStreamDeviceService vsDeviceService;
+    private final AgentRegistry agentRegistry;
 
     public MachineController(MachineService machineService, MachineGameAccountService machineGameService,
                             MachinePlatformAccountService machineAccountService,
                             MouseKeyboardDeviceService mkDeviceService,
-                            VideoStreamDeviceService vsDeviceService) {
+                            VideoStreamDeviceService vsDeviceService,
+                            AgentRegistry agentRegistry) {
         this.machineService = machineService;
         this.machineGameService = machineGameService;
         this.machineAccountService = machineAccountService;
         this.mkDeviceService = mkDeviceService;
         this.vsDeviceService = vsDeviceService;
+        this.agentRegistry = agentRegistry;
     }
 
     @GetMapping
@@ -84,6 +88,22 @@ public class MachineController {
         Machine m = machineService.getById(machineId);
         if (m == null) throw ApiException.notFound("机器不存在");
         return m;
+    }
+
+    /** 查询机器当前的内存态 Worker 会话及最近一次运行态。 */
+    @GetMapping("/{machineId}/session")
+    public Map<String, Object> getSession(@PathVariable Integer machineId) {
+        Machine m = machineService.getById(machineId);
+        if (m == null) throw ApiException.notFound("机器不存在");
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("machine_id", m.getId());
+        result.put("machine_name", m.getName());
+        result.put("hostname", m.getHostname());
+        result.put("persisted_status", m.getStatus());
+        result.put("last_heartbeat", m.getLastHeartbeat());
+        result.putAll(agentRegistry.getSessionSnapshot(machineId));
+        return result;
     }
 
     @PostMapping

@@ -50,7 +50,7 @@ class SystemAlertEventListenerTest {
                 eq("critical"), eq("订单监控机器已掉线"),
                 argThat(message -> message.contains("原因：worker 断线")
                         && message.contains("解决方案：")
-                        && message.contains("手动关闭")));
+                        && message.contains("自动移除")));
     }
 
     @Test
@@ -63,6 +63,13 @@ class SystemAlertEventListenerTest {
         listener.onMachineSessionLost(new MachineSessionLost(7, "worker 连接已被新会话替换"));
 
         verifyNoInteractions(alertService);
+    }
+
+    @Test
+    void machineReconnectAutomaticallyDismissesOfflineAlert() {
+        listener.onMachineSessionRestored(new MachineSessionRestored(7));
+
+        verify(alertService).dismissBySourceKey("machine:7:offline");
     }
 
     @Test

@@ -11,6 +11,7 @@ public record TradeCandidate(
         int priority,
         boolean machineOnline,
         boolean accountIdle,
+        boolean runtimeMatchesAccount,
         String clientStatus,
         String executorStatus,
         String uiHealth,

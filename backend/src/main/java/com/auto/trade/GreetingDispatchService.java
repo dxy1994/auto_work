@@ -159,22 +159,8 @@ public class GreetingDispatchService {
             return;
         }
 
-        // 招呼成功：检查子订单，决定后续流程
-        List<GameItemOrderDetail> details = orderDetailService.findByOrderId(orderId);
-
-        if (details.isEmpty()) {
-            log.warn("[Greeting] 招呼成功但子订单未解析 order_id={}; 原因：物品名未匹配或套装无子物品；"
-                    + "解决方案：核对平台标题中的 %物品名% 和游戏物品配置后重试", orderId);
-            stateMachine.fire(order, DeliveryEvent.NO_SUB_ORDER, null);
-            return;
-        }
-
-        // 子订单已解析：由交易协调器完成 greeting → offered 的唯一状态迁移，
-        // 避免这里提前迁移后，协调器因订单已是 offered 而拒绝指派。
         try {
-            TradeOffer offer = tradeDispatchCoordinator.dispatch(orderId);
-            log.info("[Greeting] 自动交易指派已发起 order_id={} assignment_id={} machine_id={}",
-                    orderId, offer.assignmentId(), offer.machineId());
+            continueAfterGreetingSuccess(order);
         } catch (Exception e) {
             log.warn("[Greeting] 自动交易指派失败 order_id={}; 原因：{}；"
                             + "解决方案：检查可用游戏执行机器、账号、大区和库存关联后重试",
@@ -183,6 +169,46 @@ public class GreetingDispatchService {
                     TradeErrorGuidance.ensureGuidance("TRADE_DISPATCH_FAILED",
                             normalizeErrorMessage(e.getMessage(), "招呼成功，但自动交易指派失败")));
         }
+    }
+
+    /**
+     * 执行招呼成功后原本应该执行的逻辑，不再次发送招呼。
+     * 同时供正常招呼回馈和人工恢复流程复用，避免两条流程发生偏差。
+     */
+    public TradeOffer continueAfterGreetingSuccess(int orderId) {
+        GameItemOrder order = orderService.getById(orderId);
+        if (order == null) {
+            throw new IllegalStateException("订单不存在");
+        }
+        if (!"greeting".equals(order.getDeliveryStatus())
+                || !"pending".equals(order.getStatus())) {
+            throw new IllegalStateException("订单不在招呼成功后的待继续状态");
+        }
+        TradeOffer offer = continueAfterGreetingSuccess(order);
+        return offer;
+    }
+
+    private TradeOffer continueAfterGreetingSuccess(GameItemOrder order) {
+        int orderId = order.getId();
+        List<GameItemOrderDetail> details = orderDetailService.findByOrderId(orderId);
+        if (details.isEmpty()) {
+            log.warn("[Greeting] 招呼成功但子订单未解析 order_id={}; 原因：物品名称/编码未匹配或套装无子物品；"
+                    + "解决方案：核对平台标题中的 %物品名或编码% 和游戏物品配置后重试", orderId);
+            stateMachine.fire(order, DeliveryEvent.NO_SUB_ORDER, null);
+            return null;
+        }
+
+        // 子订单已解析：由交易协调器完成 greeting → offered 的唯一状态迁移。
+        TradeOffer offer = tradeDispatchCoordinator.dispatch(orderId);
+        if (offer == null) {
+            GameItemOrder queued = orderService.getById(orderId);
+            log.info("[Greeting] 自动交易进入机器队列 order_id={} machine_id={}",
+                    orderId, queued == null ? null : queued.getAssignedMachineId());
+            return null;
+        }
+        log.info("[Greeting] 自动交易指派已发起 order_id={} assignment_id={} machine_id={}",
+                orderId, offer.assignmentId(), offer.machineId());
+        return offer;
     }
 
     private void persistProcessingError(int orderId, RuntimeException error) {

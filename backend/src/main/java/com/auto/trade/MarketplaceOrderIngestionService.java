@@ -1,20 +1,12 @@
 package com.auto.trade;
 
 import com.auto.entity.PlatformAccount;
-import com.auto.entity.ItemBundleRelation;
 import com.auto.entity.Game;
-import com.auto.entity.GameItem;
 import com.auto.entity.GameItemOrder;
-import com.auto.entity.GameItemOrderDetail;
 import com.auto.entity.GameRegion;
-import com.auto.entity.GameRegionInventory;
 import com.auto.entity.TradeEvent;
 import com.auto.service.PlatformAccountService;
-import com.auto.service.ItemBundleRelationService;
-import com.auto.service.GameItemOrderDetailService;
 import com.auto.service.GameItemOrderService;
-import com.auto.service.GameItemService;
-import com.auto.service.GameRegionInventoryService;
 import com.auto.service.GameRegionService;
 import com.auto.service.GameService;
 import com.auto.service.TradeEventService;
@@ -26,12 +18,10 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 /** 将 Worker 订单观察幂等写入总控订单域。 */
 @Service
@@ -45,10 +35,7 @@ public class MarketplaceOrderIngestionService {
     private final TradeEventService eventService;
     private final GameService gameService;
     private final ApplicationEventPublisher eventPublisher;
-    private final GameItemService gameItemService;
-    private final ItemBundleRelationService bundleItemService;
-    private final GameItemOrderDetailService orderDetailService;
-    private final GameRegionInventoryService regionItemService;
+    private final OrderDetailGenerationService detailGenerationService;
 
     public MarketplaceOrderIngestionService(
             PlatformAccountService accountService,
@@ -57,20 +44,14 @@ public class MarketplaceOrderIngestionService {
             TradeEventService eventService,
             GameService gameService,
             ApplicationEventPublisher eventPublisher,
-            GameItemService gameItemService,
-            ItemBundleRelationService bundleItemService,
-            GameItemOrderDetailService orderDetailService,
-            GameRegionInventoryService regionItemService) {
+            OrderDetailGenerationService detailGenerationService) {
         this.accountService = accountService;
         this.regionService = regionService;
         this.orderService = orderService;
         this.eventService = eventService;
         this.gameService = gameService;
         this.eventPublisher = eventPublisher;
-        this.gameItemService = gameItemService;
-        this.bundleItemService = bundleItemService;
-        this.orderDetailService = orderDetailService;
-        this.regionItemService = regionItemService;
+        this.detailGenerationService = detailGenerationService;
     }
 
     @Transactional
@@ -122,8 +103,8 @@ public class MarketplaceOrderIngestionService {
             errorMessage = "原因：" + configError + "。解决方案：检查网站账号的交易游戏配置，并确认平台区服名称已关联到系统大区。";
         } else if (tradeItem.isEmpty()) {
             errorCode = "ITEM_NAME_PARSE_FAILED";
-            errorMessage = "原因：商品标题未包含有效的 %物品名% 标记。解决方案：在平台商品标题中加入 %游戏中的物品名%，"
-                    + "并确保该名称与游戏物品管理中的名称完全一致。";
+            errorMessage = "原因：商品标题未包含有效的 %物品名% 标记。解决方案：在平台商品标题中加入 %游戏中的物品名或物品编码%，"
+                    + "并确保该值与游戏物品管理中的名称或编码完全一致。";
         }
         if (errorCode != null) {
             log.warn("[Order] 订单校验失败 code={} account={} sourceOrderNo={} title={}; {}",
@@ -196,7 +177,7 @@ public class MarketplaceOrderIngestionService {
         if (order.getTradeItemName() != null && !order.getTradeItemName().isEmpty()
                 && gameId != null && gameId != -1) {
             try {
-                autoCreateOrderDetails(order, gameId, regionId);
+                detailGenerationService.ensureDetails(order);
             } catch (Exception e) {
                 log.warn("[Order] 自动创建子订单明细失败 order_id={} tradeItemName={}; 原因：{}；"
                                 + "解决方案：检查同名游戏物品、套装子物品及大区库存配置，修正后重试",
@@ -312,77 +293,4 @@ public class MarketplaceOrderIngestionService {
         return "";
     }
 
-    /**
-     * 根据 tradeItemName 在物品表中查找匹配物品，自动创建子订单明细。
-     * 单物品 → 创建 1 条明细；套装 → 拆分为多条明细，每条记录 bundleName。
-     */
-    private void autoCreateOrderDetails(GameItemOrder order, int gameId, int regionId) {
-        String tradeItemName = order.getTradeItemName();
-        GameItem matchedItem = gameItemService.findByGameIdAndName(gameId, tradeItemName);
-        if (matchedItem == null) {
-            log.warn("[Order] 子订单未创建 order_id={} tradeItemName={}; 原因：系统中未找到同名游戏物品；"
-                            + "解决方案：在游戏物品管理中新增该物品，或将平台标题中的 %物品名% 改为系统中的准确名称",
-                    order.getId(), tradeItemName);
-            return;
-        }
-
-        if (Integer.valueOf(1).equals(matchedItem.getIsBundle())) {
-            // 套装：拆分所有子物品，按关联表中配置的数量创建明细
-            List<ItemBundleRelation> relations = bundleItemService.findRelationsByBundleId(matchedItem.getId());
-            if (relations.isEmpty()) {
-                log.warn("[Order] 子订单未创建 order_id={} bundle={}; 原因：套装尚未配置子物品；"
-                                + "解决方案：在游戏物品管理中展开该套装并添加至少一个子物品",
-                        order.getId(), tradeItemName);
-                return;
-            }
-            List<Integer> childItemIds = relations.stream().map(ItemBundleRelation::getItemId).collect(Collectors.toList());
-            Map<Integer, GameItem> childItemMap = gameItemService.listByIds(childItemIds).stream()
-                    .collect(Collectors.toMap(GameItem::getId, i -> i));
-            BigDecimal totalAmount = BigDecimal.ZERO;
-            for (ItemBundleRelation rel : relations) {
-                GameItem child = childItemMap.get(rel.getItemId());
-                if (child == null) continue;
-                int qty = rel.getQuantity() != null && rel.getQuantity() > 0 ? rel.getQuantity() : 1;
-                GameItemOrderDetail detail = buildDetail(order.getId(), child, regionId, matchedItem.getName(), qty);
-                orderDetailService.save(detail);
-                totalAmount = totalAmount.add(detail.getSubtotal());
-            }
-            order.setTotalAmount(totalAmount);
-        } else {
-            // 单物品
-            GameItemOrderDetail detail = buildDetail(order.getId(), matchedItem, regionId, null, 1);
-            orderDetailService.save(detail);
-            order.setTotalAmount(detail.getSubtotal());
-        }
-        orderService.updateById(order);
-        log.info("[Order] 自动创建子订单明细 order_id={} item={} bundle={}",
-                order.getId(), tradeItemName,
-                Integer.valueOf(1).equals(matchedItem.getIsBundle()) ? matchedItem.getName() : "-");
-    }
-
-    private GameItemOrderDetail buildDetail(int orderId, GameItem item, int regionId, String bundleName, int quantity) {
-        GameItemOrderDetail detail = new GameItemOrderDetail();
-        detail.setOrderId(orderId);
-        detail.setItemId(item.getId());
-        detail.setItemName(item.getName());
-        detail.setItemImage(item.getImage());
-        detail.setItemSelectedImage(item.getSelectedImage());
-        detail.setQuantity(quantity);
-        BigDecimal price = item.getPrice() != null ? item.getPrice() : BigDecimal.ZERO;
-        detail.setUnitPrice(price);
-        detail.setSubtotal(price.multiply(BigDecimal.valueOf(quantity)));
-        detail.setBundleName(bundleName);
-        // 从大区物品库存获取进货价/出货价快照
-        if (regionId > 0) {
-            GameRegionInventory inventory = regionItemService.getOne(
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<GameRegionInventory>()
-                            .eq(GameRegionInventory::getRegionId, regionId)
-                            .eq(GameRegionInventory::getItemId, item.getId())
-                            .eq(GameRegionInventory::getIsActive, 1), false);
-            if (inventory != null) {
-                detail.setPurchasePrice(inventory.getPurchasePrice());
-            }
-        }
-        return detail;
-    }
 }

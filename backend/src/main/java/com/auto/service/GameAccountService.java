@@ -13,4 +13,7 @@ public interface GameAccountService extends IService<GameAccount> {
                               List<String> status, String keyword, Page<GameAccount> page);
 
     List<GameAccount> findIdleByGameAndRegion(Integer gameId, Integer regionId);
+
+    /** 查找支持指定游戏和大区的全部启用账号，供忙碌机器排队选择使用。 */
+    List<GameAccount> findActiveByGameAndRegion(Integer gameId, Integer regionId);
 }

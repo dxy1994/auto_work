@@ -57,6 +57,21 @@ public class SystemAlertServiceImpl extends ServiceImpl<SystemAlertMapper, Syste
         if (alert == null) {
             throw ApiException.notFound("提醒不存在");
         }
+        return dismissAlert(alert);
+    }
+
+    @Override
+    @Transactional
+    public SystemAlert dismissBySourceKey(String sourceKey) {
+        SystemAlert alert = getOne(new LambdaQueryWrapper<SystemAlert>()
+                .eq(SystemAlert::getSourceKey, sourceKey), false);
+        if (alert == null) {
+            return null;
+        }
+        return dismissAlert(alert);
+    }
+
+    private SystemAlert dismissAlert(SystemAlert alert) {
         if (!"dismissed".equals(alert.getStatus())) {
             LocalDateTime now = LocalDateTime.now();
             alert.setStatus("dismissed");

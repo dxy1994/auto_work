@@ -8,7 +8,7 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 
-/** 可由总控用户手动关闭的系统运行提醒。 */
+/** 系统运行提醒；支持人工关闭，也可在对应故障恢复后自动关闭。 */
 @TableName("system_alerts")
 @Getter
 @Setter

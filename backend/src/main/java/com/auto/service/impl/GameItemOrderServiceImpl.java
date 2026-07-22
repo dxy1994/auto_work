@@ -21,11 +21,14 @@ public class GameItemOrderServiceImpl extends ServiceImpl<GameItemOrderMapper, G
         implements GameItemOrderService {
 
     @Override
-    public IPage<GameItemOrder> search(Integer gameId, String status, String keyword, Page<GameItemOrder> page) {
+    public IPage<GameItemOrder> search(Integer gameId, String status, String deliveryStatus,
+                                       String keyword, Page<GameItemOrder> page) {
         LambdaQueryWrapper<GameItemOrder> w = new LambdaQueryWrapper<>();
         w.eq(gameId != null, GameItemOrder::getGameId, gameId)
-                .eq(status != null, GameItemOrder::getStatus, status)
-                .and(keyword != null, q -> q.like(GameItemOrder::getOrderNo, keyword)
+                .eq(status != null && !status.isBlank(), GameItemOrder::getStatus, status)
+                .eq(deliveryStatus != null && !deliveryStatus.isBlank(),
+                        GameItemOrder::getDeliveryStatus, deliveryStatus)
+                .and(keyword != null && !keyword.isBlank(), q -> q.like(GameItemOrder::getOrderNo, keyword)
                         .or().like(GameItemOrder::getCustomerName, keyword))
                 .orderByDesc(GameItemOrder::getId);
         return page(page, w);

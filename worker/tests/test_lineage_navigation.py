@@ -7,6 +7,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game_executor.executor.lineage_classic.navigation import (
+    ClientWindow,
     LineageSessionNavigator,
     NavigationError,
     TargetRegion,
@@ -28,6 +29,7 @@ from game_executor.executor.lineage_classic.executor import (
     customer_name_prefix_matches,
     region_center,
 )
+from game_executor.status import RuntimeStatus
 
 
 ORDER = {
@@ -36,6 +38,7 @@ ORDER = {
     "region_name": "冥王哈迪斯",
     "region_code": "아툰",
     "region_sort_order": 11,
+    "region_select_page": 1,
     "region_select_x": 310,
     "region_select_y": 154,
     "asset_type": "adena",
@@ -48,6 +51,141 @@ ORDER = {
         "recognition_image_selected_url": "/uploads/images/adena-selected.png",
     }],
 }
+
+
+def _instant_navigator(vision):
+    return SimpleNamespace(
+        vision=vision,
+        wait_for_step=lambda _name, predicate, **_kwargs: predicate(),
+    )
+
+
+class RuntimeProbeTest(unittest.TestCase):
+    def test_minimized_window_is_restored_before_runtime_probe(self):
+        window = mock.Mock()
+        window.client_size.return_value = (0, 0)
+        window.restore.return_value = (800, 600)
+        runtime = RuntimeStatus()
+        executor = LineageClassicExecutor(mock.Mock(), runtime)
+        navigator = mock.Mock()
+        navigator._is_in_game.return_value = True
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.ClientWindow.find",
+            return_value=window,
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.executor.TemplateVision"
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.executor.LineageSessionNavigator",
+            return_value=navigator,
+        ), mock.patch("builtins.print") as output:
+            ready = executor.probe_runtime()
+
+        self.assertTrue(ready)
+        window.restore.assert_called_once()
+        window.focus.assert_called_once()
+        window.validate_size.assert_called_once_with((800, 600))
+        self.assertEqual("logged_in", runtime.snapshot()["client_status"])
+        self.assertEqual("ready", runtime.snapshot()["ui_health"])
+        self.assertTrue(any("已自动恢复" in call.args[0] for call in output.call_args_list))
+
+    def test_minimized_window_stays_recoverable_when_restore_needs_more_time(self):
+        window = mock.Mock()
+        window.client_size.return_value = (0, 0)
+        window.restore.return_value = (0, 0)
+        runtime = RuntimeStatus()
+        executor = LineageClassicExecutor(mock.Mock(), runtime)
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.ClientWindow.find",
+            return_value=window,
+        ), mock.patch("builtins.print") as output:
+            ready = executor.probe_runtime()
+
+        self.assertFalse(ready)
+        self.assertEqual("not_ready", runtime.snapshot()["client_status"])
+        self.assertEqual("recoverable", runtime.snapshot()["ui_health"])
+        self.assertTrue(any("下次心跳重试" in call.args[0] for call in output.call_args_list))
+
+    def test_restored_window_stays_recoverable_when_focus_is_temporarily_denied(self):
+        window = mock.Mock()
+        window.client_size.return_value = (0, 0)
+        window.restore.return_value = (800, 600)
+        window.focus.side_effect = NavigationError("Windows 暂时拒绝前台切换")
+        runtime = RuntimeStatus()
+        executor = LineageClassicExecutor(mock.Mock(), runtime)
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.ClientWindow.find",
+            return_value=window,
+        ), mock.patch("builtins.print") as output:
+            ready = executor.probe_runtime()
+
+        self.assertFalse(ready)
+        self.assertEqual("not_ready", runtime.snapshot()["client_status"])
+        self.assertEqual("recoverable", runtime.snapshot()["ui_health"])
+        self.assertTrue(any("无法切换到前台" in call.args[0] for call in output.call_args_list))
+
+    def test_client_window_restore_waits_for_nonzero_client_size(self):
+        window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
+        fake_gui = mock.Mock()
+        fake_gui.IsIconic.side_effect = [True, False, False]
+        fake_gui.GetClientRect.side_effect = [
+            (0, 0, 0, 0),
+            (0, 0, 800, 600),
+        ]
+        fake_con = SimpleNamespace(SW_RESTORE=9)
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32gui", fake_gui
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32con", fake_con
+        ):
+            size = window.restore(timeout=0.1)
+
+        self.assertEqual((800, 600), size)
+        fake_gui.ShowWindowAsync.assert_called_once_with(123, 9)
+
+    def test_client_window_restore_uses_fallback_strategies(self):
+        window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
+        fake_gui = mock.Mock()
+        fake_gui.IsIconic.side_effect = [True, False]
+        fake_gui.ShowWindowAsync.side_effect = OSError("async restore rejected")
+        fake_con = SimpleNamespace(SW_RESTORE=9, WM_SYSCOMMAND=0x0112, SC_RESTORE=0xF120)
+
+        with mock.patch.object(
+            window, "client_size", return_value=(0, 0)
+        ), mock.patch.object(
+            window, "_wait_for_restored_size", side_effect=[(0, 0), (800, 600)]
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32gui", fake_gui
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32con", fake_con
+        ):
+            size = window.restore(timeout=0.2)
+
+        self.assertEqual((800, 600), size)
+        fake_gui.PostMessage.assert_called_once_with(123, 0x0112, 0xF120, 0)
+        fake_gui.ShowWindow.assert_called_once_with(123, 9)
+
+    def test_client_window_restore_failure_mentions_matching_admin_privileges(self):
+        window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
+        fake_gui = mock.Mock()
+        fake_gui.IsIconic.return_value = True
+        denied = PermissionError("access denied")
+        fake_gui.ShowWindowAsync.side_effect = denied
+        fake_gui.PostMessage.side_effect = denied
+        fake_gui.ShowWindow.side_effect = denied
+        fake_con = SimpleNamespace(SW_RESTORE=9, WM_SYSCOMMAND=0x0112, SC_RESTORE=0xF120)
+
+        with mock.patch.object(
+            window, "client_size", return_value=(0, 0)
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32gui", fake_gui
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32con", fake_con
+        ), self.assertRaisesRegex(NavigationError, "管理员身份"):
+            window.restore(timeout=0.2)
 
 
 class _Window:
@@ -83,7 +221,6 @@ class _Hardware:
 
 class _Vision:
     CENTERS = {
-        Ui.IN_GAME: (95, 459),
         Ui.MENU_BUTTON: (775, 70),
         Ui.EXIT_PANEL_TRIGGER: (745, 90),
         Ui.RELOGIN_BUTTON: (700, 160),
@@ -121,8 +258,6 @@ class _Vision:
         self.find_image_calls = []
 
     def find(self, template, _region, threshold=0.84):
-        if template == Ui.IN_GAME:
-            return self.CENTERS[template] if self.state == "game" else None
         if template == Ui.CHARACTER_SCREEN:
             return self.CENTERS[template] if self.state == "character" else None
         if template == Ui.SERVER_SCREEN:
@@ -184,6 +319,81 @@ class _Vision:
 
 
 class LineageNavigationTest(unittest.TestCase):
+    def test_screen_step_wait_uses_business_delay_and_three_detection_attempts(self):
+        sleeps = []
+        random_ranges = []
+        outcomes = iter([False, False, (320, 180)])
+        navigator = LineageSessionNavigator(
+            mock.Mock(),
+            _Window(),
+            mock.Mock(),
+            sleep=sleeps.append,
+            random_uniform=lambda low, high: (
+                random_ranges.append((low, high)) or 7.0
+            ),
+        )
+
+        with mock.patch("builtins.print") as output:
+            result = navigator.wait_for_step(
+                "进入新画面",
+                lambda: next(outcomes),
+                profile="screen",
+            )
+
+        self.assertEqual((320, 180), result)
+        self.assertEqual([(3.0, 10.0)], random_ranges)
+        # 画面切换：固定 3 + 随机 7，前两次未就绪各等待 2 秒。
+        self.assertAlmostEqual(14.0, sum(sleeps), places=5)
+        self.assertTrue(any("第 3/3 次 已就绪" in call.args[0] for call in output.call_args_list))
+
+    def test_failed_step_only_reports_error_after_three_checks(self):
+        checks = 0
+        navigator = LineageSessionNavigator(
+            mock.Mock(),
+            _Window(),
+            mock.Mock(),
+            sleep=lambda _seconds: None,
+            random_uniform=lambda low, _high: low,
+        )
+
+        def not_ready():
+            nonlocal checks
+            checks += 1
+            return None
+
+        with mock.patch("builtins.print") as output:
+            result = navigator.wait_for_step(
+                "等待按钮",
+                not_ready,
+                profile="panel",
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(3, checks)
+        self.assertTrue(any("连续 3 次检测" in call.args[0] for call in output.call_args_list))
+
+    def test_item_drag_delay_is_shorter_than_screen_transition(self):
+        screen_sleeps = []
+        item_sleeps = []
+        screen = LineageSessionNavigator(
+            mock.Mock(), _Window(), mock.Mock(),
+            sleep=screen_sleeps.append,
+            random_uniform=lambda _low, high: high,
+        )
+        item = LineageSessionNavigator(
+            mock.Mock(), _Window(), mock.Mock(),
+            sleep=item_sleeps.append,
+            random_uniform=lambda _low, high: high,
+        )
+
+        with mock.patch("builtins.print"):
+            screen.wait_after_step("切换画面", profile="screen")
+            item.wait_after_step("拖拽物品", profile="item_drag")
+
+        self.assertAlmostEqual(13.0, sum(screen_sleeps), places=5)
+        self.assertAlmostEqual(1.4, sum(item_sleeps), places=5)
+        self.assertGreater(sum(screen_sleeps), sum(item_sleeps) * 5)
+
     def test_buyer_ocr_at_90_or_above_auto_accepts_only_matching_name(self):
         self.assertEqual("accept", buyer_ocr_action("홍길동이", "홍길동", 90.0))
         self.assertEqual("review", buyer_ocr_action("홍길순", "홍길동", 99.0))
@@ -224,7 +434,7 @@ class LineageNavigationTest(unittest.TestCase):
             ],
         }
 
-        transfers = executor._build_transfers(order, SimpleNamespace(vision=vision))
+        transfers = executor._build_transfers(order, _instant_navigator(vision))
 
         self.assertEqual([((620, 80), 3), ((660, 80), 2)], [
             (transfer.source, transfer.quantity) for transfer in transfers
@@ -248,7 +458,7 @@ class LineageNavigationTest(unittest.TestCase):
             }],
         }
 
-        transfers = executor._build_transfers(order, SimpleNamespace(vision=vision))
+        transfers = executor._build_transfers(order, _instant_navigator(vision))
 
         self.assertEqual([((680, 200), 1000000)], [
             (transfer.source, transfer.quantity) for transfer in transfers
@@ -268,7 +478,7 @@ class LineageNavigationTest(unittest.TestCase):
 
         with self.assertRaisesRegex(NavigationError, "缺少选中状态识别图片"):
             executor._build_transfers(
-                order, SimpleNamespace(vision=_Vision(inventory_open=True))
+                order, _instant_navigator(_Vision(inventory_open=True))
             )
 
     def test_trade_timeout_uses_order_value_and_safe_bounds(self):
@@ -284,7 +494,6 @@ class LineageNavigationTest(unittest.TestCase):
             self.skipTest(str(exc))
         templates = (
             Ui.INVENTORY_BUTTON,
-            Ui.IN_GAME,
             Ui.MENU_BUTTON,
             Ui.EXIT_PANEL_TRIGGER,
             Ui.RELOGIN_BUTTON,
@@ -329,6 +538,7 @@ class LineageNavigationTest(unittest.TestCase):
     def test_target_region_uses_coordinates_from_central_order(self):
         target = TargetRegion.from_order(ORDER)
         self.assertEqual((310, 154), (target.select_x, target.select_y))
+        self.assertEqual(1, target.select_page)
 
     def test_target_region_allows_no_coordinates_but_rejects_partial_or_out_of_bounds(self):
         missing = {key: value for key, value in ORDER.items() if key != "region_select_x"}
@@ -343,6 +553,10 @@ class LineageNavigationTest(unittest.TestCase):
         target = TargetRegion.from_order(without_coordinates)
         self.assertIsNone(target.select_x)
         self.assertIsNone(target.select_y)
+
+    def test_target_region_rejects_invalid_page_number(self):
+        with self.assertRaisesRegex(NavigationError, "页码"):
+            TargetRegion.from_order({**ORDER, "region_select_page": 0})
 
     def test_server_selection_prefers_exact_central_coordinate_without_ocr(self):
         vision = _Vision(state="server", server_text="켄라우헬", ocr_point=None)
@@ -450,7 +664,7 @@ class LineageNavigationTest(unittest.TestCase):
             calls[0]["text_recognition_model_name"],
         )
 
-    def test_same_region_only_opens_inventory(self):
+    def test_same_region_still_reselects_region_before_opening_inventory(self):
         vision = _Vision(current_text=ORDER["region_code"], inventory_open=False)
         window = _Window()
         navigator = LineageSessionNavigator(
@@ -460,6 +674,9 @@ class LineageNavigationTest(unittest.TestCase):
         target = navigator.ensure_target_region(ORDER)
 
         self.assertEqual(ORDER["region_id"], target.region_id)
+        self.assertTrue(vision.menu_open)
+        self.assertTrue(vision.exit_panel_open)
+        self.assertTrue(vision.character_selected)
         self.assertTrue(vision.inventory_open)
         self.assertEqual("game", vision.state)
         self.assertTrue(window.focused)

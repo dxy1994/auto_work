@@ -25,5 +25,16 @@ class ExecutorRegistry:
             return None
         return self._executors.get(game_code.strip().lower())
 
+    def executors(self) -> tuple[BaseGameExecutor, ...]:
+        """返回去重后的执行器；同一游戏的多个别名只检查一次。"""
+        results: list[BaseGameExecutor] = []
+        seen: set[int] = set()
+        for executor in self._executors.values():
+            identity = id(executor)
+            if identity not in seen:
+                seen.add(identity)
+                results.append(executor)
+        return tuple(results)
+
 
 EXECUTOR_REGISTRY = ExecutorRegistry()

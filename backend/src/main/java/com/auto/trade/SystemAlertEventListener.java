@@ -9,7 +9,7 @@ import com.auto.service.SystemAlertService;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
-/** 将机器和订单监控掉线事件持久化为总控可关闭提醒。 */
+/** 将掉线事件持久化为提醒，并在机器恢复连接后自动关闭机器掉线提醒。 */
 @Component
 public class SystemAlertEventListener {
 
@@ -40,10 +40,15 @@ public class SystemAlertEventListener {
                 .findByMachineIdActive(event.machineId()).isEmpty();
         String title = monitorMachine ? "订单监控机器已掉线" : "机器已掉线";
         String message = "原因：" + safe(event.reason(), "Worker 连接已断开")
-                + "。解决方案：检查机器 " + name + " 的进程和网络，重新连接总控；确认恢复后可手动关闭本提醒。";
+                + "。解决方案：检查机器 " + name + " 的进程和网络，重新连接总控；重连成功后本提醒会自动移除。";
         alertService.openOrRefresh(
                 "machine_offline", "machine:" + event.machineId() + ":offline",
                 event.machineId(), null, "critical", title, message);
+    }
+
+    @EventListener
+    public void onMachineSessionRestored(MachineSessionRestored event) {
+        alertService.dismissBySourceKey("machine:" + event.machineId() + ":offline");
     }
 
     @EventListener

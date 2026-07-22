@@ -34,6 +34,16 @@ public class TradeDispatchController {
         try {
             TradeOffer offer = coordinator.dispatch(orderId);
             Map<String, Object> response = new LinkedHashMap<>();
+            if (offer == null) {
+                GameItemOrder queued = orderService.getById(orderId);
+                response.put("assignment_id", null);
+                response.put("order_id", orderId);
+                response.put("machine_id", queued == null ? null : queued.getAssignedMachineId());
+                response.put("game_account_id", queued == null ? null : queued.getGameAccountId());
+                response.put("lease_expires_at", null);
+                response.put("delivery_status", "queued");
+                return response;
+            }
             response.put("assignment_id", offer.assignmentId());
             response.put("order_id", offer.orderId());
             response.put("machine_id", offer.machineId());

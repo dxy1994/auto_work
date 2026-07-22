@@ -56,7 +56,7 @@ public class GameRegionController {
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     public GameRegion create(@RequestBody GameRegion payload) {
-        validateSelectCoordinates(payload);
+        validateNavigation(payload);
         if (regionService.findByGameIdAndCode(payload.getGameId(), payload.getCode()) != null) {
             throw ApiException.badRequest("该游戏下大区编码 " + payload.getCode() + " 已存在");
         }
@@ -64,6 +64,7 @@ public class GameRegionController {
         int autoSort = (maxSort == null ? 0 : maxSort) + 1;
         payload.setId(null);
         if (payload.getSortOrder() == null) payload.setSortOrder(autoSort);
+        if (payload.getSelectPage() == null) payload.setSelectPage(1);
         payload.setIsActive(1);
         regionService.save(payload);
         initRegionInventory(payload);
@@ -92,12 +93,13 @@ public class GameRegionController {
     public GameRegion update(@PathVariable Integer regionId, @RequestBody GameRegion payload) {
         GameRegion r = regionService.getById(regionId);
         if (r == null) throw ApiException.notFound("大区不存在");
-        validateSelectCoordinates(payload);
+        validateNavigation(payload);
         if (payload.getName() != null) r.setName(payload.getName());
         if (payload.getCode() != null) r.setCode(payload.getCode());
         if (payload.getSortOrder() != null) r.setSortOrder(payload.getSortOrder());
         r.setSelectX(payload.getSelectX());
         r.setSelectY(payload.getSelectY());
+        if (payload.getSelectPage() != null) r.setSelectPage(payload.getSelectPage());
         if (payload.getIsActive() != null) r.setIsActive(payload.getIsActive());
         regionService.updateById(r);
         return r;
@@ -111,7 +113,10 @@ public class GameRegionController {
         regionService.removeById(regionId);
     }
 
-    private void validateSelectCoordinates(GameRegion payload) {
+    private void validateNavigation(GameRegion payload) {
+        if (payload.getSelectPage() != null && payload.getSelectPage() < 1) {
+            throw ApiException.badRequest("大区页码必须大于或等于 1");
+        }
         Integer x = payload.getSelectX();
         Integer y = payload.getSelectY();
         if (x == null && y == null) return;

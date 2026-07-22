@@ -18,6 +18,7 @@ class TradeDispatchCoordinatorRegionPayloadTest {
         region.setName("冥王哈迪斯");
         region.setCode("아툰");
         region.setSortOrder(11);
+        region.setSelectPage(2);
         region.setSelectX(310);
         region.setSelectY(154);
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -27,6 +28,7 @@ class TradeDispatchCoordinatorRegionPayloadTest {
         assertEquals("冥王哈迪斯", payload.get("region_name"));
         assertEquals("아툰", payload.get("region_code"));
         assertEquals(11, payload.get("region_sort_order"));
+        assertEquals(2, payload.get("region_select_page"));
         assertEquals(310, payload.get("region_select_x"));
         assertEquals(154, payload.get("region_select_y"));
     }

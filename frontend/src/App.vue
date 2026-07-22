@@ -202,7 +202,7 @@
     <div class="alert-drawer-toolbar">
       <div>
         <div class="alert-count-title">共 {{ manualAlerts.total }} 条待处理提醒</div>
-        <div class="alert-count-hint">订单异常恢复后自动移除；掉线提醒需手动关闭</div>
+        <div class="alert-count-hint">订单异常恢复后自动移除；机器掉线提醒在重连后自动移除</div>
       </div>
       <div class="alert-actions">
         <el-button

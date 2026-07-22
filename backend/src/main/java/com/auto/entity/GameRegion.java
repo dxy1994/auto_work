@@ -32,6 +32,9 @@ public class GameRegion {
 
     private Integer selectY;
 
+    /** 大区在游戏客户端服务器列表中的页码，从 1 开始。 */
+    private Integer selectPage = 1;
+
     private Integer isActive = 1;
 
     @TableField(fill = FieldFill.INSERT)

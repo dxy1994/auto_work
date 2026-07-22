@@ -8,6 +8,7 @@ public enum TradeDeliveryStatus {
     DETECTED,
     VALIDATED,
     WAITING_ASSIGNMENT,
+    QUEUED,
     OFFERED,
     ASSIGNED,
     PRECHECKING,
@@ -36,7 +37,8 @@ public enum TradeDeliveryStatus {
         return switch (this) {
             case DETECTED -> EnumSet.of(VALIDATED, SUSPENDED, CANCELLED);
             case VALIDATED -> EnumSet.of(WAITING_ASSIGNMENT, SUSPENDED, CANCELLED);
-            case WAITING_ASSIGNMENT -> EnumSet.of(OFFERED, SUSPENDED, CANCELLED);
+            case WAITING_ASSIGNMENT -> EnumSet.of(QUEUED, OFFERED, SUSPENDED, CANCELLED);
+            case QUEUED -> EnumSet.of(OFFERED, SUSPENDED, CANCELLED);
             case OFFERED -> EnumSet.of(WAITING_ASSIGNMENT, ASSIGNED, SUSPENDED, CANCELLED);
             case ASSIGNED -> EnumSet.of(PRECHECKING, SUSPENDED, CANCELLED);
             case PRECHECKING -> EnumSet.of(WAITING_BUYER, SUSPENDED);

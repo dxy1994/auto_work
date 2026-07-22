@@ -18,11 +18,12 @@ from common.context import AppContext
 from common.client import AgentClient
 from common.reporter import Reporter
 from common.autostart import handle_autostart_args
+from game_executor.audio import speak_text
 from game_executor.status import RuntimeStatus
 from game_executor.gate import TradeTaskGate
 from game_executor.executor.registry import EXECUTOR_REGISTRY
 from game_executor.executor.hardware.controller import HardwareController
-from game_executor.executor.hardware.log_only import LogOnlyHardwareController
+from game_executor.executor.hardware.manual import ManualActionHardwareController
 from game_executor.executor.lineage_classic import LineageClassicExecutor
 from game_executor.executor.lineage_classic.policy import execution_timeout_seconds
 from game_executor import config as executor_config
@@ -46,29 +47,11 @@ TERMINAL_TRADE_STATUSES = {
 }
 
 
-def _dry_run_terminal_result(result: dict, executor) -> dict:
-    """真实指令演练永远不能上报交易完成。"""
-    planned_actions = getattr(getattr(executor, "_hw", None), "planned_actions", 0)
-    original_status = result.get("status") or (
-        "completed" if result.get("success") else "failed"
-    )
-    original_message = result.get("message", "")
-    return {
-        "success": False,
-        "status": "cancelled",
-        "error_code": "DRY_RUN_NO_HID",
-        "message": (
-            "真实订单日志演练结束，未发送任何 HID 指令；"
-            f"planned_actions={planned_actions}, "
-            f"original_status={original_status}, original_message={original_message}"
-        ),
-        "duration_ms": result.get("duration_ms", 0),
-    }
-
-
 def _create_hardware_controller():
-    if executor_config.DRY_RUN:
-        return LogOnlyHardwareController()
+    if executor_config.MANUAL_ACTIONS:
+        return ManualActionHardwareController(
+            action_wait_seconds=executor_config.MANUAL_ACTION_WAIT_SECONDS
+        )
     return HardwareController(executor_config.ESP32_HOST)
 
 
@@ -103,8 +86,6 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
             executor.execute(order),
             timeout=execution_timeout_seconds(order),
         )
-        if executor_config.DRY_RUN:
-            result = _dry_run_terminal_result(result, executor)
         success = bool(result.get("success"))
         terminal_status = result.get("status", "completed" if success else "failed")
         if terminal_status not in TERMINAL_TRADE_STATUSES:
@@ -117,20 +98,12 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
         )
     except asyncio.TimeoutError:
         executor.cancel()
-        if executor_config.DRY_RUN:
-            reporter.report_trade_status(
-                assignment_id,
-                "cancelled",
-                "真实订单日志演练达到正式执行超时，未发送任何 HID 指令",
-                "DRY_RUN_NO_HID",
-            )
-        else:
-            reporter.report_trade_status(
-                assignment_id,
-                "verification_failed",
-                "worker execution watchdog timed out; result may be uncertain",
-                "EXECUTION_WATCHDOG_TIMEOUT",
-            )
+        reporter.report_trade_status(
+            assignment_id,
+            "verification_failed",
+            "worker execution watchdog timed out; result may be uncertain",
+            "EXECUTION_WATCHDOG_TIMEOUT",
+        )
     except asyncio.CancelledError:
         executor.cancel()
         reporter.report_trade_status(
@@ -253,6 +226,55 @@ async def _dispatch_message(msg, ctx: AppContext):
         print(f"[GameExecutor] 未知消息类型: {mtype}")
 
 
+def _game_display_name(executor) -> str:
+    return str(
+        getattr(executor, "game_name", None)
+        or getattr(executor, "game_code", None)
+        or "未知游戏"
+    ).strip()
+
+
+async def _probe_connected_games(ctx: AppContext) -> str:
+    """总控注册成功后立即检查全部游戏，返回需要语音播报的内容。"""
+    alerts: list[str] = []
+    for executor in EXECUTOR_REGISTRY.executors():
+        probe = getattr(executor, "probe_runtime", None)
+        if not callable(probe):
+            continue
+
+        game_name = _game_display_name(executor)
+        try:
+            ready = bool(await asyncio.to_thread(probe))
+        except Exception as exc:
+            ready = False
+            ctx.runtime_status.update(client_status="not_ready", ui_health="unhealthy")
+            print(f"[GameExecutor] {game_name}连接后运行态检查异常: {exc}")
+
+        snapshot = ctx.runtime_status.snapshot()
+        client_ready = snapshot.get("client_status") == "logged_in"
+        ui_health = snapshot.get("ui_health")
+        if ready and client_ready and ui_health == "ready":
+            print(f"[GameExecutor] {game_name}游戏状态正常")
+            continue
+
+        if ui_health in {"recoverable", "starting"}:
+            alerts.append(f"{game_name}游戏状态暂未就绪，程序正在自动恢复")
+        else:
+            alerts.append(f"{game_name}游戏状态异常，请检查游戏客户端")
+
+    return "。".join(alerts) + ("。" if alerts else "")
+
+
+async def _send_runtime_heartbeat(client, ctx: AppContext) -> None:
+    await client.send({
+        "type": "heartbeat",
+        "runtime": {
+            "role": "game_executor",
+            **ctx.runtime_status.snapshot(),
+        },
+    })
+
+
 # ═══════════════════════════════════════════════════════════
 # 连接管理
 # ═══════════════════════════════════════════════════════════
@@ -260,19 +282,9 @@ async def _dispatch_message(msg, ctx: AppContext):
 async def _heartbeat(client, ctx: AppContext):
     while True:
         await asyncio.sleep(config.HEARTBEAT_INTERVAL)
-        snapshot = ctx.runtime_status.snapshot()
-        if snapshot.get("executor_status") == "idle":
-            executor = EXECUTOR_REGISTRY.get("lineage_classic")
-            probe = getattr(executor, "probe_runtime", None)
-            if callable(probe):
-                await asyncio.to_thread(probe)
-        await client.send({
-            "type": "heartbeat",
-            "runtime": {
-                "role": "game_executor",
-                **ctx.runtime_status.snapshot(),
-            },
-        })
+        # 空闲心跳只上报最近一次状态，不触碰游戏窗口。
+        # 窗口恢复/激活仅发生在注册后的单次检查以及收到交易任务后。
+        await _send_runtime_heartbeat(client, ctx)
 
 
 async def _connect_once(ctx: AppContext):
@@ -280,7 +292,7 @@ async def _connect_once(ctx: AppContext):
 
     info = config.get_machine_info()
     info["role"] = "game_executor"
-    info["execution_mode"] = "dry_run" if executor_config.DRY_RUN else "live"
+    info["execution_mode"] = "manual_actions" if executor_config.MANUAL_ACTIONS else "live"
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
         loop = asyncio.get_event_loop()
         client = AgentClient(ws, loop)
@@ -291,6 +303,7 @@ async def _connect_once(ctx: AppContext):
         print(f"[GameExecutor] 已连接总控，注册中: {info}")
 
         hb = asyncio.create_task(_heartbeat(client, ctx))
+        announcement_tasks: set[asyncio.Task] = set()
         try:
             async for raw in ws:
                 try:
@@ -299,6 +312,15 @@ async def _connect_once(ctx: AppContext):
                     continue
                 if msg.get("type") == "registered":
                     print(f"[GameExecutor] 注册成功 machine_id={msg.get('machine_id')}")
+                    alert_text = await _probe_connected_games(ctx)
+                    await _send_runtime_heartbeat(client, ctx)
+                    if alert_text:
+                        task = asyncio.create_task(
+                            asyncio.to_thread(speak_text, alert_text),
+                            name="game-runtime-voice-alert",
+                        )
+                        announcement_tasks.add(task)
+                        task.add_done_callback(announcement_tasks.discard)
                     continue
                 await _dispatch_message(msg, ctx)
         finally:
@@ -324,7 +346,6 @@ async def main_loop():
             raise RuntimeError("failed to connect game executor hardware controller")
         executor = LineageClassicExecutor(hardware, runtime_status)
         EXECUTOR_REGISTRY.register(executor)
-        await asyncio.to_thread(executor.probe_runtime)
 
     while True:
         try:
@@ -337,10 +358,10 @@ async def main_loop():
 def start():
     """启动独立的游戏执行 Worker。"""
     print(f"[GameExecutor] 启动，总控地址: {config.BACKEND_WS_URL}")
-    if executor_config.DRY_RUN:
+    if executor_config.MANUAL_ACTIONS:
         print(
-            "[GameExecutor] 警告：真实订单日志演练模式已启用；"
-            "所有等待和识别保持正式行为，HID 指令发送数恒为 0"
+            "[GameExecutor] 人工操作测试模式已启用：订单、识别、等待和终态上报均为真实流程；"
+            "程序不会发送 HID，请按 [MANUAL-ACTION] 日志手动操作游戏"
         )
     asyncio.run(main_loop())
 

@@ -13,4 +13,6 @@ public interface SystemAlertService extends IService<SystemAlert> {
                               Integer accountId, String severity, String title, String message);
 
     SystemAlert dismiss(long alertId);
+
+    SystemAlert dismissBySourceKey(String sourceKey);
 }

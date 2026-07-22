@@ -40,7 +40,7 @@ public class GameItemOrderDetail {
 
     private BigDecimal sellingPrice;
 
-    /** pending / processing / completed / failed。 */
+    /** pending / processing / completed / failed / cancelled。 */
     private String status = "pending";
 
     private String remark;

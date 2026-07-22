@@ -80,6 +80,15 @@ public class GameItemServiceImpl extends ServiceImpl<GameItemMapper, GameItem> i
     }
 
     @Override
+    public GameItem findActiveByGameIdAndCodeOrName(Integer gameId, String codeOrName) {
+        GameItem matchedByCode = findByGameIdAndCode(gameId, codeOrName);
+        if (matchedByCode != null && Integer.valueOf(1).equals(matchedByCode.getIsActive())) {
+            return matchedByCode;
+        }
+        return findByGameIdAndName(gameId, codeOrName);
+    }
+
+    @Override
     public List<GameItem> findByGameIdActive(Integer gameId) {
         return list(new LambdaQueryWrapper<GameItem>()
                 .eq(GameItem::getGameId, gameId)

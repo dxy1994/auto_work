@@ -11,7 +11,7 @@ public class NoSubOrderAction implements TransitionAction {
     @Override
     public void execute(GameItemOrder order, DeliveryState from, DeliveryState to, Map<String, Object> context) {
         order.setLastErrorCode("SUB_ORDER_MISSING");
-        order.setLastErrorMessage("原因：招呼成功，但未生成任何子订单，可能是 %物品名% 与游戏物品名称不一致，或套装未配置子物品。"
-                + "解决方案：检查平台标题中的 %物品名%，确认游戏物品管理中存在同名物品；若为套装，请配置套装子物品后重试。");
+        order.setLastErrorMessage("原因：招呼成功，但未生成任何子订单，可能是 %物品名或编码% 未匹配启用物品，或套装未配置子物品。"
+                + "解决方案：检查平台标题中的 %物品名或编码%，确认游戏物品管理中存在名称或编码匹配的启用物品；若为套装，请配置套装子物品后重试。");
     }
 }

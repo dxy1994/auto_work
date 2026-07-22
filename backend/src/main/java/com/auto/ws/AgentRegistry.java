@@ -5,6 +5,7 @@ import com.auto.service.MachineService;
 import com.auto.trade.TradeOffer;
 import com.auto.trade.WorkerRuntimeStatus;
 import com.auto.trade.MachineSessionLost;
+import com.auto.trade.MachineSessionRestored;
 import com.auto.trade.OrderMonitorStopped;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -15,7 +16,9 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -32,6 +35,8 @@ public class AgentRegistry {
 
     /** machine_id -> WebSocket 会话。 */
     private final Map<Integer, WebSocketSession> agentConnections = new ConcurrentHashMap<>();
+    /** machine_id -> 当前 WebSocket 会话建立时间。 */
+    private final Map<Integer, LocalDateTime> agentConnectedAt = new ConcurrentHashMap<>();
     /** task_id -> machine_id。 */
     private final Map<String, Integer> taskToMachine = new ConcurrentHashMap<>();
     /** task_id -> 派发时的具体 Agent 会话，用于拒绝旧连接迟到结果。 */
@@ -89,6 +94,10 @@ public class AgentRegistry {
             m.setIsActive(1);
         }
         machineService.saveOrUpdate(m);
+        // 成功注册本身就是恢复证据；即使后端重启前数据库仍为 online，也要清理遗留掉线提醒。
+        if (m.getId() != null) {
+            eventPublisher.publishEvent(new MachineSessionRestored(m.getId()));
+        }
 
         String role = str(msg.get("role"));
         if (role != null) {
@@ -105,6 +114,7 @@ public class AgentRegistry {
                 failTasksForMachine(machineId, "worker 连接已被新会话替换，原任务中断");
             }
             agentConnections.put(machineId, session);
+            agentConnectedAt.put(machineId, LocalDateTime.now());
         }
         if (previous != null && previous != session) {
             try {
@@ -125,11 +135,15 @@ public class AgentRegistry {
     public void updateHeartbeat(int machineId, Map<String, Object> msg) {
         Machine m = machineService.getById(machineId);
         if (m != null) {
+            boolean restored = !"online".equals(m.getStatus());
             m.setLastHeartbeat(LocalDateTime.now());
             if (!"online".equals(m.getStatus())) {
                 m.setStatus("online");
             }
             machineService.updateById(m);
+            if (restored) {
+                eventPublisher.publishEvent(new MachineSessionRestored(machineId));
+            }
         }
         Object runtimeObj = msg.get("runtime");
         if (runtimeObj instanceof Map<?, ?> rawRuntime) {
@@ -168,6 +182,65 @@ public class AgentRegistry {
         return session != null && session.isOpen();
     }
 
+    /**
+     * 返回指定机器当前的实时会话快照。
+     *
+     * <p>只暴露总控诊断所需字段，不返回 WebSocket 请求头、属性或 URI。</p>
+     */
+    public Map<String, Object> getSessionSnapshot(int machineId) {
+        WebSocketSession session;
+        LocalDateTime connectedAt;
+        synchronized (taskLock) {
+            session = agentConnections.get(machineId);
+            connectedAt = agentConnectedAt.get(machineId);
+        }
+
+        boolean connected = session != null && session.isOpen();
+        WorkerRuntimeStatus runtime = runtimeStatuses.get(machineId);
+        String role = machineRoles.get(machineId);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("machine_id", machineId);
+        out.put("connected", connected);
+        out.put("session_id", connected ? session.getId() : null);
+        out.put("remote_address", connected && session.getRemoteAddress() != null
+                ? session.getRemoteAddress().toString() : null);
+        out.put("connected_at", connected ? connectedAt : null);
+        out.put("role", role);
+
+        List<Map<String, Object>> activeTasks = new ArrayList<>();
+        accountTasks.forEach((accountId, task) -> {
+            if (task != null && task.machineId == machineId) {
+                Map<String, Object> taskInfo = new LinkedHashMap<>();
+                taskInfo.put("account_id", accountId);
+                taskInfo.put("task_id", task.taskId);
+                taskInfo.put("status", task.status);
+                taskInfo.put("message", task.message);
+                taskInfo.put("start_time", task.startTime);
+                activeTasks.add(taskInfo);
+            }
+        });
+        out.put("active_tasks", activeTasks);
+
+        if (runtime == null) {
+            out.put("runtime", null);
+            return out;
+        }
+
+        Map<String, Object> runtimeInfo = new LinkedHashMap<>();
+        runtimeInfo.put("role", runtime.role());
+        runtimeInfo.put("game_id", runtime.gameId());
+        runtimeInfo.put("game_account_id", runtime.gameAccountId());
+        runtimeInfo.put("region_id", runtime.regionId());
+        runtimeInfo.put("client_status", runtime.clientStatus());
+        runtimeInfo.put("character_name", runtime.characterName());
+        runtimeInfo.put("executor_status", runtime.executorStatus());
+        runtimeInfo.put("current_assignment_id", runtime.currentAssignmentId());
+        runtimeInfo.put("ui_health", runtime.uiHealth());
+        out.put("runtime", runtimeInfo);
+        return out;
+    }
+
     public boolean isCurrentSession(int machineId, WebSocketSession session) {
         return session != null && agentConnections.get(machineId) == session;
     }
@@ -182,7 +255,14 @@ public class AgentRegistry {
 
     /** 机器断线：移除连接、置离线、清理任务镜像并唤醒等待中的 login Future。 */
     public void onAgentDisconnect(int machineId, WebSocketSession session) {
-        if (!agentConnections.remove(machineId, session)) {
+        boolean removed;
+        synchronized (taskLock) {
+            removed = agentConnections.remove(machineId, session);
+            if (removed) {
+                agentConnectedAt.remove(machineId);
+            }
+        }
+        if (!removed) {
             log.info("[Agent] 忽略已被新连接替换的旧会话断开 machine_id={}", machineId);
             return;
         }

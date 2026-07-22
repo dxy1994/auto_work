@@ -2,55 +2,85 @@ import os
 import sys
 import unittest
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game_executor.executor.registry import ExecutorRegistry
 from game_executor.gate import TradeTaskGate
-from game_executor.executor.hardware.log_only import LogOnlyHardwareController
+from game_executor.executor.hardware.manual import ManualActionHardwareController
 from game_executor.main import (
     _create_hardware_controller,
     _dispatch_message,
-    _dry_run_terminal_result,
+    _heartbeat,
+    _probe_connected_games,
+    _run_trade_assignment,
+    _send_runtime_heartbeat,
 )
 from game_executor.status import RuntimeStatus
+from game_executor.audio import speak_text
 from common.context import AppContext
 
 
 class _Executor:
     game_code = "lineage_classic"
     game_codes = ("lineage_classic", "리니지클래식")
+    game_name = "天堂经典版"
 
     async def execute(self, order):
         return {"success": True, "message": "ok", "duration_ms": 1}
 
 
+class _RuntimeProbeExecutor(_Executor):
+    def __init__(self, runtime, ready=False, ui_health="unhealthy"):
+        self.runtime = runtime
+        self.ready = ready
+        self.ui_health = ui_health
+        self.probe_calls = 0
+
+    def probe_runtime(self):
+        self.probe_calls += 1
+        self.runtime.update(
+            client_status="logged_in" if self.ready else "not_ready",
+            ui_health=self.ui_health,
+        )
+        return self.ready
+
+
 class GameExecutorCoreTest(unittest.TestCase):
-    def test_real_order_dry_run_uses_log_only_hardware(self):
-        with patch("game_executor.main.executor_config.DRY_RUN", True):
+    def test_voice_prefers_powershell_system_speech(self):
+        with patch(
+            "game_executor.audio._speak_with_powershell"
+        ) as powershell, patch(
+            "game_executor.audio._speak_with_sapi"
+        ) as sapi:
+            success = speak_text("天堂经典版游戏状态异常")
+
+        self.assertTrue(success)
+        powershell.assert_called_once_with("天堂经典版游戏状态异常")
+        sapi.assert_not_called()
+
+    def test_voice_falls_back_to_sapi_when_system_speech_is_unavailable(self):
+        with patch(
+            "game_executor.audio._speak_with_powershell",
+            side_effect=RuntimeError("System.Speech unavailable"),
+        ), patch("game_executor.audio._speak_with_sapi") as sapi:
+            success = speak_text("天堂经典版游戏状态异常")
+
+        self.assertTrue(success)
+        sapi.assert_called_once_with("天堂经典版游戏状态异常")
+
+    def test_manual_mode_uses_log_only_hardware_with_action_coordinates(self):
+        with patch("game_executor.main.executor_config.MANUAL_ACTIONS", True), patch(
+            "game_executor.main.executor_config.MANUAL_ACTION_WAIT_SECONDS", 0
+        ):
             hardware = _create_hardware_controller()
 
-        self.assertIsInstance(hardware, LogOnlyHardwareController)
+        self.assertIsInstance(hardware, ManualActionHardwareController)
         self.assertTrue(hardware.mouse_move(100, 200))
         self.assertTrue(hardware.mouse_click())
-        self.assertEqual(2, hardware.planned_actions)
+        self.assertEqual(1, hardware.planned_actions)
         self.assertEqual(0, hardware.health_check()["hid_commands_sent"])
-
-    def test_dry_run_terminal_can_never_report_completed(self):
-        executor = type("Executor", (), {
-            "_hw": type("Hardware", (), {"planned_actions": 4})()
-        })()
-
-        result = _dry_run_terminal_result(
-            {"success": True, "status": "wait_web_confirm", "message": "done"},
-            executor,
-        )
-
-        self.assertFalse(result["success"])
-        self.assertEqual("cancelled", result["status"])
-        self.assertEqual("DRY_RUN_NO_HID", result["error_code"])
-        self.assertIn("planned_actions=4", result["message"])
 
     def test_registry_resolves_game_code_case_insensitively(self):
         registry = ExecutorRegistry()
@@ -59,6 +89,7 @@ class GameExecutorCoreTest(unittest.TestCase):
 
         self.assertIs(executor, registry.get("LINEAGE_CLASSIC"))
         self.assertIs(executor, registry.get("리니지클래식"))
+        self.assertEqual((executor,), registry.executors())
 
     def test_gate_keeps_order_between_offer_and_start(self):
         gate = TradeTaskGate()
@@ -111,6 +142,78 @@ class _CancellableExecutor(_Executor):
 
 
 class GameExecutorDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_manual_mode_reports_the_real_success_terminal_status(self):
+        ctx = AppContext(asyncio.get_running_loop())
+        ctx.reporter = _Reporter()
+        ctx.runtime_status = RuntimeStatus()
+        ctx.trade_task_gate = TradeTaskGate()
+
+        with patch("game_executor.main.executor_config.MANUAL_ACTIONS", True):
+            await _run_trade_assignment(
+                "assignment-manual",
+                {"trade_timeout_seconds": 30},
+                _Executor(),
+                ctx,
+            )
+
+        terminal = ctx.reporter.statuses[-1]
+        self.assertEqual("completed", terminal[1])
+        self.assertNotIn("DRY_RUN_NO_HID", terminal)
+
+    async def test_connected_probe_names_unhealthy_game_and_reports_immediately(self):
+        registry = ExecutorRegistry()
+        ctx = AppContext(asyncio.get_running_loop())
+        ctx.runtime_status = RuntimeStatus()
+        executor = _RuntimeProbeExecutor(ctx.runtime_status)
+        registry.register(executor)
+        client = type("Client", (), {"send": AsyncMock()})()
+
+        with patch("game_executor.main.EXECUTOR_REGISTRY", registry):
+            alert = await _probe_connected_games(ctx)
+            await _send_runtime_heartbeat(client, ctx)
+
+        self.assertEqual(1, executor.probe_calls)
+        self.assertIn("天堂经典版游戏状态异常", alert)
+        sent = client.send.await_args.args[0]
+        self.assertEqual("heartbeat", sent["type"])
+        self.assertEqual("unhealthy", sent["runtime"]["ui_health"])
+
+    async def test_connected_probe_does_not_announce_healthy_game(self):
+        registry = ExecutorRegistry()
+        ctx = AppContext(asyncio.get_running_loop())
+        ctx.runtime_status = RuntimeStatus()
+        executor = _RuntimeProbeExecutor(ctx.runtime_status, ready=True, ui_health="ready")
+        registry.register(executor)
+
+        with patch("game_executor.main.EXECUTOR_REGISTRY", registry):
+            alert = await _probe_connected_games(ctx)
+
+        self.assertEqual("", alert)
+
+    async def test_idle_heartbeat_reports_cached_status_without_probing_window(self):
+        registry = ExecutorRegistry()
+        ctx = AppContext(asyncio.get_running_loop())
+        ctx.runtime_status = RuntimeStatus()
+        executor = _RuntimeProbeExecutor(ctx.runtime_status, ready=True, ui_health="ready")
+        registry.register(executor)
+        sent = asyncio.Event()
+
+        async def send(_message):
+            sent.set()
+
+        client = type("Client", (), {"send": AsyncMock(side_effect=send)})()
+        with patch("game_executor.main.EXECUTOR_REGISTRY", registry), patch(
+            "game_executor.main.config.HEARTBEAT_INTERVAL", 0
+        ):
+            task = asyncio.create_task(_heartbeat(client, ctx))
+            await asyncio.wait_for(sent.wait(), timeout=0.1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        self.assertEqual(0, executor.probe_calls)
+        self.assertGreaterEqual(client.send.await_count, 1)
+
     async def test_start_does_not_block_receive_loop_and_cancel_reaches_executor(self):
         registry = ExecutorRegistry()
         executor = _CancellableExecutor()

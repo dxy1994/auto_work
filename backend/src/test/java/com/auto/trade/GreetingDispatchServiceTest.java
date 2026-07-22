@@ -23,8 +23,10 @@ import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.same;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 @ExtendWith(MockitoExtension.class)
 class GreetingDispatchServiceTest {
@@ -78,6 +80,33 @@ class GreetingDispatchServiceTest {
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void recoveryContinuesPostGreetingLogicWithoutSendingAnotherGreeting() {
+        int orderId = 45;
+        GameItemOrder order = new GameItemOrder();
+        order.setId(orderId);
+        order.setDeliveryStatus("greeting");
+        order.setStatus("pending");
+        GameItemOrderDetail detail = new GameItemOrderDetail();
+        TradeOffer offer = new TradeOffer(
+                "assignment-2",
+                orderId,
+                8,
+                10,
+                "token",
+                Instant.now().plusSeconds(30),
+                Map.of());
+
+        when(orderService.getById(orderId)).thenReturn(order);
+        when(orderDetailService.findByOrderId(orderId)).thenReturn(List.of(detail));
+        when(tradeDispatchCoordinator.dispatch(orderId)).thenReturn(offer);
+
+        assertSame(offer, service.continueAfterGreetingSuccess(orderId));
+
+        verify(tradeDispatchCoordinator).dispatch(orderId);
+        verifyNoInteractions(agentRegistry);
     }
 
     @Test

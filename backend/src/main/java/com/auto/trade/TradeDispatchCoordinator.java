@@ -20,6 +20,7 @@ import com.auto.service.MachineService;
 import com.auto.service.TradeAssignmentService;
 import com.auto.trade.statemachine.DeliveryEvent;
 import com.auto.trade.statemachine.OrderDeliveryStateMachine;
+import com.auto.trade.statemachine.actions.ResourceHelper;
 import com.auto.ws.AgentRegistry;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
@@ -27,6 +28,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.context.event.EventListener;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 
 import java.nio.charset.StandardCharsets;
@@ -38,10 +42,13 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,10 +59,14 @@ import java.util.concurrent.ConcurrentHashMap;
 public class TradeDispatchCoordinator {
 
     private static final int OFFER_LEASE_SECONDS = 30;
-    private static final int EXECUTION_WATCHDOG_GRACE_SECONDS = 180;
+    /** 包含按业务分级的画面等待、三次视觉检测以及多物品拖拽时间。 */
+    private static final int EXECUTION_WATCHDOG_GRACE_SECONDS = 600;
     private static final Set<String> PROGRESS_STATUSES = Set.of(
             "started", "preparing", "switching_region", "waiting_buyer",
             "waiting_buyer_review", "trading", "verifying");
+    private static final Set<String> ACTIVE_ASSIGNMENT_STATUSES = Set.of(
+            "offered", "accepted", "started", "preparing", "switching_region",
+            "waiting_buyer", "waiting_buyer_review", "trading", "verifying");
 
     private final GameItemOrderService orderService;
     private final MachineGameAccountService machineGameService;
@@ -69,10 +80,15 @@ public class TradeDispatchCoordinator {
     private final GameItemOrderDetailService detailService;
     private final GameItemService itemService;
     private final GameRegionService gameRegionService;
+    private final ManualOrderStatusService manualOrderStatusService;
+    private final TransactionTemplate committedTransaction;
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, TradeOffer> pendingOffers = new ConcurrentHashMap<>();
     private final Set<String> acceptedAssignments = ConcurrentHashMap.newKeySet();
     private final Map<String, Instant> executionDeadlines = new ConcurrentHashMap<>();
+    private final Map<Integer, Object> machineQueueLocks = new ConcurrentHashMap<>();
+    /** 单后端实例内串行化“选择 + 预占”，避免两个订单同时拿到同一台空闲机器。 */
+    private final Object dispatchLock = new Object();
 
     public TradeDispatchCoordinator(
             GameItemOrderService orderService,
@@ -86,7 +102,9 @@ public class TradeDispatchCoordinator {
             GameService gameService,
             GameItemOrderDetailService detailService,
             GameItemService itemService,
-            GameRegionService gameRegionService) {
+            GameRegionService gameRegionService,
+            ManualOrderStatusService manualOrderStatusService,
+            PlatformTransactionManager transactionManager) {
         this.orderService = orderService;
         this.machineGameService = machineGameService;
         this.gameAccountService = gameAccountService;
@@ -99,10 +117,41 @@ public class TradeDispatchCoordinator {
         this.detailService = detailService;
         this.itemService = itemService;
         this.gameRegionService = gameRegionService;
+        this.manualOrderStatusService = manualOrderStatusService;
+        this.committedTransaction = new TransactionTemplate(transactionManager);
+        this.committedTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    @Transactional
     public TradeOffer dispatch(Integer orderId) {
+        // 必须先提交 offered 状态和资源预占，再向 Worker 发送 offer。
+        // Worker 的 WebSocket 回执可能在 sendTradeOffer 返回前就到达；如果仍处于同一事务，
+        // 回执线程只能读到旧状态，从而把合法的 OFFER_ACCEPTED 判定为非法转换。
+        TradeOffer offer;
+        synchronized (dispatchLock) {
+            offer = committedTransaction.execute(status -> prepareOffer(orderId));
+        }
+        // null 表示订单已经持久化进入目标机器队列，并非指派失败。
+        if (offer == null) {
+            return null;
+        }
+        pendingOffers.put(offer.assignmentId(), offer);
+
+        if (!agentRegistry.sendTradeOffer(offer.machineId(), offer)) {
+            try {
+                committedTransaction.executeWithoutResult(status ->
+                        rejectOffer(offer, "交易指派发送失败"));
+            } catch (RuntimeException cleanupError) {
+                pendingOffers.remove(offer.assignmentId(), offer);
+                log.error("[Trade] 发送指派失败后的资源释放也失败 assignment_id={}: {}",
+                        offer.assignmentId(), cleanupError.getMessage(), cleanupError);
+            }
+            triggerNextQueuedOrder(offer.machineId());
+            throw new IllegalStateException("发送交易指派失败");
+        }
+        return offer;
+    }
+
+    private TradeOffer prepareOffer(Integer orderId) {
         GameItemOrder order = orderService.getById(orderId);
         if (order == null) {
             throw new IllegalStateException("订单不存在");
@@ -126,69 +175,221 @@ public class TradeDispatchCoordinator {
             throw new IllegalStateException("订单不在待指派状态");
         }
 
-        TradeCandidate candidate = selector.select(
-                        order.getGameId(), order.getRegionId(), buildCandidates(order))
-                .orElseThrow(() -> new IllegalStateException("没有符合条件的交易机器"));
+        CandidatePool candidatePool = buildCandidatePool(order);
+        Optional<TradeCandidate> selected = selector.select(
+                order.getGameId(), order.getRegionId(), candidatePool.candidates());
+        if (selected.isEmpty()) {
+            QueueTarget queueTarget = findQueueTarget(order);
+            if (queueTarget == null) {
+                throw new IllegalStateException(noCandidateMessage(order, candidatePool));
+            }
+            Map<String, Object> queueContext = new HashMap<>();
+            queueContext.put("machineId", queueTarget.machineId());
+            queueContext.put("gameAccountId", queueTarget.gameAccountId());
+            queueContext.put("message", "交易机器忙碌，订单进入机器 FIFO 队列");
+            stateMachine.fire(order, DeliveryEvent.QUEUE_ASSIGNMENT, queueContext);
+            log.info("[TradeQueue] 订单进入队列 order_id={} machine_id={} game_account_id={} queue_depth={}",
+                    orderId, queueTarget.machineId(), queueTarget.gameAccountId(), queueTarget.queueDepth() + 1);
+            return null;
+        }
+        return createOffer(order, game, selected.get(), event, "总控发送交易指派");
+    }
 
+    private TradeOffer createOffer(GameItemOrder order, Game game, TradeCandidate candidate,
+                                   DeliveryEvent event, String message) {
         String assignmentId = UUID.randomUUID().toString();
         String token = newExecutionToken();
         Instant leaseExpiresAt = Instant.now().plusSeconds(OFFER_LEASE_SECONDS);
         TradeOffer offer = new TradeOffer(
                 assignmentId,
-                orderId,
+                order.getId(),
                 candidate.machineId(),
                 candidate.gameAccountId(),
                 token,
                 leaseExpiresAt,
                 orderPayload(order, game, candidate.gameAccountId()));
 
-        // 状态机驱动状态转换
         Map<String, Object> ctx = new HashMap<>();
         ctx.put("assignmentId", assignmentId);
-        ctx.put("message", "总控发送交易指派");
+        ctx.put("machineId", candidate.machineId());
+        ctx.put("gameAccountId", candidate.gameAccountId());
+        ctx.put("message", message);
         order.setAssignmentId(assignmentId);
         stateMachine.fire(order, event, ctx);
-
-        // 指派相关副作用
         persistAssignment(offer);
         reserveResources(candidate.machineId(), candidate.gameAccountId());
-        pendingOffers.put(assignmentId, offer);
-
-        if (!agentRegistry.sendTradeOffer(candidate.machineId(), offer)) {
-            pendingOffers.remove(assignmentId);
-            throw new IllegalStateException("发送交易指派失败");
-        }
         return offer;
     }
 
-    @Transactional
+    /** 人工完成排队中或自动交易中的订单；活动 Worker 会先收到停止指令。 */
+    public GameItemOrder completeOrderManually(Integer orderId) {
+        return terminateOrderManually(orderId, true);
+    }
+
+    /** 人工取消排队中或自动交易中的订单；活动 Worker 会先收到停止指令。 */
+    public GameItemOrder cancelOrderManually(Integer orderId) {
+        return terminateOrderManually(orderId, false);
+    }
+
+    private GameItemOrder terminateOrderManually(Integer orderId, boolean completed) {
+        GameItemOrder snapshot = orderService.getById(orderId);
+        if (snapshot == null) {
+            throw new IllegalArgumentException("订单不存在");
+        }
+        if (!Set.of("queued", "offered", "assigned").contains(snapshot.getDeliveryStatus())) {
+            throw new IllegalStateException("当前订单不在排队或自动交易状态");
+        }
+
+        ManualTermination result;
+        TradeOffer activeOffer = snapshot.getAssignmentId() == null
+                ? null : pendingOffers.get(snapshot.getAssignmentId());
+        if ("queued".equals(snapshot.getDeliveryStatus())) {
+            // 与队首出队使用同一把锁，确保取消/完成和下发只会有一个成功。
+            synchronized (dispatchLock) {
+                result = performManualTermination(orderId, completed);
+            }
+        } else if (activeOffer != null) {
+            // 与 Worker 决策和状态回报串行，保证停止指令不会与 trade_start 交叉。
+            synchronized (activeOffer) {
+                result = performManualTermination(orderId, completed);
+            }
+        } else {
+            result = performManualTermination(orderId, completed);
+        }
+
+        if (result.assignmentId() != null) {
+            clearActiveAssignment(result.assignmentId());
+        }
+        if (result.machineId() != null) {
+            triggerNextQueuedOrder(result.machineId());
+        }
+        return result.order();
+    }
+
+    private ManualTermination performManualTermination(Integer orderId, boolean completed) {
+        GameItemOrder current = orderService.getById(orderId);
+        if (current == null) {
+            throw new IllegalArgumentException("订单不存在");
+        }
+        if (!Set.of("queued", "offered", "assigned").contains(current.getDeliveryStatus())) {
+            if ("completed".equals(current.getStatus()) || "cancelled".equals(current.getStatus())) {
+                return new ManualTermination(current, current.getAssignedMachineId(), current.getAssignmentId());
+            }
+            throw new IllegalStateException("当前订单不在排队或自动交易状态");
+        }
+
+        TradeAssignment activeAssignment = findAssignment(current.getAssignmentId());
+        Integer wakeMachineId = activeAssignment == null
+                ? current.getAssignedMachineId() : activeAssignment.getMachineId();
+        String assignmentId = current.getAssignmentId();
+        if (assignmentId != null && wakeMachineId != null) {
+            boolean sent = agentRegistry.sendTradeCancel(
+                    wakeMachineId, assignmentId, completed ? "manual_complete" : "manual_cancel");
+            log.info("[TradeQueue] 人工{}订单，停止指令{} order_id={} assignment_id={} machine_id={}",
+                    completed ? "完成" : "取消", sent ? "已发送" : "未送达",
+                    orderId, assignmentId, wakeMachineId);
+        }
+
+        GameItemOrder terminal = committedTransaction.execute(status -> {
+            GameItemOrder latest = orderService.getById(orderId);
+            if (latest == null) {
+                throw new IllegalArgumentException("订单不存在");
+            }
+            if ("completed".equals(latest.getStatus()) || "cancelled".equals(latest.getStatus())) {
+                return latest;
+            }
+
+            TradeAssignment assignment = findAssignment(latest.getAssignmentId());
+            if (assignment != null) {
+                assignment.setStatus(completed ? "manually_completed" : "manually_cancelled");
+                assignment.setRejectReason(completed ? "manual_complete" : "manual_cancel");
+                assignment.setFinishedAt(LocalDateTime.now());
+                assignmentService.updateById(assignment);
+            }
+            // queued 仅绑定队列目标，并未预占资源，不能把正在执行首单的账号错误释放。
+            if (!"queued".equals(latest.getDeliveryStatus())
+                    && assignment != null
+                    && assignment.getMachineId() != null
+                    && assignment.getGameAccountId() != null) {
+                ResourceHelper.release(machineService, gameAccountService, agentRegistry,
+                        assignment.getMachineId(), assignment.getGameAccountId());
+            }
+            return completed
+                    ? manualOrderStatusService.completeAfterAutomationStopped(orderId)
+                    : manualOrderStatusService.cancelAfterAutomationStopped(orderId);
+        });
+        return new ManualTermination(terminal, wakeMachineId, assignmentId);
+    }
+
+    private record ManualTermination(GameItemOrder order, Integer machineId, String assignmentId) {
+    }
+
+    private TradeAssignment findAssignment(String assignmentId) {
+        if (assignmentId == null || assignmentId.isBlank()) {
+            return null;
+        }
+        return assignmentService.getOne(new LambdaQueryWrapper<TradeAssignment>()
+                .eq(TradeAssignment::getAssignmentId, assignmentId), false);
+    }
+
     public void handleDecision(
             String assignmentId,
             int machineId,
             boolean accepted,
             String reason) {
-        TradeOffer offer = requirePendingOffer(assignmentId, machineId);
+        TradeOffer offer = pendingOffers.get(assignmentId);
+        if (offer == null) {
+            TradeAssignment assignment = findAssignment(assignmentId);
+            if (assignment != null && Set.of("manually_completed", "manually_cancelled")
+                    .contains(assignment.getStatus())) {
+                log.info("[Trade] 忽略人工终结后的 offer 决策 assignment_id={}", assignmentId);
+                return;
+            }
+            throw new IllegalStateException("指派不存在、已过期或机器不匹配");
+        }
+        if (offer.machineId() != machineId) {
+            throw new IllegalStateException("指派不存在、已过期或机器不匹配");
+        }
         synchronized (offer) {
+            GameItemOrder decisionOrder = orderService.getById(offer.orderId());
+            if (decisionOrder == null
+                    || !"offered".equals(decisionOrder.getDeliveryStatus())
+                    || !assignmentId.equals(decisionOrder.getAssignmentId())) {
+                log.info("[Trade] 忽略已经人工终结的 offer 决策 assignment_id={}", assignmentId);
+                clearActiveAssignment(assignmentId);
+                return;
+            }
+            boolean queuedOrigin = isQueuedOffer(offer);
             if (acceptedAssignments.contains(assignmentId)) {
                 throw new IllegalStateException("指派已接受，不能重复决策");
             }
             if (offer.leaseExpiresAt().isBefore(Instant.now())) {
-                expireOffer(offer);
+                boolean returnedToQueue = committedTransaction.execute(status -> expireOffer(offer));
+                if (!returnedToQueue) {
+                    triggerNextQueuedOrder(machineId);
+                }
                 throw new IllegalStateException("指派租约已过期");
             }
             if (!accepted) {
-                rejectOffer(offer, reason == null ? "worker_rejected" : reason);
+                boolean returnedToQueue = committedTransaction.execute(status ->
+                        rejectOffer(offer, reason == null ? "worker_rejected" : reason));
+                if (!returnedToQueue) {
+                    triggerNextQueuedOrder(machineId);
+                }
                 return;
             }
 
-            // 状态机：offered → assigned
-            GameItemOrder order = orderService.getById(offer.orderId());
-            Map<String, Object> ctx = new HashMap<>();
-        ctx.put("assignmentId", assignmentId);
-        ctx.put("machineId", machineId);
-        ctx.put("gameAccountId", offer.gameAccountId());
-        ctx.put("message", "Worker 接受交易指派");
-            stateMachine.fire(order, DeliveryEvent.OFFER_ACCEPTED, ctx);
+            // 先提交 offered → assigned，再发送 trade_start；这样 Worker 即时上报状态时
+            // 一定能够从数据库读到 ASSIGNED。
+            committedTransaction.executeWithoutResult(status -> {
+                GameItemOrder order = orderService.getById(offer.orderId());
+                Map<String, Object> ctx = new HashMap<>();
+                ctx.put("assignmentId", assignmentId);
+                ctx.put("machineId", machineId);
+                ctx.put("gameAccountId", offer.gameAccountId());
+                ctx.put("message", "Worker 接受交易指派");
+                stateMachine.fire(order, DeliveryEvent.OFFER_ACCEPTED, ctx);
+            });
             acceptedAssignments.add(assignmentId);
             executionDeadlines.put(
                     assignmentId,
@@ -196,40 +397,70 @@ public class TradeDispatchCoordinator {
 
             if (!agentRegistry.sendTradeStart(machineId, assignmentId, offer.executionToken())) {
                 // 启动指令未下发到 Worker，可安全重新指派。
-                Map<String, Object> failCtx = new HashMap<>();
-                failCtx.put("assignmentId", assignmentId);
-                failCtx.put("machineId", machineId);
-                failCtx.put("gameAccountId", offer.gameAccountId());
-                failCtx.put("message", "发送交易启动指令失败");
-                failCtx.put("errorCode", "START_DISPATCH_FAILED");
-                failCtx.put("errorMessage", "发送交易启动指令失败");
-                stateMachine.fire(order, DeliveryEvent.START_FAILED, failCtx);
+                committedTransaction.executeWithoutResult(status -> {
+                    GameItemOrder order = orderService.getById(offer.orderId());
+                    Map<String, Object> failCtx = new HashMap<>();
+                    failCtx.put("assignmentId", assignmentId);
+                    failCtx.put("machineId", machineId);
+                    failCtx.put("gameAccountId", offer.gameAccountId());
+                    failCtx.put("message", "发送交易启动指令失败");
+                    if (!queuedOrigin) {
+                        failCtx.put("errorCode", "START_DISPATCH_FAILED");
+                        failCtx.put("errorMessage", "发送交易启动指令失败");
+                    }
+                    stateMachine.fire(order, queuedOrigin
+                            ? DeliveryEvent.QUEUED_START_FAILED
+                            : DeliveryEvent.START_FAILED, failCtx);
+                });
                 acceptedAssignments.remove(assignmentId);
                 pendingOffers.remove(assignmentId);
                 executionDeadlines.remove(assignmentId);
+                if (!queuedOrigin) {
+                    triggerNextQueuedOrder(machineId);
+                }
                 throw new IllegalStateException("发送交易启动指令失败");
             }
         }
     }
 
-    @Transactional
     public void handleStatus(
             String assignmentId,
             int machineId,
             String status,
             String message,
             String errorCode) {
-        TradeOffer offer = requirePendingOffer(assignmentId, machineId);
+        TradeOffer offer = pendingOffers.get(assignmentId);
+        if (offer == null) {
+            TradeAssignment assignment = findAssignment(assignmentId);
+            if (assignment != null && Set.of("manually_completed", "manually_cancelled")
+                    .contains(assignment.getStatus())) {
+                log.info("[Trade] 忽略人工终结后的 Worker 回报 assignment_id={} status={}",
+                        assignmentId, status);
+                return;
+            }
+            throw new IllegalStateException("指派不存在、已过期或机器不匹配");
+        }
+        if (offer.machineId() != machineId) {
+            throw new IllegalStateException("指派不存在、已过期或机器不匹配");
+        }
         synchronized (offer) {
             if (!acceptedAssignments.contains(assignmentId)) {
                 throw new IllegalStateException("指派尚未接受，不能上报执行状态");
             }
+            GameItemOrder latest = orderService.getById(offer.orderId());
+            if (latest == null
+                    || !"assigned".equals(latest.getDeliveryStatus())
+                    || !assignmentId.equals(latest.getAssignmentId())) {
+                log.info("[Trade] 忽略已经人工终结的任务回报 assignment_id={} status={}",
+                        assignmentId, status);
+                clearActiveAssignment(assignmentId);
+                return;
+            }
             if (PROGRESS_STATUSES.contains(status)) {
-                persistProgress(assignmentId, status);
+                committedTransaction.executeWithoutResult(tx -> persistProgress(assignmentId, status));
                 return;
             }
 
-            GameItemOrder order = orderService.getById(offer.orderId());
             Map<String, Object> ctx = terminalContext(offer, message);
             DeliveryEvent event;
             String assignmentStatus;
@@ -237,8 +468,14 @@ public class TradeDispatchCoordinator {
 
             switch (status) {
                 case "completed", "wait_web_confirm" -> {
-                    stateMachine.fire(order, DeliveryEvent.GAME_TRADE_COMPLETED, ctx);
+                    committedTransaction.executeWithoutResult(tx -> {
+                        GameItemOrder order = orderService.getById(offer.orderId());
+                        if (order != null && "assigned".equals(order.getDeliveryStatus())) {
+                            stateMachine.fire(order, DeliveryEvent.GAME_TRADE_COMPLETED, ctx);
+                        }
+                    });
                     clearActiveAssignment(assignmentId);
+                    triggerNextQueuedOrder(machineId);
                     return;
                 }
                 case "retryable_failed", "start_rejected" -> {
@@ -272,8 +509,14 @@ public class TradeDispatchCoordinator {
             ctx.put("errorCode", errorCode == null || errorCode.isBlank()
                     ? defaultErrorCode : errorCode);
             ctx.put("errorMessage", message);
-            stateMachine.fire(order, event, ctx);
+            committedTransaction.executeWithoutResult(tx -> {
+                GameItemOrder order = orderService.getById(offer.orderId());
+                if (order != null && "assigned".equals(order.getDeliveryStatus())) {
+                    stateMachine.fire(order, event, ctx);
+                }
+            });
             clearActiveAssignment(assignmentId);
+            triggerNextQueuedOrder(machineId);
         }
     }
 
@@ -385,9 +628,112 @@ public class TradeDispatchCoordinator {
         }
     }
 
+    /** 定时兜底扫描持久化队列；后端重启或 Worker 心跳稍晚时也不会遗失后续订单。 */
+    @Scheduled(fixedDelayString = "${trade.queue-scan-ms:5000}")
+    public void dispatchQueuedOrders() {
+        List<Integer> machineIds = orderService.list(
+                        new LambdaQueryWrapper<GameItemOrder>()
+                                .select(GameItemOrder::getAssignedMachineId)
+                                .eq(GameItemOrder::getDeliveryStatus, "queued")
+                                .eq(GameItemOrder::getStatus, "pending")
+                                .isNotNull(GameItemOrder::getAssignedMachineId)
+                                .orderByAsc(GameItemOrder::getCreatedAt)
+                                .orderByAsc(GameItemOrder::getId))
+                .stream()
+                .map(GameItemOrder::getAssignedMachineId)
+                .distinct()
+                .toList();
+        for (Integer machineId : machineIds) {
+            triggerNextQueuedOrder(machineId);
+        }
+    }
+
+    /** 资源释放后主动唤醒该机器最早进入队列且仍为 pending/queued 的订单。 */
+    public void triggerNextQueuedOrder(int machineId) {
+        Object queueLock = machineQueueLocks.computeIfAbsent(machineId, ignored -> new Object());
+        synchronized (queueLock) {
+            GameItemOrder queued = orderService.getOne(
+                    new LambdaQueryWrapper<GameItemOrder>()
+                            .eq(GameItemOrder::getDeliveryStatus, "queued")
+                            .eq(GameItemOrder::getStatus, "pending")
+                            .eq(GameItemOrder::getAssignedMachineId, machineId)
+                            .orderByAsc(GameItemOrder::getCreatedAt)
+                            .orderByAsc(GameItemOrder::getId)
+                            .last("LIMIT 1"), false);
+            if (queued == null) {
+                return;
+            }
+
+            TradeOffer offer;
+            synchronized (dispatchLock) {
+                offer = committedTransaction.execute(status ->
+                        prepareQueuedOffer(queued.getId(), machineId));
+            }
+            // Worker 的完成消息可能早于 idle 心跳；保持排队，下一次扫描继续检查。
+            if (offer == null) {
+                return;
+            }
+
+            pendingOffers.put(offer.assignmentId(), offer);
+            if (!agentRegistry.sendTradeOffer(machineId, offer)) {
+                committedTransaction.executeWithoutResult(status ->
+                        returnQueuedOffer(offer, DeliveryEvent.QUEUED_OFFER_REJECTED,
+                                "队首交易指派发送失败"));
+                pendingOffers.remove(offer.assignmentId(), offer);
+                executionDeadlines.remove(offer.assignmentId());
+                log.warn("[TradeQueue] 队首指派发送失败，保留排队 order_id={} machine_id={}",
+                        offer.orderId(), machineId);
+                return;
+            }
+            log.info("[TradeQueue] 队首订单已主动指派 order_id={} assignment_id={} machine_id={}",
+                    offer.orderId(), offer.assignmentId(), machineId);
+        }
+    }
+
+    private TradeOffer prepareQueuedOffer(int orderId, int machineId) {
+        GameItemOrder order = orderService.getById(orderId);
+        if (order == null
+                || !"queued".equals(order.getDeliveryStatus())
+                || !"pending".equals(order.getStatus())
+                || !Integer.valueOf(machineId).equals(order.getAssignedMachineId())
+                || order.getGameAccountId() == null) {
+            return null;
+        }
+
+        Game game = gameService.getById(order.getGameId());
+        if (game == null || !"script".equals(game.getTradeType())) {
+            return null;
+        }
+        CandidatePool pool = buildCandidatePool(order);
+        List<TradeCandidate> targetCandidates = pool.candidates().stream()
+                .filter(candidate -> candidate.machineId() == machineId)
+                .filter(candidate -> candidate.gameAccountId() == order.getGameAccountId())
+                .toList();
+        Optional<TradeCandidate> candidate = selector.select(
+                order.getGameId(), order.getRegionId(), targetCandidates);
+        if (candidate.isEmpty()) {
+            return null;
+        }
+        return createOffer(order, game, candidate.get(), DeliveryEvent.DEQUEUE_ASSIGNMENT,
+                "机器空闲，FIFO 队首订单开始交易指派");
+    }
+
+    private void returnQueuedOffer(TradeOffer offer, DeliveryEvent event, String reason) {
+        GameItemOrder order = orderService.getById(offer.orderId());
+        if (order == null || !"offered".equals(order.getDeliveryStatus())) {
+            return;
+        }
+        Map<String, Object> ctx = terminalContext(offer, reason);
+        ctx.put("reason", reason);
+        ctx.put("assignmentStatus", "queue_retry");
+        stateMachine.fire(order, event, ctx);
+        pendingOffers.remove(offer.assignmentId(), offer);
+        acceptedAssignments.remove(offer.assignmentId());
+        executionDeadlines.remove(offer.assignmentId());
+    }
+
     /** 定期回收未被 Worker 接受的过期 offer。 */
     @Scheduled(fixedDelayString = "${trade.offer-expiry-scan-ms:5000}")
-    @Transactional
     public void expireOffers() {
         expireOffersAt(Instant.now());
     }
@@ -401,7 +747,11 @@ public class TradeDispatchCoordinator {
                     synchronized (offer) {
                         if (pendingOffers.get(offer.assignmentId()) == offer
                                 && !acceptedAssignments.contains(offer.assignmentId())) {
-                            expireOffer(offer);
+                            boolean returnedToQueue = committedTransaction.execute(
+                                    status -> expireOffer(offer));
+                            if (!returnedToQueue) {
+                                triggerNextQueuedOrder(offer.machineId());
+                            }
                         }
                     }
                 });
@@ -422,7 +772,6 @@ public class TradeDispatchCoordinator {
 
     /** 回收 Worker 已接受但长时间未进入终态的交易。 */
     @Scheduled(fixedDelayString = "${trade.execution-watchdog-scan-ms:5000}")
-    @Transactional
     public void expireExecutions() {
         expireExecutionsAt(Instant.now());
     }
@@ -445,47 +794,84 @@ public class TradeDispatchCoordinator {
                         }
                         agentRegistry.sendTradeCancel(
                                 offer.machineId(), assignmentId, "execution_watchdog_timeout");
-                        GameItemOrder order = orderService.getById(offer.orderId());
                         Map<String, Object> ctx = terminalContext(
                                 offer, "交易总执行时间超过限制，结果需要人工复核");
                         ctx.put("assignmentStatus", "watchdog_timed_out");
                         ctx.put("errorCode", "EXECUTION_WATCHDOG_TIMEOUT");
                         ctx.put("errorMessage", "execution watchdog timeout");
-                        stateMachine.fire(order, DeliveryEvent.TRADE_VERIFICATION_FAILED, ctx);
+                        committedTransaction.executeWithoutResult(status -> {
+                            GameItemOrder order = orderService.getById(offer.orderId());
+                            if (order != null && "assigned".equals(order.getDeliveryStatus())) {
+                                stateMachine.fire(order, DeliveryEvent.TRADE_VERIFICATION_FAILED, ctx);
+                            }
+                        });
                         clearActiveAssignment(assignmentId);
+                        triggerNextQueuedOrder(offer.machineId());
                     }
                 });
     }
 
-    private void rejectOffer(TradeOffer offer, String reason) {
+    private boolean rejectOffer(TradeOffer offer, String reason) {
         GameItemOrder order = orderService.getById(offer.orderId());
+        if (order == null || !"offered".equals(order.getDeliveryStatus())) {
+            pendingOffers.remove(offer.assignmentId(), offer);
+            return false;
+        }
+        boolean queuedOrigin = isQueuedOffer(order, offer);
         Map<String, Object> ctx = new HashMap<>();
         ctx.put("assignmentId", offer.assignmentId());
         ctx.put("machineId", offer.machineId());
         ctx.put("gameAccountId", offer.gameAccountId());
         ctx.put("reason", reason);
         ctx.put("message", reason);
-        stateMachine.fire(order, DeliveryEvent.OFFER_REJECTED, ctx);
+        stateMachine.fire(order, queuedOrigin
+                ? DeliveryEvent.QUEUED_OFFER_REJECTED
+                : DeliveryEvent.OFFER_REJECTED, ctx);
         pendingOffers.remove(offer.assignmentId());
         executionDeadlines.remove(offer.assignmentId());
+        return queuedOrigin;
     }
 
-    private void expireOffer(TradeOffer offer) {
+    private boolean expireOffer(TradeOffer offer) {
         GameItemOrder order = orderService.getById(offer.orderId());
+        if (order == null || !"offered".equals(order.getDeliveryStatus())) {
+            pendingOffers.remove(offer.assignmentId(), offer);
+            return false;
+        }
+        boolean queuedOrigin = isQueuedOffer(order, offer);
         Map<String, Object> ctx = new HashMap<>();
         ctx.put("assignmentId", offer.assignmentId());
         ctx.put("machineId", offer.machineId());
         ctx.put("gameAccountId", offer.gameAccountId());
         ctx.put("message", "Worker 未在租约内接受指派");
-        stateMachine.fire(order, DeliveryEvent.OFFER_EXPIRED, ctx);
+        stateMachine.fire(order, queuedOrigin
+                ? DeliveryEvent.QUEUED_OFFER_EXPIRED
+                : DeliveryEvent.OFFER_EXPIRED, ctx);
         pendingOffers.remove(offer.assignmentId(), offer);
         executionDeadlines.remove(offer.assignmentId());
+        return queuedOrigin;
     }
 
-    private List<TradeCandidate> buildCandidates(GameItemOrder order) {
+    private boolean isQueuedOffer(TradeOffer offer) {
+        return isQueuedOffer(orderService.getById(offer.orderId()), offer);
+    }
+
+    private static boolean isQueuedOffer(GameItemOrder order, TradeOffer offer) {
+        return order != null
+                && order.getAssignedAt() == null
+                && Integer.valueOf(offer.machineId()).equals(order.getAssignedMachineId())
+                && Integer.valueOf(offer.gameAccountId()).equals(order.getGameAccountId());
+    }
+
+    private CandidatePool buildCandidatePool(GameItemOrder order) {
+        List<String> blockers = new ArrayList<>();
         List<GameAccount> accounts = gameAccountService
                 .findIdleByGameAndRegion(order.getGameId(), order.getRegionId());
-        if (accounts.isEmpty()) return List.of();
+        if (accounts.isEmpty()) {
+            blockers.add("游戏#" + order.getGameId() + "/大区#" + order.getRegionId()
+                    + "没有已启用、空闲且关联该大区的游戏账号");
+            return new CandidatePool(List.of(), blockers);
+        }
 
         List<Integer> accountIds = accounts.stream().map(GameAccount::getId).toList();
         // 账号是否支持目标大区已由 findIdleByGameAndRegion 通过 game_account_regions 筛选；
@@ -502,11 +888,37 @@ public class TradeDispatchCoordinator {
         List<TradeCandidate> candidates = new ArrayList<>();
         for (GameAccount account : accounts) {
             MachineGameAccount mg = mgByAccountId.get(account.getId());
-            if (mg == null) continue;
+            if (mg == null) {
+                blockers.add("游戏账号#" + account.getId() + "未绑定启用的游戏执行机器");
+                continue;
+            }
             int machineId = mg.getMachineId();
-            if (!agentRegistry.isAgentGameExecutor(machineId)) continue;
+            if (!agentRegistry.isAgentGameExecutor(machineId)) {
+                blockers.add(agentRegistry.isAgentOnline(machineId)
+                        ? "机器#" + machineId + "在线，但连接角色不是游戏执行端"
+                        : "机器#" + machineId + "的游戏执行Worker未在线");
+                continue;
+            }
             WorkerRuntimeStatus runtime = agentRegistry.getRuntimeStatus(machineId);
-            if (runtime == null) continue;
+            if (runtime == null) {
+                // Worker 刚注册时首个心跳可能尚未到达；执行端已经在线且只绑定一个
+                // 候选账号时可以先接收 offer，后续脚本会自行激活并修复游戏窗口。
+                boolean singleAccount = accountCountByMachine.getOrDefault(machineId, 0) == 1;
+                candidates.add(new TradeCandidate(
+                        machineId,
+                        account.getId(),
+                        order.getGameId(),
+                        order.getRegionId(),
+                        mg.getPriority(),
+                        agentRegistry.isAgentOnline(machineId),
+                        "idle".equals(account.getStatus()),
+                        singleAccount,
+                        "starting",
+                        "idle",
+                        "starting",
+                        null));
+                continue;
+            }
             boolean runtimeIdentityUnknown = runtime.gameAccountId() == null && runtime.gameId() == null;
             boolean runtimeMatchesAccount = (runtimeIdentityUnknown
                     && accountCountByMachine.getOrDefault(machineId, 0) == 1)
@@ -519,13 +931,78 @@ public class TradeDispatchCoordinator {
                     order.getRegionId(),
                     mg.getPriority(),
                     agentRegistry.isAgentOnline(machineId),
-                    runtimeMatchesAccount && "idle".equals(account.getStatus()),
+                    "idle".equals(account.getStatus()),
+                    runtimeMatchesAccount,
                     runtime.clientStatus(),
                     runtime.executorStatus(),
                     runtime.uiHealth(),
                     null));
         }
-        return candidates;
+        return new CandidatePool(candidates, blockers);
+    }
+
+    /**
+     * 仅在兼容账号确实存在活动指派时选择排队目标。普通离线、配置错误或健康检查失败
+     * 不会被伪装成“排队中”，仍按没有合格机器处理。
+     */
+    private QueueTarget findQueueTarget(GameItemOrder order) {
+        List<GameAccount> accounts = gameAccountService
+                .findActiveByGameAndRegion(order.getGameId(), order.getRegionId());
+        if (accounts.isEmpty()) {
+            return null;
+        }
+        List<Integer> accountIds = accounts.stream().map(GameAccount::getId).toList();
+        List<MachineGameAccount> bindings = machineGameService.findByGameAccountIdsActive(accountIds);
+        if (bindings.isEmpty()) {
+            return null;
+        }
+
+        Set<String> activeResources = new HashSet<>();
+        for (TradeAssignment assignment : assignmentService.findByStatuses(ACTIVE_ASSIGNMENT_STATUSES)) {
+            activeResources.add(resourceKey(assignment.getMachineId(), assignment.getGameAccountId()));
+        }
+
+        return bindings.stream()
+                .filter(binding -> activeResources.contains(
+                        resourceKey(binding.getMachineId(), binding.getGameAccountId())))
+                .filter(binding -> agentRegistry.isAgentGameExecutor(binding.getMachineId()))
+                .filter(binding -> agentRegistry.isAgentOnline(binding.getMachineId()))
+                .map(binding -> new QueueTarget(
+                        binding.getMachineId(),
+                        binding.getGameAccountId(),
+                        binding.getPriority() == null ? 0 : binding.getPriority(),
+                        queueDepth(binding.getMachineId())))
+                .min(Comparator.comparingLong(QueueTarget::queueDepth)
+                        .thenComparing(Comparator.comparingInt(QueueTarget::priority).reversed())
+                        .thenComparingInt(QueueTarget::machineId))
+                .orElse(null);
+    }
+
+    private long queueDepth(int machineId) {
+        return orderService.count(new LambdaQueryWrapper<GameItemOrder>()
+                .eq(GameItemOrder::getDeliveryStatus, "queued")
+                .eq(GameItemOrder::getAssignedMachineId, machineId));
+    }
+
+    private static String resourceKey(Integer machineId, Integer gameAccountId) {
+        return String.valueOf(machineId) + ":" + gameAccountId;
+    }
+
+    private String noCandidateMessage(GameItemOrder order, CandidatePool pool) {
+        List<String> reasons = new ArrayList<>(pool.blockers());
+        reasons.addAll(selector.rejectionReasons(
+                order.getGameId(), order.getRegionId(), pool.candidates()));
+        if (reasons.isEmpty()) {
+            return "没有符合条件的交易机器，且未获得可诊断的候选状态";
+        }
+        String detail = reasons.stream().limit(8).collect(java.util.stream.Collectors.joining("；"));
+        return "没有符合条件的交易机器：" + truncate(detail, 800);
+    }
+
+    private record CandidatePool(List<TradeCandidate> candidates, List<String> blockers) {
+    }
+
+    private record QueueTarget(int machineId, int gameAccountId, int priority, long queueDepth) {
     }
 
     private void persistAssignment(TradeOffer offer) {
@@ -664,6 +1141,7 @@ public class TradeDispatchCoordinator {
         payload.put("region_name", region.getName());
         payload.put("region_code", region.getCode());
         payload.put("region_sort_order", region.getSortOrder());
+        payload.put("region_select_page", region.getSelectPage() != null ? region.getSelectPage() : 1);
         payload.put("region_select_x", region.getSelectX());
         payload.put("region_select_y", region.getSelectY());
     }

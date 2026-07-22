@@ -88,6 +88,16 @@ public class TradeRecoveryService {
         context.put("message", reason);
         context.put("errorCode", "WORKER_DISCONNECTED");
         context.put("errorMessage", reason);
+        boolean queuedOffer = "offered".equals(order.getDeliveryStatus())
+                && order.getAssignedAt() == null
+                && order.getAssignedMachineId() != null;
+        if (queuedOffer) {
+            context.remove("errorCode");
+            context.remove("errorMessage");
+            context.put("assignmentStatus", "queue_retry");
+            stateMachine.fire(order, DeliveryEvent.QUEUED_WORKER_DISCONNECTED, context);
+            return;
+        }
         boolean resultMayBeUncertain = "trading".equals(assignment.getStatus())
                 || "verifying".equals(assignment.getStatus());
         if (resultMayBeUncertain) {

@@ -22,6 +22,9 @@ public interface GameItemService extends IService<GameItem> {
     /** 按游戏+物品名称精确匹配（启用中） */
     GameItem findByGameIdAndName(Integer gameId, String name);
 
+    /** 按游戏+物品编码匹配，未命中时按物品名称匹配（启用中） */
+    GameItem findActiveByGameIdAndCodeOrName(Integer gameId, String codeOrName);
+
     List<GameItem> findByGameIdActive(Integer gameId);
 
     /** 获取同一游戏+分类下的下一个排序号（自动递增） */

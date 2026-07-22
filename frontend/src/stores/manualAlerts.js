@@ -51,12 +51,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
 
   function reminderText() {
     if (!hasAlerts.value) return ''
-    const first = items.value[0]
-    const orderNo = first?.source_order_no || first?.order_no || first?.entity_id || ''
-    const firstDescription = first?.entity_type === 'system'
-      ? `。最早一条是${first.title}，${first.message}`
-      : first ? `。最早一条是订单${orderNo}，${first.title}，${first.message}` : ''
-    return `中控平台有${total.value}条异常需要人工处理${firstDescription}。请尽快打开待处理列表。`
+    return String(items.value[0]?.title || '异常提醒').trim()
   }
 
   function cancelSpeech() {
@@ -103,7 +98,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     needsInteraction.value = false
     cancelSpeech()
     const confirmation = hasAlerts.value
-      ? `语音提醒已开启。${reminderText()}`
+      ? reminderText()
       : '语音提醒已开启。出现需要人工处理的异常时，系统将持续播报。'
     return speakText(confirmation, hasAlerts.value)
   }

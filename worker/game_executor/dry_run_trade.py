@@ -1,8 +1,8 @@
-"""使用正式交易执行器运行测试订单，但阻断所有键鼠指令。
+"""使用正式交易执行器运行本地测试订单，由操作者手动执行键鼠动作。
 
 窗口发现、OCR、模板匹配、截图、等待和状态编排均使用正式实现；
-唯一替换的是 ESP32 键鼠控制器。日志控制器会记录原本要发送的动作并返回成功，
-但不会进行网络请求，也不会移动、点击鼠标或发送键盘按键。
+唯一替换的是 ESP32 键鼠控制器。人工控制器会输出要执行的动作和屏幕坐标，
+但不会进行网络请求，也不会移动、点击鼠标或发送键盘按键。检测结果和终态不再改写。
 
 运行：
     python -m game_executor.dry_run_trade
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from common.context import AppContext
 from game_executor.executor.lineage_classic import LineageClassicExecutor
-from game_executor.executor.hardware.log_only import LogOnlyHardwareController
+from game_executor.executor.hardware.manual import ManualActionHardwareController
 from game_executor.executor.registry import ExecutorRegistry
 from game_executor.gate import TradeTaskGate
 from game_executor.status import RuntimeStatus
@@ -76,7 +76,7 @@ class LocalLogReporter:
     @staticmethod
     def _log(event, **values):
         print(
-            "[TRADE-DRY-RUN] "
+            "[TRADE-MANUAL-TEST] "
             + json.dumps(
                 {"event": event, **values},
                 ensure_ascii=False,
@@ -99,6 +99,7 @@ def build_test_order(amount, buyer):
         "region_name": "测试大区",
         "region_code": "DRY_RUN_REGION",
         "region_sort_order": 1,
+        "region_select_page": 1,
         "region_select_x": 310,
         "region_select_y": 154,
         "buyer_character": buyer,
@@ -130,7 +131,7 @@ async def run_dry_trade(order):
     execution_token = f"dry-run-token-{order['order_id']}"
 
     reporter = LocalLogReporter()
-    hardware = LogOnlyHardwareController()
+    hardware = ManualActionHardwareController()
     registry = ExecutorRegistry()
     context = AppContext(asyncio.get_running_loop())
     context.reporter = reporter
@@ -141,7 +142,7 @@ async def run_dry_trade(order):
     reporter._log(
         "test_order",
         order=order,
-        safety="窗口/OCR/截图正常；ESP32 键鼠指令强制阻断",
+        safety="窗口/OCR/截图和终态均为真实流程；不发 HID，请按 MANUAL-ACTION 日志操作",
     )
     original_registry = executor_main.EXECUTOR_REGISTRY
     executor_main.EXECUTOR_REGISTRY = registry
@@ -171,7 +172,7 @@ async def run_dry_trade(order):
         executor_main.EXECUTOR_REGISTRY = original_registry
 
     reporter._log(
-        "dry_run_finished",
+        "manual_test_finished",
         gate=context.trade_task_gate.snapshot(),
         runtime=context.runtime_status.snapshot(),
         planned_hid_actions=hardware.planned_actions,
@@ -181,7 +182,7 @@ async def run_dry_trade(order):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="正式交易流程干跑（仅阻断 ESP32 键鼠指令）"
+        description="正式交易流程人工测试（输出动作日志，不发送 ESP32 HID）"
     )
     parser.add_argument("--amount", type=int, default=1_000_000, help="测试 Adena 数量")
     parser.add_argument("--buyer", default="DryRunBuyer", help="测试买家角色名")
