@@ -6,6 +6,7 @@ import com.auto.service.GameItemOrderService;
 import com.auto.service.TradeAssignmentService;
 import com.auto.service.TradeEventService;
 import com.auto.trade.statemachine.actions.*;
+import com.auto.trade.TradeErrorGuidance;
 import com.auto.ws.AgentRegistry;
 import com.auto.service.MachineService;
 import com.auto.service.GameAccountService;
@@ -179,7 +180,7 @@ public class OrderDeliveryStateMachine {
         String errorMessage = (String) context.get("errorMessage");
         if (errorCode != null) {
             order.setLastErrorCode(errorCode);
-            order.setLastErrorMessage(errorMessage);
+            order.setLastErrorMessage(TradeErrorGuidance.ensureGuidance(errorCode, errorMessage));
         }
 
         // 3. 持久化

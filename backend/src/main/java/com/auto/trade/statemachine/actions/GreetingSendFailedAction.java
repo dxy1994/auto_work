@@ -11,6 +11,6 @@ public class GreetingSendFailedAction implements TransitionAction {
     @Override
     public void execute(GameItemOrder order, DeliveryState from, DeliveryState to, Map<String, Object> context) {
         order.setLastErrorCode("GREETING_FAILED");
-        order.setLastErrorMessage("招呼指令下发失败（机器离线）");
+        order.setLastErrorMessage("原因：监控机器离线，招呼指令无法下发。解决方案：确认监控端已启动并连接总控，然后重试招呼。");
     }
 }

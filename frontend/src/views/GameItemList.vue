@@ -32,18 +32,38 @@
           <div v-if="row.is_bundle" class="expand-area">
             <div class="expand-title">套装子物品：</div>
             <el-table :data="row._children || []" border size="small" v-loading="row._childrenLoading" highlight-current-row @current-change="onCurrentChange">
-              <el-table-column prop="code" label="编码" width="120" />
-              <el-table-column prop="name" label="名称" min-width="150" />
-              <el-table-column label="识别图片" width="110">
+              <el-table-column label="物品" min-width="220">
                 <template #default="{ row: child }">
-                  <div class="recognition-images">
-                    <el-image v-if="child.image" :src="child.image" :preview-src-list="[child.image]" fit="cover" />
-                    <el-image v-if="child.selected_image" :src="child.selected_image" :preview-src-list="[child.selected_image]" fit="cover" />
+                  <div class="item-identity">
+                    <div class="item-name">{{ child.name }}</div>
+                    <div class="item-meta">
+                      <span class="item-code">{{ child.code }}</span>
+                      <span v-if="child.category">{{ child.category }}</span>
+                    </div>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="识别素材（可选）" min-width="230">
+                <template #default="{ row: child }">
+                  <div class="recognition-panel">
+                    <div class="image-state">
+                      <span class="image-state-label">未选中</span>
+                      <el-image v-if="child.image" class="recognition-thumb" :src="child.image" :preview-src-list="[child.image]" fit="cover" preview-teleported />
+                      <div v-else class="image-placeholder">未上传</div>
+                    </div>
+                    <div class="image-state">
+                      <span class="image-state-label">选中</span>
+                      <el-image v-if="child.selected_image" class="recognition-thumb" :src="child.selected_image" :preview-src-list="[child.selected_image]" fit="cover" preview-teleported />
+                      <div v-else class="image-placeholder">未上传</div>
+                    </div>
+                    <el-tag :type="recognitionStateType(child)" size="small" effect="plain" class="recognition-count">
+                      {{ recognitionCount(child) }}/2
+                    </el-tag>
                   </div>
                 </template>
               </el-table-column>
               <el-table-column prop="quantity" label="数量" width="70" align="center" />
-              <el-table-column prop="price" label="价格" width="90" align="right" />
+              <el-table-column prop="price" label="参考价格" width="100" align="right" />
               <el-table-column label="操作" width="120">
                 <template #default="{ row: child }">
                   <el-button size="small" link type="primary" @click="openItemDialog(child)">编辑</el-button>
@@ -57,29 +77,48 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="code" label="编码" width="120" />
-      <el-table-column prop="name" label="物品名称" min-width="150" />
-      <el-table-column label="所属游戏" width="100">
-        <template #default="{ row }">{{ gameNameMap[row.game_id] || '-' }}</template>
-      </el-table-column>
-      <el-table-column label="识别图片" width="110">
+      <el-table-column label="物品" min-width="240">
         <template #default="{ row }">
-          <div class="recognition-images">
-            <el-image v-if="row.image" :src="row.image" :preview-src-list="[row.image]" fit="cover" />
-            <el-image v-if="row.selected_image" :src="row.selected_image" :preview-src-list="[row.selected_image]" fit="cover" />
+          <div class="item-identity">
+            <div class="item-name-line">
+              <span class="item-name">{{ row.name }}</span>
+              <el-tag :type="row.is_bundle ? 'warning' : 'info'" size="small" effect="plain">
+                {{ row.is_bundle ? '套装' : '单品' }}
+              </el-tag>
+            </div>
+            <div class="item-meta">
+              <span class="item-code">{{ row.code }}</span>
+              <span v-if="row.category">{{ row.category }}</span>
+            </div>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="position" label="位置坐标" width="120">
-        <template #default="{ row }">{{ row.position || '-' }}</template>
+      <el-table-column label="所属游戏" width="120">
+        <template #default="{ row }">{{ gameNameMap[row.game_id] || '-' }}</template>
       </el-table-column>
-      <el-table-column label="类型" width="80" align="center">
+      <el-table-column label="识别素材（可选）" min-width="230">
         <template #default="{ row }">
-          <el-tag :type="row.is_bundle ? 'warning' : 'info'" size="small">{{ row.is_bundle ? '套装' : '单品' }}</el-tag>
+          <div class="recognition-panel">
+            <div class="image-state">
+              <span class="image-state-label">未选中</span>
+              <el-image v-if="row.image" class="recognition-thumb" :src="row.image" :preview-src-list="[row.image]" fit="cover" preview-teleported />
+              <div v-else class="image-placeholder">未上传</div>
+            </div>
+            <div class="image-state">
+              <span class="image-state-label">选中</span>
+              <el-image v-if="row.selected_image" class="recognition-thumb" :src="row.selected_image" :preview-src-list="[row.selected_image]" fit="cover" preview-teleported />
+              <div v-else class="image-placeholder">未上传</div>
+            </div>
+            <el-tag :type="recognitionStateType(row)" size="small" effect="plain" class="recognition-count">
+              {{ recognitionCount(row) }}/2
+            </el-tag>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column prop="category" label="分类" width="100" />
-      <el-table-column prop="price" label="价格" width="90" align="right" />
+      <el-table-column prop="position" label="位置坐标" width="130">
+        <template #default="{ row }">{{ row.position || '-' }}</template>
+      </el-table-column>
+      <el-table-column prop="price" label="参考价格" width="100" align="right" />
       <el-table-column prop="sort_order" label="排序" width="70" align="center" />
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
@@ -96,8 +135,8 @@
     </div>
 
     <!-- 物品编辑弹窗 -->
-    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑物品' : '新增物品'" width="550px" destroy-on-close>
-      <el-form :model="form" label-width="90px" ref="formRef" :rules="rules">
+    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑物品' : '新增物品'" width="620px" destroy-on-close>
+      <el-form :model="form" label-width="100px" ref="formRef" :rules="rules">
         <el-form-item label="所属游戏" prop="game_id">
           <el-select v-model="form.game_id" placeholder="选择游戏" style="width:100%" :disabled="isEdit">
             <el-option v-for="g in gameList" :key="g.id" :label="g.name" :value="g.id" />
@@ -115,7 +154,7 @@
             <el-radio :value="1">套装</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="未选中图片" prop="image">
+        <el-form-item label="未选中图片">
           <el-upload
             :auto-upload="false"
             :limit="1"
@@ -126,11 +165,11 @@
             list-type="picture"
           >
             <el-button size="small" type="primary">选择图片</el-button>
-            <template #tip><div class="el-upload__tip">物品未被选中时的图标，建议使用紧贴边缘的 PNG</div></template>
+            <template #tip><div class="el-upload__tip">可选。用于识别物品未选中状态；未上传时指令不会携带该图片。</div></template>
           </el-upload>
           <el-input v-if="form.image" v-model="form.image" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
         </el-form-item>
-        <el-form-item label="选中图片" prop="selected_image">
+        <el-form-item label="选中图片">
           <el-upload
             :auto-upload="false"
             :limit="1"
@@ -141,7 +180,7 @@
             list-type="picture"
           >
             <el-button size="small" type="primary">选择图片</el-button>
-            <template #tip><div class="el-upload__tip">物品被选中高亮时的图标，两张图片都会随交易指令下发</div></template>
+            <template #tip><div class="el-upload__tip">可选。用于识别物品高亮状态，可与未选中图片独立配置。</div></template>
           </el-upload>
           <el-input v-if="form.selected_image" v-model="form.selected_image" placeholder="或直接输入URL" size="small" style="margin-top:6px" />
         </el-form-item>
@@ -179,11 +218,17 @@
       </el-input>
       <el-table :data="availableItems" border stripe size="small" @selection-change="onChildSelectionChange" @row-click="onChildRowClick" ref="childTableRef" v-loading="childLoading">
         <el-table-column type="selection" width="50" />
-        <el-table-column prop="code" label="编码" width="130" />
-        <el-table-column prop="name" label="名称" min-width="150" />
-        <el-table-column label="图片" width="80">
+        <el-table-column label="物品" min-width="220">
           <template #default="{ row }">
-            <el-image v-if="row.image" :src="row.image" :preview-src-list="[row.image]" style="width:40px;height:40px" fit="cover" />
+            <div class="item-identity">
+              <div class="item-name">{{ row.name }}</div>
+              <div class="item-meta"><span class="item-code">{{ row.code }}</span></div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="识别素材" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="recognitionStateType(row)" size="small" effect="plain">{{ recognitionCount(row) }}/2</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="数量" width="100" align="center">
@@ -274,26 +319,10 @@ const isEdit = ref(false)
 const editId = ref(null)
 const submitting = ref(false)
 const formRef = ref(null)
-const validateUnselectedImage = (_rule, _value, callback) => {
-  if (!form.is_bundle && !form.image && !imageFile.value) {
-    callback(new Error('单品必须上传未选中状态图片'))
-  } else {
-    callback()
-  }
-}
-const validateSelectedImage = (_rule, _value, callback) => {
-  if (!form.is_bundle && !form.selected_image && !selectedImageFile.value) {
-    callback(new Error('单品必须上传选中状态图片'))
-  } else {
-    callback()
-  }
-}
 const rules = {
   game_id: [{ required: true, message: '请选择游戏', trigger: 'change' }],
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   code: [{ required: true, message: '请输入编码', trigger: 'blur' }],
-  image: [{ validator: validateUnselectedImage, trigger: 'change' }],
-  selected_image: [{ validator: validateSelectedImage, trigger: 'change' }],
 }
 
 const defaultForm = () => ({
@@ -317,6 +346,17 @@ const imageFileList = ref([])
 const imageFile = ref(null)
 const selectedImageFileList = ref([])
 const selectedImageFile = ref(null)
+
+function recognitionCount(item) {
+  return Number(Boolean(item?.image)) + Number(Boolean(item?.selected_image))
+}
+
+function recognitionStateType(item) {
+  const count = recognitionCount(item)
+  if (count === 2) return 'success'
+  if (count === 1) return 'warning'
+  return 'info'
+}
 
 function handleImageChange(file) {
   imageFile.value = file.raw
@@ -504,8 +544,35 @@ onMounted(async () => {
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 .expand-area { padding: 12px 20px; }
 .expand-title { font-weight: 600; margin-bottom: 8px; color: #606266; }
-.recognition-images { display: flex; gap: 4px; }
-.recognition-images .el-image { width: 40px; height: 40px; }
+.item-identity { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.item-name-line { display: flex; align-items: center; gap: 8px; }
+.item-name { color: #303133; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.item-meta { display: flex; align-items: center; gap: 10px; color: #909399; font-size: 12px; }
+.item-code { color: #606266; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.recognition-panel { display: flex; align-items: flex-end; gap: 8px; }
+.image-state { display: flex; flex-direction: column; gap: 4px; }
+.image-state-label { color: #909399; font-size: 11px; line-height: 1; text-align: center; }
+.recognition-thumb,
+.image-placeholder {
+  width: 48px;
+  height: 48px;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+.recognition-thumb { display: block; }
+.image-placeholder {
+  display: grid;
+  place-items: center;
+  background: #f5f7fa;
+  color: #a8abb2;
+  font-size: 11px;
+}
+.recognition-count { margin-bottom: 13px; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  .toolbar .el-button { margin-left: 0; }
+}
 
 /* 隐藏非套装行的展开图标 */
 :deep(.hide-expand-icon .el-table__expand-icon) {

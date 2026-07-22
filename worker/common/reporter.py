@@ -30,6 +30,11 @@ class Reporter:
         self._trade_screenshot_events: dict = {}
         self._trade_screenshot_results: dict = {}
 
+    def set_client(self, client):
+        """WebSocket 重连后切换发送通道，同时保留正在运行任务的 Reporter 引用。"""
+        with self._lock:
+            self._client = client
+
     # ── 状态上报 ──
 
     def report_status(self, task_id, status, message="", account_id=None):

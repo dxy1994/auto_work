@@ -28,6 +28,7 @@ from patchright.async_api import Page
 from monitor import config
 from monitor.browser.audio import play_alert_audio_async
 from monitor.browser.session import BrowserSession
+from monitor.monitoring.extraction import OrderExtractionResult
 from monitor.monitoring.worker import PageWorker
 from common.reporter import Reporter
 
@@ -156,16 +157,23 @@ class BaseOrderMonitor:
             print(f"[{self._log_tag}] 不在采集目标页，跳过订单采集")
             return 0
 
-        orders = await self._extract_orders_from_table(page)
-        if not orders:
+        extraction = await self._extract_orders_from_table(page)
+        if extraction.failed:
             self._consecutive_extraction_fails += 1
-            print(f"[{self._log_tag}] 表格中无订单数据 "
-                  f"(连续失败{self._consecutive_extraction_fails}次)")
+            print(f"[{self._log_tag}] 订单提取失败 "
+                  f"(连续失败{self._consecutive_extraction_fails}次)。"
+                  f"原因：{extraction.error}；解决方案：检查登录状态和订单表格页面结构。")
             if self._consecutive_extraction_fails >= 3:
                 await play_alert_audio_async(
                     text=f"{self.tag}账号{self.account_id} "
                          f"信息提取连续失败{self._consecutive_extraction_fails}次，请检查")
                 self._consecutive_extraction_fails = 0
+            return 0
+
+        orders = extraction.orders
+        if not orders:
+            self._consecutive_extraction_fails = 0
+            print(f"[{self._log_tag}] 订单表格正常，当前无订单")
             return 0
 
         self._consecutive_extraction_fails = 0
@@ -238,8 +246,8 @@ class BaseOrderMonitor:
 
         return reported
 
-    async def _extract_orders_from_table(self, page) -> list:
-        return []
+    async def _extract_orders_from_table(self, page) -> OrderExtractionResult:
+        return OrderExtractionResult.failure("当前平台未实现订单表格提取器")
 
     def _build_normalized_order(self, page, order_data: dict):
         raise NotImplementedError
@@ -317,7 +325,6 @@ class BaseOrderMonitor:
         my_page_url = cfg.get("my_page_url", "")
         my_page_selector = cfg.get("my_page_selector", "")
         wait_timeout = cfg.get("wait_timeout", 30000)
-        max_retries = cfg.get("max_retries", 999)
 
         has_credentials = bool(
             self.login_url and self.username and self.password
@@ -330,136 +337,149 @@ class BaseOrderMonitor:
         print(f"[{self._log_tag}] 我的页面: {my_page_url}, "
               f"跳过登录: {self.skip_login}")
 
-        while retry_count < max_retries:
+        while True:
             if self._stopped():
+                await self._shutdown_for_user_stop()
                 return self._make_result("cancelled", "用户手动终止")
 
             try:
-                print(f"[{self._log_tag}] 创建浏览器会话 (重试={retry_count})")
-                self._session = BrowserSession.get_or_create(
-                    account_id=self.account_id,
-                    login_url=self.login_url,
-                    username=self.username,
-                    password=self.password,
-                    login_type=self.login_type,
-                    login_config=self.login_config,
-                    skip_login=self.skip_login,
-                    force_login=self.force_login,
-                    website_id=self.website_id,
-                    my_page_url=my_page_url,
-                    stop_event=self.stop_event,
-                    headless=False if is_captcha else PLAYWRIGHT_HEADLESS,
-                )
+                if self._session is None:
+                    print(f"[{self._log_tag}] 创建浏览器会话 (重试={retry_count})")
+                    self._session = BrowserSession.get_or_create(
+                        account_id=self.account_id,
+                        login_url=self.login_url,
+                        username=self.username,
+                        password=self.password,
+                        login_type=self.login_type,
+                        login_config=self.login_config,
+                        skip_login=self.skip_login,
+                        force_login=self.force_login,
+                        website_id=self.website_id,
+                        my_page_url=my_page_url,
+                        stop_event=self.stop_event,
+                        headless=False if is_captcha else PLAYWRIGHT_HEADLESS,
+                    )
+
+                print(f"[{self._log_tag}] [1/6] session.init()...")
+                await self._session.init()
+
+                print(f"[{self._log_tag}] [2/6] ensure_login()...")
+                login_result = await self._session.ensure_login()
+                if (login_result["status"] != "success"
+                        and not self.skip_login):
+                    raise Exception(f"登录失败: {login_result['message']}")
+
+                print(f"[{self._log_tag}] [3/6] post_login_check...")
+                main_page = await self._session.get_main_page()
+                if not self.skip_login and has_credentials:
+                    need_relogin = await self.post_login_check(main_page)
+                    if need_relogin:
+                        print(f"[{self._log_tag}] 强制重新登录")
+                        lr = await self._session._do_login()
+                        if lr["status"] != "success":
+                            raise Exception(f"重新登录失败: {lr['message']}")
+                        await main_page.goto(my_page_url,
+                                             wait_until="commit",
+                                             timeout=wait_timeout)
+                        await self._wait_page_stable_async(main_page)
+
+                print(f"[{self._log_tag}] [4/6] 导航到 my_page...")
+                await self._resolve_my_page_async(
+                    main_page, my_page_url, my_page_selector, wait_timeout)
+                await self._wait_page_stable_async(main_page)
+
+                retry_count = 0
+                print(f"[{self._log_tag}] 会话就绪 "
+                      f"(main_page={main_page.url})，启动 Worker 协程")
+
+                print(f"[{self._log_tag}] [5/6] _get_workers()...")
+                workers = self._get_workers()
+                if not workers:
+                    raise Exception("未配置任何 PageWorker")
+
+                for w in workers:
+                    await w.init_page()
+                await self._close_non_worker_pages(workers)
+
+                main_page = workers[0]._page
+                self._session._main_page = main_page
+
+                print(f"[{self._log_tag}] {len(workers)} 个 Worker 页面已就绪")
+                print(f"[{self._log_tag}] [6/6] 启动 {len(workers)} 个 Worker...")
+                tasks = [asyncio.create_task(self._worker_runner(w))
+                         for w in workers]
+                tasks.append(asyncio.create_task(self._health_monitor(workers)))
+
+                _register_monitor(self.account_id, self)
+                print(f"[{self._log_tag}] {len(tasks)-1} 个 Worker + 健康监控已启动")
 
                 try:
-                    print(f"[{self._log_tag}] [1/6] session.init()...")
-                    await self._session.init()
-
-                    print(f"[{self._log_tag}] [2/6] ensure_login()...")
-                    login_result = await self._session.ensure_login()
-                    if (login_result["status"] != "success"
-                            and not self.skip_login):
-                        raise Exception(
-                            f"登录失败: {login_result['message']}")
-
-                    print(f"[{self._log_tag}] [3/6] post_login_check...")
-                    main_page = await self._session.get_main_page()
-                    if not self.skip_login and has_credentials:
-                        need_relogin = await self.post_login_check(main_page)
-                        if need_relogin:
-                            print(f"[{self._log_tag}] 强制重新登录")
-                            lr = await self._session._do_login()
-                            if lr["status"] != "success":
-                                raise Exception(
-                                    f"重新登录失败: {lr['message']}")
-                            await main_page.goto(my_page_url,
-                                                 wait_until="commit",
-                                                 timeout=wait_timeout)
-                            await self._wait_page_stable_async(main_page)
-
-                    print(f"[{self._log_tag}] [4/6] 导航到 my_page...")
-                    await self._resolve_my_page_async(
-                        main_page, my_page_url, my_page_selector,
-                        wait_timeout)
-                    await self._wait_page_stable_async(main_page)
-
-                    retry_count = 0
-                    print(f"[{self._log_tag}] 会话就绪 "
-                          f"(main_page={main_page.url})，启动 Worker 协程")
-
-                    print(f"[{self._log_tag}] [5/6] _get_workers()...")
-                    workers = self._get_workers()
-                    if not workers:
-                        raise Exception("未配置任何 PageWorker")
-
-                    for w in workers:
-                        await w.init_page()
-                    await self._close_non_worker_pages(workers)
-
-                    main_page = workers[0]._page
-                    self._session._main_page = main_page
-
-                    print(f"[{self._log_tag}] {len(workers)} 个 Worker 页面已就绪")
-
-                    print(f"[{self._log_tag}] [6/6] 启动 {len(workers)} 个 Worker...")
-                    tasks = []
-                    for w in workers:
-                        task = asyncio.create_task(
-                            self._worker_runner(w))
-                        tasks.append(task)
-                    tasks.append(asyncio.create_task(
-                        self._health_monitor(workers)))
-
-                    # 注册活跃 Monitor，供 greeting 路由
-                    _register_monitor(self.account_id, self)
-
-                    print(f"[{self._log_tag}] {len(tasks)-1} 个 Worker + 健康监控已启动")
-
-                    results = await asyncio.gather(*tasks,
-                                                   return_exceptions=True)
-                    for r in results:
-                        if isinstance(r, Exception):
-                            print(f"[{self._log_tag}] Worker 异常: {r}")
-
-                    status = "cancelled" if self._stopped() else "completed"
-                    msg = ("用户手动终止" if self._stopped()
-                           else "监控正常结束")
-                    return self._make_result(status, msg)
-
-                finally:
-                    _unregister_monitor(self.account_id)
-                    try:
-                        await self._session.shutdown()
-                        self._session.release()
-                    except Exception:
-                        pass
-                    self._session = None
+                    await asyncio.gather(*tasks)
+                except Exception:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
+                if self._stopped():
+                    await self._shutdown_for_user_stop()
+                    return self._make_result("cancelled", "用户手动终止")
+                raise RuntimeError("监控协程意外结束")
 
             except Exception as e:
+                if self._stopped():
+                    await self._shutdown_for_user_stop()
+                    return self._make_result("cancelled", "用户手动终止")
                 retry_count += 1
-                print(f"[{self._log_tag}] 第{retry_count}次崩溃，5s后重试: {e}")
+                print(f"[{self._log_tag}] 监控异常（第{retry_count}次）。"
+                      f"原因：{e}；解决方案：浏览器保持打开，5 秒后自动重试；"
+                      "若持续失败，请检查网络、登录状态和页面配置。")
                 _unregister_monitor(self.account_id)
-                if self._session:
-                    try:
-                        await self._session.shutdown()
-                        self._session.close()
-                    except Exception:
-                        pass
-                    self._session = None
+                if self._session is not None and not self._session.is_alive():
+                    await self._session.reset_after_crash()
+                    print(f"[{self._log_tag}] 检测到浏览器异常退出，5 秒后自动重启")
                 await asyncio.sleep(5)
 
-        return self._make_result("failed",
-                                 f"重试{max_retries}次后仍然失败")
-
     async def _worker_runner(self, worker: PageWorker):
+        while not self._stopped():
+            try:
+                await worker.run()
+                if not self._stopped():
+                    print(f"[{worker._log_tag}] Worker 意外结束。原因：监控循环提前返回；"
+                          "解决方案：浏览器保持打开，5 秒后自动重启该 Worker。")
+            except Exception as e:
+                if not self._stopped():
+                    if not worker.session.is_alive():
+                        raise RuntimeError("浏览器进程或持久化上下文已退出") from e
+                    print(f"[{worker._log_tag}] Worker 异常。原因：{e}；"
+                          "解决方案：浏览器保持打开，5 秒后自动重启该 Worker；"
+                          "若持续失败，请检查当前页面是否仍处于登录状态。")
+                    import traceback
+                    traceback.print_exc()
+                    await worker.recover_closed_page()
+            if not self._stopped():
+                await asyncio.sleep(5)
+        await worker.stop()
+
+    async def _shutdown_for_user_stop(self):
+        """仅处理总控主动 cancel；普通异常和连接断开不得关闭浏览器。"""
+        _unregister_monitor(self.account_id)
         try:
-            await worker.run()
+            self.reporter.report_status(
+                self.task_id, "cancelled", "用户手动终止", self.account_id)
         except Exception as e:
-            print(f"[{worker._log_tag}] Worker 异常退出: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[{self._log_tag}] 终止状态上报失败。原因：{e}；"
+                  "解决方案：总控将在最终任务结果返回后清理状态。")
+        if self._session is None:
+            return
+        try:
+            await self._session.shutdown(reason="user_cancel")
+        except Exception as e:
+            print(f"[{self._log_tag}] 主动终止时关闭浏览器失败。原因：{e}；"
+                  "解决方案：请在监控机器上手动关闭残留浏览器进程。")
         finally:
-            await worker.stop()
+            self._session.release()
+            self._session = None
 
     async def _close_non_worker_pages(self, workers: List[PageWorker]):
         if not self._session or not self._session._context:
@@ -484,7 +504,11 @@ class BaseOrderMonitor:
                               health_interval: int = 30):
         timeout = health_interval * 2
         while not self._stopped():
-            await asyncio.sleep(health_interval)
+            # 分段等待，让用户终止不必被完整的健康检查周期阻塞。
+            for _ in range(health_interval):
+                if self._stopped():
+                    return
+                await asyncio.sleep(1)
             now = time.time()
             for w in workers:
                 idle = now - w.last_active

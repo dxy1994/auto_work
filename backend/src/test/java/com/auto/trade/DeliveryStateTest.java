@@ -13,4 +13,11 @@ class DeliveryStateTest {
                 DeliveryState.WAIT_WEB_CONFIRM,
                 DeliveryState.from("wait_web_confirm", "processing"));
     }
+
+    @Test
+    void greetingAbnormalIsARecognizedOrderState() {
+        assertEquals(
+                DeliveryState.GREETING_ABNORMAL,
+                DeliveryState.from("greeting", "abnormal"));
+    }
 }

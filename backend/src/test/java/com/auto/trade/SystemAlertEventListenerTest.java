@@ -1,0 +1,89 @@
+package com.auto.trade;
+
+import com.auto.entity.Machine;
+import com.auto.entity.MachinePlatformAccount;
+import com.auto.entity.PlatformAccount;
+import com.auto.service.MachinePlatformAccountService;
+import com.auto.service.MachineService;
+import com.auto.service.PlatformAccountService;
+import com.auto.service.SystemAlertService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+class SystemAlertEventListenerTest {
+
+    private SystemAlertService alertService;
+    private MachineService machineService;
+    private PlatformAccountService accountService;
+    private MachinePlatformAccountService associationService;
+    private SystemAlertEventListener listener;
+
+    @BeforeEach
+    void setUp() {
+        alertService = mock(SystemAlertService.class);
+        machineService = mock(MachineService.class);
+        accountService = mock(PlatformAccountService.class);
+        associationService = mock(MachinePlatformAccountService.class);
+        listener = new SystemAlertEventListener(
+                alertService, machineService, accountService, associationService);
+    }
+
+    @Test
+    void machineDisconnectCreatesPersistentManualAlert() {
+        Machine machine = new Machine();
+        machine.setId(7);
+        machine.setName("监控主机 A");
+        machine.setStatus("offline");
+        when(machineService.getById(7)).thenReturn(machine);
+        when(associationService.findByMachineIdActive(7))
+                .thenReturn(List.of(new MachinePlatformAccount()));
+
+        listener.onMachineSessionLost(new MachineSessionLost(7, "worker 断线"));
+
+        verify(alertService).openOrRefresh(
+                eq("machine_offline"), eq("machine:7:offline"), eq(7), isNull(),
+                eq("critical"), eq("订单监控机器已掉线"),
+                argThat(message -> message.contains("原因：worker 断线")
+                        && message.contains("解决方案：")
+                        && message.contains("手动关闭")));
+    }
+
+    @Test
+    void replacedOldSessionDoesNotAlertWhenMachineIsAlreadyOnline() {
+        Machine machine = new Machine();
+        machine.setId(7);
+        machine.setStatus("online");
+        when(machineService.getById(7)).thenReturn(machine);
+
+        listener.onMachineSessionLost(new MachineSessionLost(7, "worker 连接已被新会话替换"));
+
+        verifyNoInteractions(alertService);
+    }
+
+    @Test
+    void unexpectedMonitorStopCreatesAccountAlert() {
+        Machine machine = new Machine();
+        machine.setId(7);
+        machine.setHostname("monitor-01");
+        PlatformAccount account = new PlatformAccount();
+        account.setId(12);
+        account.setUsername("seller@example.com");
+        when(machineService.getById(7)).thenReturn(machine);
+        when(accountService.getById(12)).thenReturn(account);
+
+        listener.onOrderMonitorStopped(new OrderMonitorStopped(
+                7, 12, "task-1", "failed", "页面结构异常"));
+
+        verify(alertService).openOrRefresh(
+                eq("order_monitor_stopped"), eq("monitor:12:stopped"), eq(7), eq(12),
+                eq("danger"), eq("订单监控已掉线"),
+                argThat(message -> message.contains("页面结构异常")
+                        && message.contains("重新启动订单监控")
+                        && message.contains("手动关闭")));
+    }
+}

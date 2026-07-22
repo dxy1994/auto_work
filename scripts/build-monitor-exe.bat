@@ -46,7 +46,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
+if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
+if exist "%DIST_DIR%\auto-monitor.exe" del /q "%DIST_DIR%\auto-monitor.exe"
 if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
 if exist "%WORKER_DIR%\auto-monitor.spec" del /q "%WORKER_DIR%\auto-monitor.spec"
 
@@ -72,6 +73,11 @@ if errorlevel 1 (
 )
 
 copy /y "%WORKER_DIR%\.env.monitor.example" "%DIST_DIR%\.env.monitor.example" >nul
+if exist "%WORKER_DIR%\.env" (
+    copy /y "%WORKER_DIR%\.env" "%DIST_DIR%\.env" >nul
+) else if not exist "%DIST_DIR%\.env" (
+    copy /y "%WORKER_DIR%\.env.monitor.example" "%DIST_DIR%\.env" >nul
+)
 if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
 if exist "%WORKER_DIR%\auto-monitor.spec" del /q "%WORKER_DIR%\auto-monitor.spec"
 

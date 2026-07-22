@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import List, Optional
 
 from monitor.monitoring.base import BaseOrderMonitor
+from monitor.monitoring.extraction import OrderExtractionResult
 from monitor.monitoring.worker import PageWorker
 from monitor.orders.adapters import parse_korean_amount, adapter_for, _parse_ko_units
 from monitor.browser.audio import play_alert_audio_async
@@ -190,16 +191,24 @@ class ItemmaniaMonitor(BaseOrderMonitor):
             print(f"[{self._log_tag}] 不在采集目标页，跳过")
             return 0
 
-        table_orders = await self._extract_trade_ids_from_table(page)
-        if not table_orders:
+        extraction = await self._extract_trade_ids_from_table(page)
+        if extraction.failed:
             self._consecutive_extraction_fails += 1
-            print(f"[{self._log_tag}] 表格中无订单数据 "
-                  f"(连续失败{self._consecutive_extraction_fails}次)")
+            print(f"[{self._log_tag}] 订单提取失败 "
+                  f"(连续失败{self._consecutive_extraction_fails}次)。"
+                  f"原因：{extraction.error}；解决方案：检查登录状态和 ItemMania 订单表格结构。")
             if self._consecutive_extraction_fails >= 3:
                 await play_alert_audio_async(
                     text=f"{self.tag}账号{self.account_id} "
                          f"信息提取连续失败{self._consecutive_extraction_fails}次，请检查")
                 self._consecutive_extraction_fails = 0
+            return 0
+
+
+        table_orders = extraction.orders
+        if not table_orders:
+            self._consecutive_extraction_fails = 0
+            print(f"[{self._log_tag}] 订单表格正常，当前无订单")
             return 0
 
         self._consecutive_extraction_fails = 0
@@ -298,19 +307,29 @@ class ItemmaniaMonitor(BaseOrderMonitor):
 
     # ── 表格提取 ──
 
-    async def _extract_trade_ids_from_table(self, page) -> list:
+    async def _extract_trade_ids_from_table(self, page) -> OrderExtractionResult:
         """从 sell_ing.html 表格提取 trade_id 和状态。"""
+        table = page.locator('.g_blue_table.tb_list').first
+        if await table.count() == 0:
+            return OrderExtractionResult.failure("未找到 .g_blue_table.tb_list 订单表格")
+
         rows = page.locator('.g_blue_table.tb_list tbody tr')
         row_count = await rows.count()
         orders = []
+        candidate_rows = 0
+        failed_rows = 0
 
         for i in range(row_count):
+            candidate_rows += 1
             try:
                 row = rows.nth(i)
+                if await row.locator('.empty_item').count() > 0:
+                    candidate_rows -= 1
+                    continue
                 tds = row.locator('td')
                 if await tds.count() < 6:
-                    continue
-                if await tds.nth(0).locator('.empty_item').count() > 0:
+                    failed_rows += 1
+                    print(f"[{self._log_tag}] 行 #{i} 列数不足，无法提取订单")
                     continue
 
                 link_el = tds.nth(2).locator('a')
@@ -321,6 +340,8 @@ class ItemmaniaMonitor(BaseOrderMonitor):
                     if m:
                         trade_id = m.group(1)
                 if not trade_id:
+                    failed_rows += 1
+                    print(f"[{self._log_tag}] 行 #{i} 未提取到订单号")
                     continue
 
                 status_el = tds.nth(5).locator(
@@ -335,10 +356,14 @@ class ItemmaniaMonitor(BaseOrderMonitor):
                     'state': STATUS_MAP.get(status_raw, status_raw),
                 })
             except Exception as e:
+                failed_rows += 1
                 print(f"[{self._log_tag}] 行 #{i} 提取失败: {e}")
                 continue
 
-        return orders
+        if candidate_rows > 0 and failed_rows == candidate_rows:
+            return OrderExtractionResult.failure(
+                f"订单表格存在 {candidate_rows} 条有效行，但全部解析失败")
+        return OrderExtractionResult.success(orders)
 
     # ── 详情页提取 ──
 

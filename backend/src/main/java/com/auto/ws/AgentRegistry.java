@@ -5,6 +5,7 @@ import com.auto.service.MachineService;
 import com.auto.trade.TradeOffer;
 import com.auto.trade.WorkerRuntimeStatus;
 import com.auto.trade.MachineSessionLost;
+import com.auto.trade.OrderMonitorStopped;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -232,6 +233,16 @@ public class AgentRegistry {
             return;
         }
         Integer accountId = asInt(msg.get("account_id"));
+        Integer machineId = taskToMachine.get(taskId);
+        Object resultObject = msg.get("result");
+        Map<String, Object> result = resultObject instanceof Map<?, ?> rawResult
+                ? (Map<String, Object>) rawResult : Map.of();
+        String resultStatus = str(result.get("status"));
+        String resultMessage = str(result.get("message"));
+        if (accountId != null && machineId != null && !"cancelled".equals(resultStatus)) {
+            eventPublisher.publishEvent(new OrderMonitorStopped(
+                    machineId, accountId, taskId, resultStatus, resultMessage));
+        }
         if (accountId != null) {
             TaskInfo info = accountTasks.get(accountId);
             if (info != null && info.taskId != null && info.taskId.equals(taskId)) {

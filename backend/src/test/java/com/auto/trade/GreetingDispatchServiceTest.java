@@ -19,8 +19,12 @@ import java.util.List;
 import java.util.Map;
 
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.same;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @ExtendWith(MockitoExtension.class)
 class GreetingDispatchServiceTest {
@@ -74,5 +78,51 @@ class GreetingDispatchServiceTest {
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void failedGreetingIncludesErrorDetailsInStateTransition() {
+        int orderId = 43;
+        GameItemOrder order = new GameItemOrder();
+        order.setId(orderId);
+        order.setDeliveryStatus("greeting");
+        order.setStatus("pending");
+        when(orderService.getById(orderId)).thenReturn(order);
+
+        service.handleResult(orderId, false, "聊天窗口发送失败");
+
+        verify(stateMachine).fire(
+                same(order),
+                eq(com.auto.trade.statemachine.DeliveryEvent.GREETING_FAILED),
+                org.mockito.ArgumentMatchers.argThat(context ->
+                        "GREETING_EXECUTION_FAILED".equals(context.get("errorCode"))
+                                && String.valueOf(context.get("errorMessage")).contains("原因：聊天窗口发送失败")
+                                && String.valueOf(context.get("errorMessage")).contains("解决方案：")));
+    }
+
+    @Test
+    void processingExceptionIsPersistedSeparately() {
+        int orderId = 44;
+        GameItemOrder order = new GameItemOrder();
+        order.setId(orderId);
+        order.setDeliveryStatus("greeting");
+        order.setStatus("pending");
+        when(orderService.getById(orderId)).thenReturn(order);
+        doThrow(new IllegalStateException("状态写入失败"))
+                .when(stateMachine)
+                .fire(
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
+
+        assertThrows(IllegalStateException.class,
+                () -> service.handleResult(orderId, false, "招呼失败"));
+
+        verify(orderService).updateLastError(
+                eq(orderId),
+                eq("GREETING_RESULT_PROCESSING_ERROR"),
+                org.mockito.ArgumentMatchers.argThat(message ->
+                        message.contains("原因：状态写入失败")
+                                && message.contains("解决方案：")));
     }
 }

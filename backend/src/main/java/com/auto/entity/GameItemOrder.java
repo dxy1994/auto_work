@@ -55,7 +55,7 @@ public class GameItemOrder {
 
     private BigDecimal totalAmount = BigDecimal.ZERO;
 
-    /** pending / assigned / processing / completed / cancelled。 */
+    /** pending / assigned / processing / completed / cancelled / abnormal。 */
     private String status = "pending";
 
     private Integer assignedMachineId;

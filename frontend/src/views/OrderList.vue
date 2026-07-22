@@ -14,9 +14,28 @@
       <el-input v-model="keyword" placeholder="搜索订单号/客户..." clearable style="width: 220px" @input="handleSearch">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
-      <el-button type="primary" @click="openCreateDialog()">
-        <el-icon><Plus /></el-icon> 新建订单
-      </el-button>
+      <div class="toolbar-actions">
+        <div class="auto-refresh-controls">
+          <span class="auto-refresh-label">刷新间隔</span>
+          <el-input-number
+            v-model="refreshIntervalSeconds"
+            :min="1"
+            :max="3600"
+            :step="1"
+            controls-position="right"
+            style="width: 100px"
+            aria-label="自动刷新间隔秒数"
+          />
+          <span class="auto-refresh-unit">秒</span>
+          <el-button :type="autoRefreshEnabled ? 'danger' : 'success'" plain @click="toggleAutoRefresh">
+            <el-icon><RefreshRight /></el-icon>
+            {{ autoRefreshEnabled ? '关闭自动刷新' : '开启自动刷新' }}
+          </el-button>
+        </div>
+        <el-button type="primary" @click="openCreateDialog()">
+          <el-icon><Plus /></el-icon> 新建订单
+        </el-button>
+      </div>
     </div>
 
     <el-table :data="list" border stripe v-loading="loading" highlight-current-row @current-change="onCurrentChange" row-key="id">
@@ -333,7 +352,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed, watch } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { RefreshRight } from '@element-plus/icons-vue'
@@ -384,6 +403,51 @@ async function fetchList() {
   } finally { loading.value = false }
 }
 function handleSearch() { page.value = 1; fetchList() }
+
+// ── 自动刷新 ──
+const autoRefreshEnabled = ref(false)
+const refreshIntervalSeconds = ref(10)
+let autoRefreshTimer = null
+
+function clearAutoRefreshTimer() {
+  if (autoRefreshTimer !== null) {
+    window.clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
+}
+
+async function refreshIfIdle() {
+  if (loading.value) return
+  try { await fetchList() } catch (_) { /* 请求层统一处理错误提示 */ }
+}
+
+function startAutoRefreshTimer() {
+  clearAutoRefreshTimer()
+  const seconds = Number(refreshIntervalSeconds.value)
+  if (!Number.isFinite(seconds) || seconds < 1) return
+  autoRefreshTimer = window.setInterval(refreshIfIdle, seconds * 1000)
+}
+
+function toggleAutoRefresh() {
+  if (autoRefreshEnabled.value) {
+    autoRefreshEnabled.value = false
+    clearAutoRefreshTimer()
+    ElMessage.success('自动刷新已关闭')
+    return
+  }
+  if (!Number.isFinite(Number(refreshIntervalSeconds.value)) || Number(refreshIntervalSeconds.value) < 1) {
+    refreshIntervalSeconds.value = 10
+  }
+  autoRefreshEnabled.value = true
+  startAutoRefreshTimer()
+  refreshIfIdle()
+  ElMessage.success(`已开启每 ${refreshIntervalSeconds.value} 秒自动刷新`)
+}
+
+watch(refreshIntervalSeconds, (value) => {
+  if (value == null) return
+  if (autoRefreshEnabled.value) startAutoRefreshTimer()
+})
 
 // ── 新建订单 ──
 const createDialogVisible = ref(false)
@@ -590,12 +654,16 @@ onMounted(async () => {
   await fetchList()
   await openAlertOrderFromRoute()
 })
+
+onBeforeUnmount(clearAutoRefreshTimer)
 </script>
 
 <style scoped>
 .page-container { padding: 0; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
-.toolbar .el-button { margin-left: auto; }
+.toolbar-actions { display: flex; gap: 12px; align-items: center; margin-left: auto; }
+.auto-refresh-controls { display: flex; gap: 8px; align-items: center; }
+.auto-refresh-label, .auto-refresh-unit { color: #606266; font-size: 13px; white-space: nowrap; }
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 .detail-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
 .total-line { text-align: right; font-weight: 600; font-size: 15px; margin-top: 12px; color: #e6a23c; }

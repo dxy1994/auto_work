@@ -10,6 +10,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -69,5 +70,14 @@ public class GameItemOrderServiceImpl extends ServiceImpl<GameItemOrderMapper, G
         if (!updated) {
             throw new IllegalStateException("订单状态已变化，请刷新后重试");
         }
+    }
+
+    @Override
+    public void updateLastError(Integer orderId, String errorCode, String errorMessage) {
+        update(new LambdaUpdateWrapper<GameItemOrder>()
+                .eq(GameItemOrder::getId, orderId)
+                .set(GameItemOrder::getLastErrorCode, errorCode)
+                .set(GameItemOrder::getLastErrorMessage, errorMessage)
+                .set(GameItemOrder::getUpdatedAt, LocalDateTime.now()));
     }
 }

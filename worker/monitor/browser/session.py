@@ -18,12 +18,12 @@ from patchright.async_api import async_playwright, Page, Browser, BrowserContext
 
 from monitor import config
 from monitor import storage as storage_sync
+from common.runtime_paths import monitor_user_data_root
 
 PLAYWRIGHT_HEADLESS = config.PLAYWRIGHT_HEADLESS
 
 VIEWPORT = {"width": 1280, "height": 800}
-_USER_DATA_ROOT = os.path.join(os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "user_data")
+_USER_DATA_ROOT = str(monitor_user_data_root())
 _CHROMIUM_SANDBOX = sys.platform != "linux"
 
 _CHROME_PATHS = [
@@ -96,6 +96,18 @@ class BrowserSession:
     def account_id(self) -> int:
         return self._account_id
 
+    def is_alive(self) -> bool:
+        """浏览器与持久化上下文是否仍可使用。"""
+        if self._context is None or self._playwright is None:
+            return False
+        try:
+            if self._browser is not None and not self._browser.is_connected():
+                return False
+            self._context.pages
+            return True
+        except Exception:
+            return False
+
     # ── 公共 API ──
 
     @classmethod
@@ -144,8 +156,10 @@ class BrowserSession:
 
     async def init(self):
         """初始化浏览器（必须在 async 上下文中调用）。"""
-        if self._playwright is not None:
+        if self.is_alive():
             return
+        if self._playwright is not None:
+            await self.reset_after_crash()
 
         self._owner_loop = asyncio.get_running_loop()
         self._closing = False
@@ -194,6 +208,7 @@ class BrowserSession:
         user_data_dir = os.path.join(_USER_DATA_ROOT,
                                      str(self._account_id))
         os.makedirs(user_data_dir, exist_ok=True)
+        print(f"[BrowserSession:{self._account_id}] 持久化资料目录: {user_data_dir}")
         print(f"[BrowserSession:{self._account_id}] [3/5] 下载远程配置...", flush=True)
         storage_sync.download(self._account_id, user_data_dir)
 
@@ -219,6 +234,38 @@ class BrowserSession:
 
         print(f"[BrowserSession:{self._account_id}] 浏览器已启动, "
               f"main_page={self._main_page.url}")
+
+    async def reset_after_crash(self):
+        """丢弃已异常退出的运行时句柄，保留本地浏览器资料用于自动重启。"""
+        if self.is_alive():
+            return False
+        current = asyncio.current_task()
+        active_tasks = [
+            task for task in self._transient_tasks
+            if task is not current and not task.done()
+        ]
+        for task in active_tasks:
+            task.cancel()
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+        try:
+            if self._playwright is not None:
+                await self._playwright.stop()
+        except Exception:
+            pass
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._main_page = None
+        self._claimed_pages.clear()
+        self._transient_page_ids.clear()
+        self._transient_tasks.clear()
+        self._login_done = False
+        self._login_result = None
+        self._owner_loop = None
+        self._closing = False
+        print(f"[BrowserSession:{self._account_id}] 已清理异常会话，准备自动重启浏览器")
+        return True
 
     async def _pick_main_page(self) -> Page:
         """从恢复的标签页中选一个作为主页面，只关多余的 about:blank。"""
@@ -377,11 +424,15 @@ class BrowserSession:
         """获取浏览器上下文。"""
         return self._context
 
-    async def shutdown(self):
-        """安全关闭浏览器并上传配置（供协调器 await）。"""
+    async def shutdown(self, reason: str):
+        """仅在用户主动终止监控时关闭浏览器并上传配置。"""
+        if reason != "user_cancel":
+            print(f"[BrowserSession:{self._account_id}] 忽略非主动终止的关闭请求: {reason}")
+            return False
         await self._close_async()
         from monitor.browser.audio import stop_speech
         stop_speech()
+        return True
 
     def release(self):
         """递减引用计数，归零时安排异步关闭。"""

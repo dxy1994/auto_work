@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS system_alerts (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    alert_type VARCHAR(64) NOT NULL,
+    source_key VARCHAR(160) NOT NULL,
+    machine_id INT NULL,
+    account_id INT NULL,
+    severity VARCHAR(24) NOT NULL DEFAULT 'danger',
+    title VARCHAR(160) NOT NULL,
+    message VARCHAR(1000) NOT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'open',
+    occurred_at DATETIME NOT NULL,
+    dismissed_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_system_alert_source_key (source_key),
+    KEY idx_system_alert_status_time (status, occurred_at),
+    KEY idx_system_alert_machine (machine_id),
+    KEY idx_system_alert_account (account_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

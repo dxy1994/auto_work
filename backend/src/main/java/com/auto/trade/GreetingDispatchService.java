@@ -26,6 +26,7 @@ public class GreetingDispatchService {
 
     private static final Logger log = LoggerFactory.getLogger(GreetingDispatchService.class);
     private static final String ITEMMANIA_CHAT_URL = "https://www.itemmania.com/myroom/chat/new_chat.html";
+    private static final int MAX_ERROR_MESSAGE_LENGTH = 500;
 
     private final RegionScriptService regionScriptService;
     private final GameScriptService gameScriptService;
@@ -99,7 +100,8 @@ public class GreetingDispatchService {
         }
 
         if (scripts.isEmpty()) {
-            log.warn("[Greeting] 未找到招呼话术 order_id={} game_id={} region_id={}, 标记为异常",
+            log.warn("[Greeting] 未找到招呼话术 order_id={} game_id={} region_id={}; 原因：没有匹配且启用的话术；"
+                            + "解决方案：在招呼话术管理中新增或启用对应游戏和大区的话术",
                     orderId, gameId, regionId);
             stateMachine.fire(order, DeliveryEvent.NO_GREETING_SCRIPT, null);
             return;
@@ -113,7 +115,9 @@ public class GreetingDispatchService {
 
         boolean sent = agentRegistry.sendGreeting(machineId, orderId, websiteId, accountId, scripts, chatUrl);
         if (!sent) {
-            log.warn("[Greeting] 招呼指令下发失败 machine_id={} order_id={}", machineId, orderId);
+            log.warn("[Greeting] 招呼指令下发失败 machine_id={} order_id={}; 原因：监控机器离线或连接不可用；"
+                            + "解决方案：启动监控端并确认其已连接总控后重试",
+                    machineId, orderId);
             stateMachine.fire(order, DeliveryEvent.GREETING_SEND_FAILED, null);
         } else {
             log.info("[Greeting] 招呼指令已下发 machine_id={} order_id={} chat_url={}", machineId, orderId, chatUrl);
@@ -122,6 +126,15 @@ public class GreetingDispatchService {
 
     /** 处理机器回馈的招呼结果，通过状态机驱动后续流程。 */
     public void handleResult(int orderId, boolean success, String message) {
+        try {
+            handleResultInternal(orderId, success, message);
+        } catch (RuntimeException e) {
+            persistProcessingError(orderId, e);
+            throw e;
+        }
+    }
+
+    private void handleResultInternal(int orderId, boolean success, String message) {
         GameItemOrder order = orderService.getById(orderId);
         if (order == null) {
             log.warn("[Greeting] 招呼回馈找不到订单 order_id={}", orderId);
@@ -134,10 +147,15 @@ public class GreetingDispatchService {
         }
 
         if (!success) {
+            String failureMessage = TradeErrorGuidance.ensureGuidance(
+                    "GREETING_EXECUTION_FAILED", normalizeErrorMessage(message, "招呼执行失败"));
             log.warn("[Greeting] 招呼执行失败（保持greeting状态） order_id={} message={}",
-                    orderId, message);
+                    orderId, failureMessage);
             stateMachine.fire(order, DeliveryEvent.GREETING_FAILED,
-                    Map.of("message", message != null ? message : "招呼执行失败"));
+                    Map.of(
+                            "message", failureMessage,
+                            "errorCode", "GREETING_EXECUTION_FAILED",
+                            "errorMessage", failureMessage));
             return;
         }
 
@@ -145,7 +163,8 @@ public class GreetingDispatchService {
         List<GameItemOrderDetail> details = orderDetailService.findByOrderId(orderId);
 
         if (details.isEmpty()) {
-            log.warn("[Greeting] 招呼成功但子订单未解析 order_id={}，标记异常", orderId);
+            log.warn("[Greeting] 招呼成功但子订单未解析 order_id={}; 原因：物品名未匹配或套装无子物品；"
+                    + "解决方案：核对平台标题中的 %物品名% 和游戏物品配置后重试", orderId);
             stateMachine.fire(order, DeliveryEvent.NO_SUB_ORDER, null);
             return;
         }
@@ -157,7 +176,33 @@ public class GreetingDispatchService {
             log.info("[Greeting] 自动交易指派已发起 order_id={} assignment_id={} machine_id={}",
                     orderId, offer.assignmentId(), offer.machineId());
         } catch (Exception e) {
-            log.warn("[Greeting] 自动交易指派失败 order_id={}: {}", orderId, e.getMessage());
+            log.warn("[Greeting] 自动交易指派失败 order_id={}; 原因：{}；"
+                            + "解决方案：检查可用游戏执行机器、账号、大区和库存关联后重试",
+                    orderId, e.getMessage());
+            orderService.updateLastError(orderId, "TRADE_DISPATCH_FAILED",
+                    TradeErrorGuidance.ensureGuidance("TRADE_DISPATCH_FAILED",
+                            normalizeErrorMessage(e.getMessage(), "招呼成功，但自动交易指派失败")));
         }
+    }
+
+    private void persistProcessingError(int orderId, RuntimeException error) {
+        String errorMessage = TradeErrorGuidance.ensureGuidance(
+                "GREETING_RESULT_PROCESSING_ERROR",
+                normalizeErrorMessage(error.getMessage(),
+                        "处理招呼回馈异常: " + error.getClass().getSimpleName()));
+        try {
+            orderService.updateLastError(orderId, "GREETING_RESULT_PROCESSING_ERROR", errorMessage);
+        } catch (Exception persistError) {
+            log.error("[Greeting] 招呼回馈异常信息落库失败 order_id={}; 原因：{}；"
+                            + "解决方案：检查订单表字段和数据库迁移，随后人工核对该订单状态",
+                    orderId, persistError.getMessage(), persistError);
+        }
+    }
+
+    private String normalizeErrorMessage(String message, String fallback) {
+        String value = message == null || message.isBlank() ? fallback : message.trim();
+        return value.length() <= MAX_ERROR_MESSAGE_LENGTH
+                ? value
+                : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
     }
 }

@@ -114,6 +114,22 @@ public class MarketplaceOrderIngestionService {
             }
         }
 
+        String tradeItem = parseItemFromTitle(message.productTitle());
+        String errorCode = null;
+        String errorMessage = null;
+        if (!configError.isEmpty()) {
+            errorCode = "CONFIG_MISSING";
+            errorMessage = "原因：" + configError + "。解决方案：检查网站账号的交易游戏配置，并确认平台区服名称已关联到系统大区。";
+        } else if (tradeItem.isEmpty()) {
+            errorCode = "ITEM_NAME_PARSE_FAILED";
+            errorMessage = "原因：商品标题未包含有效的 %物品名% 标记。解决方案：在平台商品标题中加入 %游戏中的物品名%，"
+                    + "并确保该名称与游戏物品管理中的名称完全一致。";
+        }
+        if (errorCode != null) {
+            log.warn("[Order] 订单校验失败 code={} account={} sourceOrderNo={} title={}; {}",
+                    errorCode, accountId, message.sourceOrderNo(), message.productTitle(), errorMessage);
+        }
+
         GameItemOrder order = new GameItemOrder();
         order.setOrderNo("MP-" + UUID.randomUUID().toString().replace("-", ""));
         order.setWebsiteId(account.getWebsiteId());
@@ -125,17 +141,16 @@ public class MarketplaceOrderIngestionService {
         order.setCustomerName(message.buyerCharacter());
         order.setAssetType(message.assetType());
         order.setAssetAmount(message.assetAmount());
-        boolean isNormal = configError.isEmpty();
+        boolean isNormal = errorCode == null;
         if (isNormal) {
             order.setDeliveryStatus("greeting");
         } else {
             order.setDeliveryStatus("suspended");
-            order.setLastErrorCode("CONFIG_MISSING");
-            order.setLastErrorMessage(configError.toString());
+            order.setLastErrorCode(errorCode);
+            order.setLastErrorMessage(errorMessage);
         }
         order.setRemark(message.rawTitle());
         order.setProductTitle(message.productTitle());
-        String tradeItem = parseItemFromTitle(message.productTitle());
         if (!tradeItem.isEmpty()) {
             order.setTradeItemName(tradeItem);
         }
@@ -171,7 +186,8 @@ public class MarketplaceOrderIngestionService {
             }
             throw race;
         } catch (DataIntegrityViolationException e) {
-            log.warn("[Order] 订单入库失败(数据完整性) account={} sourceOrderNo={}: {}",
+            log.warn("[Order] 订单入库失败 account={} sourceOrderNo={}; 原因：数据完整性约束冲突，{}；"
+                            + "解决方案：检查数据库迁移是否完整，以及订单状态、游戏和大区字段是否允许当前值",
                     accountId, message.sourceOrderNo(), e.getMessage());
             return null;
         }
@@ -182,7 +198,8 @@ public class MarketplaceOrderIngestionService {
             try {
                 autoCreateOrderDetails(order, gameId, regionId);
             } catch (Exception e) {
-                log.warn("[Order] 自动创建子订单明细失败(不影响主流程) order_id={} tradeItemName={}: {}",
+                log.warn("[Order] 自动创建子订单明细失败 order_id={} tradeItemName={}; 原因：{}；"
+                                + "解决方案：检查同名游戏物品、套装子物品及大区库存配置，修正后重试",
                         order.getId(), order.getTradeItemName(), e.getMessage(), e);
             }
         }
@@ -196,7 +213,8 @@ public class MarketplaceOrderIngestionService {
         try {
             eventService.save(event);
         } catch (Exception e) {
-            log.error("[Order] 事件记录失败（不影响主流程） order_id={} type={}: {}",
+            log.error("[Order] 事件记录失败 order_id={} type={}; 原因：{}；"
+                            + "解决方案：检查 trade_events 表结构和数据库连接，订单主记录已保留",
                     order.getId(), "order_detected", e.getMessage());
         }
 
@@ -281,13 +299,13 @@ public class MarketplaceOrderIngestionService {
         }
     }
 
-    /** 从标题中提取 [] 内的内容作为实际物品名，未匹配返回空串。 */
+    /** 从标题中提取一对 % 之间的内容作为实际物品名，未匹配返回空串。 */
     static String parseItemFromTitle(String title) {
         if (title == null || title.isEmpty()) {
             return "";
         }
-        int start = title.indexOf('[');
-        int end = title.indexOf(']', start + 1);
+        int start = title.indexOf('%');
+        int end = title.indexOf('%', start + 1);
         if (start >= 0 && end > start) {
             return title.substring(start + 1, end).trim();
         }
@@ -302,7 +320,9 @@ public class MarketplaceOrderIngestionService {
         String tradeItemName = order.getTradeItemName();
         GameItem matchedItem = gameItemService.findByGameIdAndName(gameId, tradeItemName);
         if (matchedItem == null) {
-            log.info("[Order] 未匹配到物品 order_id={} tradeItemName={}", order.getId(), tradeItemName);
+            log.warn("[Order] 子订单未创建 order_id={} tradeItemName={}; 原因：系统中未找到同名游戏物品；"
+                            + "解决方案：在游戏物品管理中新增该物品，或将平台标题中的 %物品名% 改为系统中的准确名称",
+                    order.getId(), tradeItemName);
             return;
         }
 
@@ -310,7 +330,9 @@ public class MarketplaceOrderIngestionService {
             // 套装：拆分所有子物品，按关联表中配置的数量创建明细
             List<ItemBundleRelation> relations = bundleItemService.findRelationsByBundleId(matchedItem.getId());
             if (relations.isEmpty()) {
-                log.info("[Order] 套装无子物品 order_id={} bundle={}", order.getId(), tradeItemName);
+                log.warn("[Order] 子订单未创建 order_id={} bundle={}; 原因：套装尚未配置子物品；"
+                                + "解决方案：在游戏物品管理中展开该套装并添加至少一个子物品",
+                        order.getId(), tradeItemName);
                 return;
             }
             List<Integer> childItemIds = relations.stream().map(ItemBundleRelation::getItemId).collect(Collectors.toList());

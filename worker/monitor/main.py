@@ -69,9 +69,13 @@ def _submit_task(msg, ctx: AppContext):
             result = asyncio.run(monitor.run())
         except Exception as e:
             import traceback
-            print(f"[Monitor] 订单查询异常: {e}")
+            print(f"[Monitor] 订单查询异常。原因：{e}；解决方案：浏览器保持打开，"
+                  "请检查网站配置和登录状态，监控循环将继续重试。")
             traceback.print_exc()
-            result = _make_result("failed", f"订单查询异常：{e}", start)
+            result = _make_result(
+                "failed",
+                f"原因：订单查询异常：{e}；解决方案：检查网站配置和登录状态后重试。",
+                start)
         return result
 
     def _runner(stop_event):
@@ -82,9 +86,14 @@ def _submit_task(msg, ctx: AppContext):
                 result = run(msg, stop_event, account_id, task_id)
             except Exception as e:
                 import traceback
-                print(f"[Monitor] 任务执行异常 (task_id={task_id}): {e}")
+                print(f"[Monitor] 任务执行异常 task_id={task_id}。原因：{e}；"
+                      "解决方案：检查监控端依赖和账号配置后重新下发任务。")
                 traceback.print_exc()
-                result = {"status": "failed", "message": f"浏览器任务启动失败：{e}", "duration_ms": 0}
+                result = {
+                    "status": "failed",
+                    "message": f"原因：浏览器任务启动失败：{e}；解决方案：检查监控端依赖和账号配置后重试。",
+                    "duration_ms": 0,
+                }
         reporter.report_result(task_id, account_id, result)
 
     started = task_manager.start_order_check(task_id, account_id, _runner)
@@ -164,8 +173,13 @@ async def _connect_once(ctx: AppContext):
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
         loop = asyncio.get_event_loop()
         client = AgentClient(ws, loop)
-        reporter = Reporter(client)
-        ctx.reporter = reporter
+        try:
+            reporter = ctx.reporter
+            reporter.set_client(client)
+            print("[Monitor] 已将现有监控任务切换到新的总控连接")
+        except RuntimeError:
+            reporter = Reporter(client)
+            ctx.reporter = reporter
 
         await client.send({"type": "register", **info})
         print(f"[Monitor] 已连接总控，注册中: {info}")
@@ -183,7 +197,7 @@ async def _connect_once(ctx: AppContext):
                 await _dispatch_message(msg, ctx)
         finally:
             hb.cancel()
-            ctx.task_manager.cancel_all()
+            print("[Monitor] 与总控连接已断开，现有监控任务和浏览器保持运行，等待自动重连")
 
 
 async def main_loop():
@@ -198,7 +212,8 @@ async def main_loop():
         try:
             await _connect_once(ctx)
         except Exception as e:
-            print(f"[Monitor] 连接断开/失败: {e}，{config.RECONNECT_INTERVAL}s 后重连")
+            print(f"[Monitor] 总控连接异常。原因：{e}；解决方案：浏览器和监控任务保持运行，"
+                  f"{config.RECONNECT_INTERVAL}s 后自动重连。")
         await asyncio.sleep(config.RECONNECT_INTERVAL)
 
 

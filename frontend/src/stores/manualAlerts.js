@@ -1,6 +1,11 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { decideBuyerReview as sendBuyerReviewDecision, getManualAlerts } from '../api'
+import {
+  decideBuyerReview as sendBuyerReviewDecision,
+  dismissSystemAlert as sendSystemAlertDismiss,
+  getManualAlerts,
+  getSystemAlerts,
+} from '../api'
 
 const POLL_INTERVAL_MS = 5000
 const REMINDER_INTERVAL_MS = 20000
@@ -19,6 +24,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
   const lastUpdatedAt = ref(null)
   const reviewDialogVisible = ref(false)
   const reviewDecisionLoading = ref(false)
+  const dismissLoadingId = ref(null)
 
   let pollTimer = null
   let reminderTimer = null
@@ -47,9 +53,9 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     if (!hasAlerts.value) return ''
     const first = items.value[0]
     const orderNo = first?.source_order_no || first?.order_no || first?.entity_id || ''
-    const firstDescription = first
-      ? `。最早一条是订单${orderNo}，${first.title}，${first.message}`
-      : ''
+    const firstDescription = first?.entity_type === 'system'
+      ? `。最早一条是${first.title}，${first.message}`
+      : first ? `。最早一条是订单${orderNo}，${first.title}，${first.message}` : ''
     return `中控平台有${total.value}条异常需要人工处理${firstDescription}。请尽快打开待处理列表。`
   }
 
@@ -130,16 +136,22 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     requestPending = true
     loading.value = true
     try {
-      const response = await getManualAlerts()
-      const nextItems = Array.isArray(response.items) ? response.items : []
-      const nextTotal = Number(response.total || 0)
+      const [orderResponse, systemResponse] = await Promise.all([
+        getManualAlerts(),
+        getSystemAlerts(),
+      ])
+      const nextItems = [
+        ...(Array.isArray(orderResponse.items) ? orderResponse.items : []),
+        ...(Array.isArray(systemResponse.items) ? systemResponse.items : []),
+      ].sort((a, b) => String(a.occurred_at || '').localeCompare(String(b.occurred_at || '')))
+      const nextTotal = nextItems.length
       const nextSignature = signatureOf(nextItems, nextTotal)
       const changed = nextSignature !== lastSignature
       items.value = nextItems
       total.value = nextTotal
       lastSignature = nextSignature
       fetchError.value = ''
-      lastUpdatedAt.value = response.polled_at || new Date().toISOString()
+      lastUpdatedAt.value = systemResponse.polled_at || orderResponse.polled_at || new Date().toISOString()
       if (currentBuyerReview.value && !reviewDecisionLoading.value) {
         reviewDialogVisible.value = true
       } else if (!currentBuyerReview.value) {
@@ -176,6 +188,18 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     } finally {
       reviewDecisionLoading.value = false
       if (currentBuyerReview.value) reviewDialogVisible.value = true
+    }
+  }
+
+  async function dismissSystemAlert(item) {
+    if (!item?.alert_id || dismissLoadingId.value) return null
+    dismissLoadingId.value = item.id
+    try {
+      const response = await sendSystemAlertDismiss(item.alert_id)
+      await refresh()
+      return response
+    } finally {
+      dismissLoadingId.value = null
     }
   }
 
@@ -218,6 +242,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     lastUpdatedAt,
     reviewDialogVisible,
     reviewDecisionLoading,
+    dismissLoadingId,
     speechSupported,
     hasAlerts,
     currentBuyerReview,
@@ -225,6 +250,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     speak,
     grantVoiceConsent,
     decideBuyerReview,
+    dismissSystemAlert,
     start,
     stop,
   }

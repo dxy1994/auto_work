@@ -19,4 +19,7 @@ public interface GameItemOrderService extends IService<GameItemOrder> {
 
     void updateDeliveryStatus(Integer orderId, String expectedStatus, String targetStatus,
                               String assignmentId);
+
+    /** 仅更新订单错误信息，避免状态转换异常时整行更新再次失败。 */
+    void updateLastError(Integer orderId, String errorCode, String errorMessage);
 }

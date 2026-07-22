@@ -127,3 +127,13 @@ class PageWorker(ABC):
             except Exception:
                 pass
         print(f"[{self._log_tag}] PageWorker 已停止")
+
+    async def recover_closed_page(self) -> bool:
+        """浏览器仍在线但 Worker 标签页被关闭时，重新认领页面。"""
+        if self._page is None or not self._page.is_closed():
+            return False
+        self._session.release_page(self._page)
+        self._page = None
+        await self.init_page()
+        print(f"[{self._log_tag}] 已自动重建异常关闭的 Worker 页面")
+        return True

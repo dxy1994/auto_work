@@ -172,6 +172,7 @@ public class GameItemController {
         if (payload.getName() != null) item.setName(payload.getName());
         if (payload.getCode() != null) item.setCode(payload.getCode());
         if (payload.getImage() != null) item.setImage(payload.getImage());
+        if (payload.getSelectedImage() != null) item.setSelectedImage(payload.getSelectedImage());
         if (payload.getIsBundle() != null) item.setIsBundle(payload.getIsBundle());
         if (payload.getCategory() != null) item.setCategory(payload.getCategory());
         if (payload.getPrice() != null) item.setPrice(payload.getPrice());

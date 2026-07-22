@@ -85,7 +85,8 @@ public class TradeCompletionService {
 
         if (!reconciliationErrors.isEmpty()) {
             order.setLastErrorCode("INVENTORY_RECONCILIATION_REQUIRED");
-            order.setLastErrorMessage(String.join("; ", reconciliationErrors));
+            order.setLastErrorMessage("原因：" + String.join("；", reconciliationErrors)
+                    + "。解决方案：检查该大区的物品库存记录并完成人工对账。");
             log.warn("[TradeCompletion] 游戏交易完成但库存需要对账 order_id={} errors={}",
                     order.getId(), reconciliationErrors);
         } else {

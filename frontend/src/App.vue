@@ -105,7 +105,7 @@
       >
         <el-button type="danger" size="large" @click="manualAlerts.drawerVisible = true">
           <el-icon><BellFilled /></el-icon>
-          待人工处理
+          待处理提醒
         </el-button>
       </el-badge>
       <router-view />
@@ -194,15 +194,15 @@
 
   <el-drawer
     v-model="manualAlerts.drawerVisible"
-    title="待人工处理"
+    title="待处理提醒"
     size="520px"
     append-to-body
     @open="manualAlerts.refresh"
   >
     <div class="alert-drawer-toolbar">
       <div>
-        <div class="alert-count-title">共 {{ manualAlerts.total }} 条未处理异常</div>
-        <div class="alert-count-hint">后台状态恢复后自动移除并停止播报</div>
+        <div class="alert-count-title">共 {{ manualAlerts.total }} 条待处理提醒</div>
+        <div class="alert-count-hint">订单异常恢复后自动移除；掉线提醒需手动关闭</div>
       </div>
       <div class="alert-actions">
         <el-button
@@ -258,10 +258,24 @@
           </el-tag>
           <strong>{{ item.title }}</strong>
           <span class="manual-alert-time">{{ formatTime(item.occurred_at) }}</span>
+          <el-button
+            v-if="item.entity_type === 'system'"
+            class="manual-alert-close"
+            link
+            aria-label="关闭提醒"
+            :loading="manualAlerts.dismissLoadingId === item.id"
+            @click="handleDismissSystemAlert(item)"
+          >
+            <el-icon><Close /></el-icon>
+          </el-button>
         </div>
-        <div class="manual-alert-order">
+        <div v-if="item.entity_type !== 'system'" class="manual-alert-order">
           订单：{{ item.source_order_no || item.order_no || item.entity_id }}
           <span v-if="item.buyer_character">· 买家 {{ item.buyer_character }}</span>
+        </div>
+        <div v-else class="manual-alert-order">
+          <span v-if="item.machine_id">机器 #{{ item.machine_id }}</span>
+          <span v-if="item.account_id"> · 平台账号 #{{ item.account_id }}</span>
         </div>
         <p>{{ item.message }}</p>
         <template v-if="item.entity_type === 'buyer_review'">
@@ -283,7 +297,14 @@
         </template>
         <div class="manual-alert-footer">
           <el-tag v-if="item.error_code" type="danger" size="small">{{ item.error_code }}</el-tag>
-          <el-button link type="primary" @click="openAlertOrder(item)">查看并处理</el-button>
+          <el-button
+            v-if="item.entity_type === 'system'"
+            link
+            type="primary"
+            :loading="manualAlerts.dismissLoadingId === item.id"
+            @click="handleDismissSystemAlert(item)"
+          >关闭提醒</el-button>
+          <el-button v-else link type="primary" @click="openAlertOrder(item)">查看并处理</el-button>
         </div>
       </article>
     </div>
@@ -325,6 +346,15 @@ async function handleBuyerReview(approved, item = manualAlerts.currentBuyerRevie
     if (response) ElMessage.success(response.message)
   } catch (error) {
     ElMessage.error(error.message || '审核决定提交失败')
+  }
+}
+
+async function handleDismissSystemAlert(item) {
+  try {
+    const response = await manualAlerts.dismissSystemAlert(item)
+    if (response) ElMessage.success(response.message || '提醒已关闭')
+  } catch (error) {
+    ElMessage.error(error.message || '关闭提醒失败')
   }
 }
 
@@ -422,6 +452,8 @@ html, body, #app { height: 100%; margin: 0; padding: 0; }
 .manual-alert-heading { display: flex; align-items: center; gap: 8px; }
 .manual-alert-heading strong { color: #303133; }
 .manual-alert-time { margin-left: auto; color: #909399; font-size: 12px; }
+.manual-alert-close { margin-left: 2px; color: #909399; }
+.manual-alert-close:hover { color: #f56c6c; }
 .manual-alert-order { margin-top: 10px; color: #606266; font-size: 13px; }
 .manual-alert-card p { margin: 8px 0; color: #303133; line-height: 1.6; }
 .manual-alert-footer { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
