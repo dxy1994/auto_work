@@ -9,6 +9,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -29,10 +30,12 @@ from game_executor.executor.lineage_classic.paddle_ocr import (
 try:
     import cv2
     import numpy as np
-    from PIL import ImageGrab
+    from PIL import Image, ImageDraw, ImageGrab
 except ImportError:  # 单元测试和未安装 Trader 图像依赖的环境
     cv2 = None
     np = None
+    Image = None
+    ImageDraw = None
     ImageGrab = None
 
 try:
@@ -43,6 +46,10 @@ except ImportError:
     win32gui = None
 
 
+# 游戏分辨率与客户区均为 800x600，客户区左上角就是游戏坐标 (0, 0)。
+# 标题栏位于客户区上方；若投影到游戏坐标系中，其 Y 为负数，不能把标题栏
+# 或截图外沿当成固定的正坐标偏移。所有 Ui 坐标均相对客户区，运行时只通过
+# ClientToScreen 动态换算屏幕绝对坐标。
 CLIENT_SIZE = (800, 600)
 OCR_MIN_CONFIDENCE = min(
     100.0,
@@ -57,7 +64,22 @@ WINDOW_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-STEP_VERIFY_ATTEMPTS = 3
+STEP_VERIFY_ATTEMPTS = min(
+    120,
+    max(1, int(os.getenv("LINEAGE_STEP_VERIFY_ATTEMPTS", "30"))),
+)
+CAPTURE_TIMEOUT_SECONDS = min(
+    30.0,
+    max(1.0, float(os.getenv("LINEAGE_CAPTURE_TIMEOUT_SECONDS", "5"))),
+)
+ACTION_DEBUG_IMAGES_ENABLED = os.getenv(
+    "LINEAGE_ACTION_DEBUG_IMAGES",
+    "1",
+).strip().lower() not in {"0", "false", "no", "off"}
+ACTION_DEBUG_IMAGE_DIR = Path(
+    os.getenv("LINEAGE_ACTION_DEBUG_IMAGE_DIR")
+    or Path.cwd() / "lineage_action_debug"
+)
 
 
 @dataclass(frozen=True)
@@ -70,30 +92,60 @@ class StepWaitProfile:
 
 
 STEP_WAIT_PROFILES = {
-    # 大区、选角、登录和交易窗口等整幅画面变化需要给客户端充分加载时间。
-    "screen": StepWaitProfile("画面切换", 3.0, 3.0, 10.0, 2.0),
-    # 菜单展开、按钮出现等局部 UI 变化。
-    "panel": StepWaitProfile("面板操作", 0.8, 1.5, 4.0, 1.0),
-    # OCR/模板识别可能受一两帧渲染影响，但不需要按整幅画面等待。
-    "recognition": StepWaitProfile("图像识别", 0.5, 1.0, 3.0, 0.8),
+    # 画面切换的首次等待控制在 2～5 秒，之后通过多次检测吸收加载波动。
+    "screen": StepWaitProfile("画面切换", 1.0, 1.0, 4.0, 1.0),
+    # 菜单展开、按钮出现等局部 UI 变化保持更短。
+    "panel": StepWaitProfile("面板操作", 0.5, 0.5, 2.0, 0.5),
+    # OCR/模板识别只等待短暂渲染，不重复叠加长随机等待。
+    "recognition": StepWaitProfile("图像识别", 0.3, 0.2, 1.2, 0.5),
+    # 选服后同样先等待 2～5 秒，再保留完整的多次状态检测。
+    "server_connect": StepWaitProfile("服务器连接", 1.0, 1.0, 4.0, 1.0),
     # 拖拽和键盘输入保持短暂停顿，避免显得机械，同时不拖慢多物品订单。
     "item_drag": StepWaitProfile("物品拖拽", 0.2, 0.3, 1.2, 0.4),
     "input": StepWaitProfile("数量输入", 0.3, 0.4, 1.5, 0.4),
     # 最终交易结果需要比普通按钮更谨慎地确认。
-    "final_verify": StepWaitProfile("结果验证", 2.0, 3.0, 8.0, 0.5),
+    "final_verify": StepWaitProfile("结果验证", 1.0, 1.0, 4.0, 0.5),
 }
 
 
 class Ui:
-    INVENTORY_REGION = (600, 10, 762, 330)
+    # 800x600 客户区右上物品格，以及底部快捷栏中的物品栏开关。
+    INVENTORY_CONTENT_REGION = (600, 15, 770, 360)
+    # 使用物品栏独有的右侧滚动条下箭头与底部边框判断打开状态；
+    # 不使用可能被其他右侧面板复用的 Close 标识。
+    INVENTORY_OPEN_REGION = (755, 290, 800, 370)
+    # 切换菜单后快捷栏会横向变化，按钮可能位于 x=644 或 x=693。
+    INVENTORY_BUTTON_REGION = (630, 560, 730, 600)
+    INVENTORY_BUTTON_FALLBACK = (704, 585)
+    # 兼容仍引用旧名称的扩展代码；新代码应明确使用 CONTENT/BUTTON 区域。
+    INVENTORY_REGION = INVENTORY_CONTENT_REGION
     CHARACTER_PICK_REGION = (136, 57, 225, 294)
-    CHARACTER_ACTION_REGION = (17, 340, 464, 414)
-    CHARACTER_SELECTED_PIXEL = (166, 311)
+    # 角色界面右下角固定的 OK / Cancel 操作区。
+    CHARACTER_ACTION_REGION = (640, 480, 780, 555)
+    # 角色名称值的输入框内部，不包含边框、人物或动态选中特效。
+    CHARACTER_NAME_VALUE_REGION = (212, 367, 450, 383)
+    CHARACTER_VALUE_BRIGHTNESS = 70
+    CHARACTER_VALUE_MIN_BRIGHT_PIXELS = 20
     SYSTEM_REGION = (600, 10, 783, 234)
+    MENU_BUTTON_REGION = (785, 565, 800, 600)
+    # 实机确认的切换按钮完整可点击范围（右、下边界按 Python 区域惯例不包含）。
+    MENU_BUTTON_CLICK_REGION = (788, 570, 800, 600)
+    EXIT_PANEL_TRIGGER_REGION = (755, 560, 795, 600)
+    # 800x600 客户区底部 HP 状态条；实机模板左上角约为 (217,474)。
+    IN_GAME_ANCHOR_REGION = (200, 465, 300, 500)
     SERVER_REGION = (220, 107, 560, 430)
+    SERVER_SELECT_RADIUS_X = 20
+    SERVER_SELECT_RADIUS_Y = 2
+    SERVER_PAGINATION_REGION = (180, 350, 620, 500)
+    ACCOUNT_CONFIRM_REGION = (580, 420, 700, 480)
+    SERVER_PAGE_FIRST_CENTER = (340, 353)
+    SERVER_PAGE_SPACING_X = 24
+    SERVER_VISIBLE_PAGE_COUNT = 6
     FULL_CLIENT = (0, 0, 800, 600)
 
     INVENTORY_BUTTON = "物品栏按钮.png"
+    INVENTORY_OPEN = "物品栏已打开.png"
+    IN_GAME_ANCHOR = "已进入游戏.png"
     MENU_BUTTON = "切换菜单按钮.png"
     EXIT_PANEL_TRIGGER = "退出登录界面触发按钮.png"
     RELOGIN_BUTTON = "重新登录按钮.png"
@@ -101,7 +153,8 @@ class Ui:
     CHARACTER_EXIT = "选人界面退出登录按钮.png"
     CHARACTER_LOGIN = "选人界面登录按钮.png"
     SERVER_SCREEN = "选择服务器界面判断.png"
-    SERVER_CONFIRM = "选中大区后的确认按钮.png"
+    ACCOUNT_CONFIRM_BUTTON = "选中大区后的确认按钮.png"
+    SERVER_CONFIRM = ACCOUNT_CONFIRM_BUTTON
 
 
 class NavigationError(RuntimeError):
@@ -282,8 +335,10 @@ class ClientWindow:
 class Vision(Protocol):
     def find(self, template: str, region: tuple[int, int, int, int], threshold: float = 0.84) -> Optional[tuple[int, int]]: ...
     def pixel(self, point: tuple[int, int]) -> tuple[int, int, int]: ...
+    def bright_pixel_count(self, region: tuple[int, int, int, int], threshold: int) -> int: ...
     def read_text(self, region: tuple[int, int, int, int]) -> str: ...
     def find_text(self, target: TargetRegion, region: tuple[int, int, int, int]) -> Optional[tuple[int, int]]: ...
+    def find_page_number(self, page: int, region: tuple[int, int, int, int]) -> Optional[tuple[int, int]]: ...
     def find_image(self, image_source: str, region: tuple[int, int, int, int], threshold: float = 0.90) -> Optional[tuple[int, int]]: ...
 
 
@@ -302,11 +357,45 @@ class TemplateVision:
         self._templates: dict[str, object] = {}
         self._dynamic_templates: dict[str, object] = {}
         self._ocr_warning_printed = False
+        self._recent_match_visuals: list[dict[str, object]] = []
+        self._debug_image_sequence = 0
 
     def _capture(self, region: tuple[int, int, int, int]):
         ox, oy = self.window.client_origin()
         left, top, right, bottom = region
-        image = ImageGrab.grab(bbox=(ox + left, oy + top, ox + right, oy + bottom), all_screens=True)
+        bbox = (ox + left, oy + top, ox + right, oy + bottom)
+        completed = threading.Event()
+        result: dict[str, object] = {}
+
+        def grab() -> None:
+            try:
+                result["image"] = ImageGrab.grab(bbox=bbox, all_screens=True)
+            except BaseException as exc:
+                result["error"] = exc
+            finally:
+                completed.set()
+
+        started = time.monotonic()
+        threading.Thread(
+            target=grab,
+            name="lineage-screen-capture",
+            daemon=True,
+        ).start()
+        if not completed.wait(CAPTURE_TIMEOUT_SECONDS):
+            raise NavigationError(
+                f"游戏画面截图超过 {CAPTURE_TIMEOUT_SECONDS:g} 秒未返回，"
+                f"截图区域={region}；请检查桌面会话、窗口遮挡和运行权限"
+            )
+        error = result.get("error")
+        if error is not None:
+            raise NavigationError(f"游戏画面截图失败，截图区域={region}: {error}")
+        elapsed = time.monotonic() - started
+        if elapsed >= 1.0:
+            print(
+                f"[Lineage][截图] 截图完成但耗时较长: {elapsed:.2f}s，区域={region}",
+                flush=True,
+            )
+        image = result["image"]
         return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
 
     def _template(self, name: str):
@@ -325,18 +414,185 @@ class TemplateVision:
     def find(self, template: str, region: tuple[int, int, int, int], threshold: float = 0.84) -> Optional[tuple[int, int]]:
         source = self._capture(region)
         needle = self._template(template)
-        return self._match_template(source, needle, region, threshold)
+        point, _confidence = self._match_template_result(
+            source,
+            needle,
+            region,
+            threshold,
+        )
+        return point
+
+    def find_with_confidence(
+        self,
+        template: str,
+        region: tuple[int, int, int, int],
+        threshold: float = 0.84,
+    ) -> tuple[Optional[tuple[int, int]], float]:
+        """返回识别坐标及最高匹配度，供关键流程输出可人工复核的判断日志。"""
+        source = self._capture(region)
+        needle = self._template(template)
+        point, confidence = self._match_template_result(
+            source,
+            needle,
+            region,
+            threshold,
+        )
+        if point is not None:
+            height, width = needle.shape[:2]
+            left = point[0] - width // 2
+            top = point[1] - height // 2
+            self._recent_match_visuals.append({
+                "template": template,
+                "point": point,
+                "search_region": region,
+                "matched_region": (
+                    left,
+                    top,
+                    left + width - 1,
+                    top + height - 1,
+                ),
+                "confidence": confidence,
+                "threshold": threshold,
+            })
+            self._recent_match_visuals = self._recent_match_visuals[-12:]
+        return point, confidence
+
+    def template_size(self, template: str) -> tuple[int, int]:
+        """返回模板的像素宽高，用于输出实际命中的客户区范围。"""
+        height, width = self._template(template).shape[:2]
+        return int(width), int(height)
+
+    def save_action_visualization(self, action: dict[str, object]) -> Optional[str]:
+        """保存标注了识别范围、操作范围和最终落点的 800x600 客户区截图。"""
+        if not ACTION_DEBUG_IMAGES_ENABLED:
+            return None
+        if Image is None or ImageDraw is None:
+            raise NavigationError("未安装 Pillow，无法生成操作标注图")
+        target = action.get("client_target")
+        actual = action.get("client_actual")
+        action_bounds = action.get("client_action_bounds")
+        if not (
+            isinstance(target, list)
+            and len(target) == 2
+            and isinstance(actual, list)
+            and len(actual) == 2
+            and isinstance(action_bounds, list)
+            and len(action_bounds) == 4
+        ):
+            return None
+
+        source = self._capture(Ui.FULL_CLIENT)
+        image = Image.fromarray(source[:, :, ::-1]).convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        nearest_match = None
+        nearest_distance = float("inf")
+        for match in self._recent_match_visuals:
+            point = match.get("point")
+            if not isinstance(point, tuple) or len(point) != 2:
+                continue
+            distance = math.hypot(point[0] - target[0], point[1] - target[1])
+            if distance < nearest_distance:
+                nearest_distance = distance
+                nearest_match = match
+        if nearest_distance > 5:
+            nearest_match = None
+
+        if nearest_match is not None:
+            search_region = nearest_match["search_region"]
+            matched_region = nearest_match["matched_region"]
+            search_left, search_top, search_right, search_bottom = search_region
+            draw.rectangle(
+                (
+                    search_left,
+                    search_top,
+                    search_right - 1,
+                    search_bottom - 1,
+                ),
+                outline=(255, 165, 0),
+                width=2,
+            )
+            draw.rectangle(
+                tuple(matched_region),
+                outline=(0, 220, 255),
+                width=2,
+            )
+
+        draw.rectangle(
+            tuple(action_bounds),
+            outline=(0, 255, 0),
+            width=3,
+        )
+        self._draw_debug_point(draw, tuple(target), (0, 128, 255), radius=6)
+        self._draw_debug_point(draw, tuple(actual), (255, 0, 0), radius=4)
+
+        legend_lines = [
+            "ORANGE: search region",
+            "CYAN: matched template",
+            (
+                "GREEN: action region "
+                f"X[{action_bounds[0]},{action_bounds[2]}] "
+                f"Y[{action_bounds[1]},{action_bounds[3]}]"
+            ),
+            f"BLUE: target ({target[0]},{target[1]})",
+            f"RED: actual ({actual[0]},{actual[1]})",
+        ]
+        draw.rectangle((4, 4, 370, 86), fill=(0, 0, 0))
+        for index, line in enumerate(legend_lines):
+            draw.text((10, 8 + index * 15), line, fill=(255, 255, 255))
+
+        ACTION_DEBUG_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+        self._debug_image_sequence += 1
+        now = time.time()
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+        milliseconds = int((now % 1) * 1000)
+        path = ACTION_DEBUG_IMAGE_DIR / (
+            f"lineage_action_{timestamp}_{milliseconds:03d}_"
+            f"{self._debug_image_sequence:04d}.png"
+        )
+        image.save(path, format="PNG")
+        return str(path.resolve())
+
+    @staticmethod
+    def _draw_debug_point(draw, point, color, *, radius: int) -> None:
+        x, y = (int(value) for value in point)
+        draw.ellipse(
+            (x - radius, y - radius, x + radius, y + radius),
+            outline=color,
+            width=2,
+        )
+        draw.line((x - radius - 2, y, x + radius + 2, y), fill=color, width=2)
+        draw.line((x, y - radius - 2, x, y + radius + 2), fill=color, width=2)
 
     @staticmethod
     def _match_template(source, needle, region, threshold: float) -> Optional[tuple[int, int]]:
+        point, _confidence = TemplateVision._match_template_result(
+            source,
+            needle,
+            region,
+            threshold,
+        )
+        return point
+
+    @staticmethod
+    def _match_template_result(
+        source,
+        needle,
+        region,
+        threshold: float,
+    ) -> tuple[Optional[tuple[int, int]], float]:
         height, width = needle.shape[:2]
         if source.shape[0] < height or source.shape[1] < width:
-            return None
+            return None, -1.0
         result = cv2.matchTemplate(source, needle, cv2.TM_CCOEFF_NORMED)
         _, confidence, _, location = cv2.minMaxLoc(result)
         if confidence < threshold:
-            return None
-        return region[0] + location[0] + width // 2, region[1] + location[1] + height // 2
+            return None, float(confidence)
+        point = (
+            region[0] + location[0] + width // 2,
+            region[1] + location[1] + height // 2,
+        )
+        return point, float(confidence)
 
     @staticmethod
     def _absolute_image_url(image_source: str) -> str:
@@ -353,6 +609,11 @@ class TemplateVision:
             raise NavigationError("订单物品缺少识别图片")
         if key in self._dynamic_templates:
             return self._dynamic_templates[key]
+        started = time.monotonic()
+        print(
+            f"[Lineage][物品识别图] 开始加载: {_printable(key)}",
+            flush=True,
+        )
         try:
             if key.startswith("data:image/"):
                 _header, payload = key.split(",", 1)
@@ -381,6 +642,12 @@ class TemplateVision:
         if template is None:
             raise NavigationError(f"无法解码物品识别图片: {key}")
         self._dynamic_templates[key] = template
+        height, width = template.shape[:2]
+        print(
+            f"[Lineage][物品识别图] 加载完成: {_printable(key)}，"
+            f"size={width}x{height}，耗时={time.monotonic() - started:.2f}s",
+            flush=True,
+        )
         return template
 
     def find_image(
@@ -397,6 +664,15 @@ class TemplateVision:
         x, y = point
         pixel = self._capture((x, y, x + 1, y + 1))[0, 0]
         return int(pixel[0]), int(pixel[1]), int(pixel[2])
+
+    def bright_pixel_count(
+        self,
+        region: tuple[int, int, int, int],
+        threshold: int,
+    ) -> int:
+        source = self._capture(region)
+        grayscale = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
+        return int(np.count_nonzero(grayscale > int(threshold)))
 
     def capture_data_url(self, region: tuple[int, int, int, int]) -> str:
         success, encoded = cv2.imencode(".png", self._capture(region))
@@ -468,6 +744,43 @@ class TemplateVision:
             return point
         return None
 
+    def find_page_number(
+        self,
+        page: int,
+        region: tuple[int, int, int, int],
+    ) -> Optional[tuple[int, int]]:
+        """通过 OCR 定位服务器列表底部的数字分页按钮。"""
+        source = self._capture(region)
+        scale = 4
+        border = 12
+        scaled = cv2.resize(source, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        enhanced = cv2.copyMakeBorder(
+            scaled, border, border, border, border, cv2.BORDER_REPLICATE
+        )
+        expected = str(int(page))
+        try:
+            boxes = recognize_korean_boxes(enhanced)
+        except Exception as exc:
+            if not self._ocr_warning_printed:
+                print(f"[Lineage] PaddleOCR 不可用，无法定位服务器分页按钮: {exc}")
+                self._ocr_warning_printed = True
+            return None
+        for box in boxes:
+            token = "".join(ch for ch in str(box.text).strip() if ch.isdigit())
+            if box.confidence < OCR_MIN_CONFIDENCE or token != expected:
+                continue
+            center_x, center_y = box.center
+            point = (
+                region[0] + int((center_x - border) / scale + 0.5),
+                region[1] + int((center_y - border) / scale + 0.5),
+            )
+            print(
+                f"[Lineage] OCR 定位服务器页码 {expected}: "
+                f"confidence={box.confidence:.1f} coordinate=({point[0]},{point[1]})"
+            )
+            return point
+        return None
+
 
 def _normalized_region(value: str) -> str:
     return "".join(ch.casefold() for ch in value if ch.isalnum())
@@ -494,8 +807,8 @@ def region_text_matches(text: str, target: TargetRegion) -> bool:
     return False
 
 
-def item_recognition_images(detail: dict) -> tuple[str, str]:
-    """返回未选中/选中两张识别图，兼容旧指令中的未选中图片字段。"""
+def item_recognition_images(detail: dict) -> tuple[str, ...]:
+    """返回可用的物品识别图；未选中/选中状态至少提供一张即可。"""
     label = str(detail.get("item_name") or detail.get("item_id") or "未知物品")
     unselected = str(
         detail.get("recognition_image_unselected_url")
@@ -508,11 +821,14 @@ def item_recognition_images(detail: dict) -> tuple[str, str]:
         or detail.get("item_selected_image")
         or ""
     ).strip()
-    if not unselected:
-        raise NavigationError(f"物品 {label} 缺少未选中状态识别图片")
-    if not selected:
-        raise NavigationError(f"物品 {label} 缺少选中状态识别图片")
-    return unselected, selected
+    images = tuple(dict.fromkeys(
+        image for image in (unselected, selected) if image
+    ))
+    if not images:
+        raise NavigationError(
+            f"物品 {label} 缺少识别图片（未选中/选中状态至少提供一张）"
+        )
+    return images
 
 
 class LineageSessionNavigator:
@@ -539,6 +855,10 @@ class LineageSessionNavigator:
             sleep=sleep,
             cancelled=self.cancelled,
         )
+        action_visualizer = getattr(self.vision, "save_action_visualization", None)
+        set_action_visualizer = getattr(self.input, "set_action_visualizer", None)
+        if callable(action_visualizer) and callable(set_action_visualizer):
+            set_action_visualizer(action_visualizer)
 
     def _screen_bounds(self) -> tuple[int, int, int, int]:
         ox, oy = self.window.client_origin()
@@ -550,16 +870,23 @@ class LineageSessionNavigator:
         *,
         radius_x: Optional[int] = None,
         radius_y: Optional[int] = None,
+        client_bounds: Optional[tuple[int, int, int, int]] = None,
     ) -> None:
         self._raise_if_cancelled()
         ox, oy = self.window.client_origin()
         x, y = point
+        if client_bounds is None:
+            screen_bounds = self._screen_bounds()
+        else:
+            left, top, right, bottom = client_bounds
+            screen_bounds = (ox + left, oy + top, ox + right, oy + bottom)
         if self.input.click_at(
             ox + x,
             oy + y,
             radius_x=radius_x,
             radius_y=radius_y,
-            bounds=self._screen_bounds(),
+            bounds=screen_bounds,
+            coordinate_origin=(ox, oy),
         ) is False:
             self._raise_if_cancelled()
             raise NavigationError(f"硬件点击失败: ({x}, {y})")
@@ -582,6 +909,30 @@ class LineageSessionNavigator:
         radius_y = max(0, (bottom - top) // 2 - 2)
         self._click(center, radius_x=radius_x, radius_y=radius_y)
 
+    def _click_menu_button(self) -> None:
+        """只在实机确认的切换按钮范围内变化落点。"""
+        left, top, right, bottom = Ui.MENU_BUTTON_CLICK_REGION
+        # 避开一像素边沿；传入精确边界，避免通用拟人化半径越出小按钮。
+        safe_bounds = (left + 1, top + 1, right - 2, bottom - 2)
+        safe_left, safe_top, safe_right, safe_bottom = safe_bounds
+        center = (
+            (safe_left + safe_right) // 2,
+            (safe_top + safe_bottom) // 2,
+        )
+        print(
+            "[Lineage][切换大区] 点击切换菜单按钮，"
+            f"按钮范围=X[{left},{right - 1}] Y[{top},{bottom - 1}]，"
+            f"安全随机范围=X[{safe_left},{safe_right}] "
+            f"Y[{safe_top},{safe_bottom}]",
+            flush=True,
+        )
+        self._click(
+            center,
+            radius_x=safe_right - safe_left,
+            radius_y=safe_bottom - safe_top,
+            client_bounds=safe_bounds,
+        )
+
     def drag(self, start: tuple[int, int], end: tuple[int, int]) -> None:
         """按游戏客户区相对坐标执行起终点均有界变化的拖拽。"""
         self._raise_if_cancelled()
@@ -590,6 +941,7 @@ class LineageSessionNavigator:
             (ox + start[0], oy + start[1]),
             (ox + end[0], oy + end[1]),
             bounds=self._screen_bounds(),
+            coordinate_origin=(ox, oy),
         ) is False:
             self._raise_if_cancelled()
             raise NavigationError(f"硬件拖拽失败: {start} -> {end}")
@@ -614,6 +966,54 @@ class LineageSessionNavigator:
 
     def _find(self, template: str, region=Ui.FULL_CLIENT, threshold: float = 0.84):
         return self.vision.find(template, region, threshold)
+
+    def _find_for_decision(
+        self,
+        label: str,
+        template: str,
+        region=Ui.FULL_CLIENT,
+        threshold: float = 0.84,
+        log_category: str = "菜单判断",
+    ) -> Optional[tuple[int, int]]:
+        """输出关键按钮的原始识别结果，不只输出最终流程结论。"""
+        detailed_find = getattr(self.vision, "find_with_confidence", None)
+        if callable(detailed_find):
+            point, confidence = detailed_find(template, region, threshold)
+        else:
+            point = self._find(template, region, threshold)
+            confidence = None
+        coordinate = (
+            f"({point[0]},{point[1]})" if point is not None else "无"
+        )
+        matched_region = "无"
+        if point is not None:
+            template_size = getattr(self.vision, "template_size", None)
+            if callable(template_size):
+                width, height = template_size(template)
+                left = point[0] - width // 2
+                top = point[1] - height // 2
+                right = left + width - 1
+                bottom = top + height - 1
+                matched_region = (
+                    f"X[{left},{right}] Y[{top},{bottom}] "
+                    f"size={width}x{height}"
+                )
+        confidence_text = (
+            f"{confidence:.4f}" if confidence is not None else "当前识别器未提供"
+        )
+        search_left, search_top, search_right, search_bottom = region
+        print(
+            f"[Lineage][{log_category}] {label}: "
+            f"结果={'命中' if point is not None else '未命中'}，"
+            f"coordinate={coordinate}，confidence={confidence_text}，"
+            f"threshold={threshold:.2f}，"
+            f"matched_region={matched_region}，"
+            f"search_region=X[{search_left},{search_right - 1}] "
+            f"Y[{search_top},{search_bottom - 1}]，"
+            f"template={template}",
+            flush=True,
+        )
+        return point
 
     def _wait_for(self, predicate: Callable[[], object], timeout: float, interval: float = 0.5):
         attempts = max(1, math.ceil(timeout / interval))
@@ -643,8 +1043,9 @@ class LineageSessionNavigator:
         fixed_wait: Optional[float] = None,
         attempts: int = STEP_VERIFY_ATTEMPTS,
         probe_interval: Optional[float] = None,
+        retry_wait_range: Optional[tuple[float, float]] = None,
     ):
-        """动作后先做人性化等待，再最多检测三次下一步状态。"""
+        """动作后先做人性化等待，再按配置次数循环检测下一步状态。"""
         timing = STEP_WAIT_PROFILES.get(profile)
         if timing is None:
             raise ValueError(f"未知步骤等待类型: {profile}")
@@ -692,7 +1093,26 @@ class LineageSessionNavigator:
             if ready:
                 return result
             if attempt < max_attempts:
-                self._sleep_interruptibly(check_interval)
+                if retry_wait_range is None:
+                    self._sleep_interruptibly(check_interval)
+                else:
+                    retry_min = max(0.0, float(retry_wait_range[0]))
+                    retry_max = max(retry_min, float(retry_wait_range[1]))
+                    retry_seconds = float(self.random_uniform(
+                        retry_min,
+                        retry_max,
+                    ))
+                    retry_seconds = min(
+                        retry_max,
+                        max(retry_min, retry_seconds),
+                    )
+                    print(
+                        f"[Lineage][步骤重等] {step_name}: "
+                        f"第 {attempt}/{max_attempts} 次未就绪，"
+                        f"再次随机等待 {retry_seconds:.2f}s",
+                        flush=True,
+                    )
+                    self._sleep_interruptibly(retry_seconds)
 
         detail = f"，最后异常={last_error}" if last_error else ""
         print(
@@ -717,12 +1137,44 @@ class LineageSessionNavigator:
         )
 
     def _is_in_game(self) -> bool:
-        return any((
-            self._find(Ui.INVENTORY_BUTTON, Ui.INVENTORY_REGION) is not None,
-            self._find(Ui.MENU_BUTTON, Ui.SYSTEM_REGION) is not None,
-            self._find(Ui.EXIT_PANEL_TRIGGER, Ui.SYSTEM_REGION) is not None,
-            self._find(Ui.RELOGIN_BUTTON, Ui.SYSTEM_REGION) is not None,
-        ))
+        # 该锚点位于游戏主界面的固定状态栏区域，不依赖物品栏或菜单是否展开。
+        in_game_anchor = self._find(
+            Ui.IN_GAME_ANCHOR,
+            Ui.IN_GAME_ANCHOR_REGION,
+            threshold=0.72,
+        )
+        if in_game_anchor is not None:
+            print(
+                "[Lineage][界面识别] 游戏主界面状态条已命中，"
+                f"coordinate=({in_game_anchor[0]},{in_game_anchor[1]})，"
+                "threshold=0.72",
+                flush=True,
+            )
+            return True
+        if self._find_menu_button() is not None:
+            return True
+        if self._find(
+            Ui.EXIT_PANEL_TRIGGER,
+            Ui.EXIT_PANEL_TRIGGER_REGION,
+        ) is not None:
+            return True
+        # 找到任意一个主界面锚点即可返回，避免 eager tuple 无条件连续截图四次。
+        for template, region in (
+            (Ui.INVENTORY_BUTTON, Ui.INVENTORY_BUTTON_REGION),
+            (Ui.RELOGIN_BUTTON, Ui.SYSTEM_REGION),
+        ):
+            if self._find(template, region) is not None:
+                return True
+        return False
+
+    def _find_menu_button(self):
+        # 右下角箭头在菜单开/关状态下仅有细微差异。搜索区域足够小，
+        # 使用 0.60 可兼容实机关闭态约 0.63、打开态约 0.99 的匹配结果。
+        return self._find(
+            Ui.MENU_BUTTON,
+            Ui.MENU_BUTTON_REGION,
+            threshold=0.60,
+        )
 
     def _is_character_screen(self) -> bool:
         return self._find(Ui.CHARACTER_SCREEN) is not None
@@ -730,60 +1182,174 @@ class LineageSessionNavigator:
     def _is_server_screen(self) -> bool:
         return self._find(Ui.SERVER_SCREEN, Ui.SERVER_REGION) is not None
 
+    def _trace_screen_probe(
+        self,
+        label: str,
+        predicate: Callable[[], object],
+    ) -> bool:
+        """记录同步截图/识别的边界，避免耗时识别期间看起来像无响应。"""
+        self._raise_if_cancelled()
+        started = time.monotonic()
+        print(f"[Lineage][界面识别] 开始判断: {label}", flush=True)
+        try:
+            matched = bool(predicate())
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            print(
+                f"[Lineage][界面识别] 判断异常: {label}，"
+                f"耗时={elapsed:.2f}s，原因={exc}",
+                flush=True,
+            )
+            raise
+        elapsed = time.monotonic() - started
+        print(
+            f"[Lineage][界面识别] 判断完成: {label}="
+            f"{'是' if matched else '否'}，耗时={elapsed:.2f}s",
+            flush=True,
+        )
+        return matched
+
     def _open_exit_panel_and_relogin(self) -> None:
-        relogin = self._find(Ui.RELOGIN_BUTTON, Ui.SYSTEM_REGION)
+        relogin = self._find_for_decision(
+            "Restart 操作面板按钮",
+            Ui.RELOGIN_BUTTON,
+            Ui.SYSTEM_REGION,
+        )
         if relogin is None:
-            trigger = self._find(Ui.EXIT_PANEL_TRIGGER, Ui.SYSTEM_REGION)
+            trigger = self._find_for_decision(
+                "紫色 Restart 面板触发按钮",
+                Ui.EXIT_PANEL_TRIGGER,
+                Ui.EXIT_PANEL_TRIGGER_REGION,
+            )
+            menu = self._find_for_decision(
+                "右下角切换菜单按钮",
+                Ui.MENU_BUTTON,
+                Ui.MENU_BUTTON_REGION,
+                threshold=0.60,
+            )
             if trigger is None:
-                menu = self._find(Ui.MENU_BUTTON, Ui.SYSTEM_REGION)
                 if menu is None:
                     menu = self.wait_for_step(
                         "查找切换菜单按钮",
-                        lambda: self._find(Ui.MENU_BUTTON, Ui.SYSTEM_REGION),
+                        lambda: self._find_for_decision(
+                            "右下角切换菜单按钮（重试）",
+                            Ui.MENU_BUTTON,
+                            Ui.MENU_BUTTON_REGION,
+                            threshold=0.60,
+                        ),
                         profile="recognition",
                     )
                 if menu is None:
-                    raise NavigationError("连续 3 次未找到退出登录触发按钮或切换菜单按钮")
-                self._click(menu)
+                    print(
+                        "[Lineage][菜单判断结论] 未识别到 Restart、紫色触发按钮"
+                        "或右下角切换按钮，无法决定下一步",
+                        flush=True,
+                    )
+                    raise NavigationError(
+                        f"连续 {STEP_VERIFY_ATTEMPTS} 次未找到"
+                        "退出登录触发按钮或切换菜单按钮"
+                    )
+                print(
+                    "[Lineage][菜单判断结论] 未识别到紫色触发按钮，"
+                    "但识别到右下角切换按钮；判定菜单尚未切换，执行切换",
+                    flush=True,
+                )
+                self._click_menu_button()
                 trigger = self.wait_for_step(
                     "打开切换菜单",
-                    lambda: self._find(Ui.EXIT_PANEL_TRIGGER, Ui.SYSTEM_REGION),
+                    lambda: self._find_for_decision(
+                        "紫色 Restart 面板触发按钮（切换后）",
+                        Ui.EXIT_PANEL_TRIGGER,
+                        Ui.EXIT_PANEL_TRIGGER_REGION,
+                    ),
                     profile="panel",
+                )
+            else:
+                print(
+                    "[Lineage][菜单判断结论] 已识别到紫色 Restart 面板触发按钮，"
+                    "判定菜单已经切换；跳过右下角切换按钮，直接点击紫色按钮",
+                    flush=True,
                 )
             if trigger is None:
                 raise NavigationError("打开切换菜单后仍未找到退出登录触发按钮")
-            self._click(trigger)
+            # 紫色按钮也较小，仅在识别中心一像素范围内做轻微变化。
+            self._click(trigger, radius_x=1, radius_y=1)
             relogin = self.wait_for_step(
-                "打开重新登录操作面板",
-                lambda: self._find(Ui.RELOGIN_BUTTON, Ui.SYSTEM_REGION),
+                "打开 Restart 操作面板",
+                lambda: self._find_for_decision(
+                    "Restart 操作面板按钮（紫色按钮点击后）",
+                    Ui.RELOGIN_BUTTON,
+                    Ui.SYSTEM_REGION,
+                ),
                 profile="panel",
             )
+        else:
+            print(
+                "[Lineage][菜单判断结论] 已识别到 Restart 操作面板按钮，"
+                "判定面板已经打开，直接执行 Restart",
+                flush=True,
+            )
         if relogin is None:
-            raise NavigationError("未找到重新登录按钮")
+            raise NavigationError("未找到 Restart 按钮")
+        print(
+            f"[Lineage][切换大区] 点击 Restart，"
+            f"coordinate=({relogin[0]},{relogin[1]})",
+            flush=True,
+        )
         self._click(relogin)
         if not self.wait_for_step(
-            "重新登录后进入选择角色界面",
+            "点击 Restart 后进入选择角色界面",
             self._is_character_screen,
             profile="screen",
         ):
-            raise NavigationError("点击重新登录后未进入选择角色界面")
+            raise NavigationError("点击 Restart 后未进入选择角色界面")
 
     def _reach_server_screen(self) -> None:
-        if self._is_server_screen():
-            return
-        if self._is_in_game():
+        print("[Lineage][切换大区] 开始进入服务器列表界面", flush=True)
+        # 正常交易必须先从游戏主界面执行“重新登录”，再退出角色选择界面。
+        # 若上一笔重试已走到角色/服务器界面，则根据实际界面续做，避免倒退。
+        if self._trace_screen_probe("当前是否为游戏主界面", self._is_in_game):
+            print(
+                "[Lineage][切换大区] 当前在游戏主界面，先执行 Restart",
+                flush=True,
+            )
             self._open_exit_panel_and_relogin()
-        if not self._is_character_screen():
+        elif self._trace_screen_probe("当前是否为角色选择界面", self._is_character_screen):
+            print(
+                "[Lineage][切换大区] 已在角色选择界面，继续退出到服务器列表",
+                flush=True,
+            )
+        elif self._trace_screen_probe("当前是否为服务器列表", self._is_server_screen):
+            print(
+                "[Lineage][切换大区] 已在服务器列表，继续未完成的大区选择",
+                flush=True,
+            )
+            return
+        else:
             raise NavigationError("当前既不是游戏、选择角色，也不是选择服务器界面")
-        exit_button = self._find(Ui.CHARACTER_EXIT)
+        exit_button = self._find(
+            Ui.CHARACTER_EXIT,
+            Ui.CHARACTER_ACTION_REGION,
+        )
         if exit_button is None:
             exit_button = self.wait_for_step(
-                "查找选择角色界面的退出登录按钮",
-                lambda: self._find(Ui.CHARACTER_EXIT),
+                "查找选择角色界面的 Cancel 按钮",
+                lambda: self._find(
+                    Ui.CHARACTER_EXIT,
+                    Ui.CHARACTER_ACTION_REGION,
+                ),
                 profile="recognition",
             )
         if exit_button is None:
-            raise NavigationError("连续 3 次未找到选择角色界面的退出登录按钮")
+            raise NavigationError(
+                f"连续 {STEP_VERIFY_ATTEMPTS} 次未找到"
+                "选择角色界面的 Cancel 按钮"
+            )
+        print(
+            f"[Lineage][切换大区] 点击角色界面 Cancel，"
+            f"coordinate=({exit_button[0]},{exit_button[1]})",
+            flush=True,
+        )
         self._click(exit_button)
         if not self.wait_for_step(
             "退出角色界面后进入服务器列表",
@@ -792,7 +1358,48 @@ class LineageSessionNavigator:
         ):
             raise NavigationError("退出登录后未进入选择服务器界面")
 
+    def _select_server_page(self, page: int) -> None:
+        print(f"[Lineage][切换大区] 准备选择服务器列表第 {page} 页", flush=True)
+        if 1 <= page <= Ui.SERVER_VISIBLE_PAGE_COUNT:
+            point = (
+                Ui.SERVER_PAGE_FIRST_CENTER[0]
+                + (page - 1) * Ui.SERVER_PAGE_SPACING_X,
+                Ui.SERVER_PAGE_FIRST_CENTER[1],
+            )
+            source = "800x600 固定分页坐标"
+        else:
+            point = self.wait_for_step(
+                f"定位服务器列表第 {page} 页分页按钮",
+                lambda: self.vision.find_page_number(
+                    page,
+                    Ui.SERVER_PAGINATION_REGION,
+                ),
+                profile="recognition",
+                fixed_wait=0.5,
+            )
+            source = "OCR 定位"
+        if point is None:
+            raise NavigationError(
+                f"连续 {STEP_VERIFY_ATTEMPTS} 次未定位到"
+                f"服务器列表第 {page} 页分页按钮；"
+                "请确认游戏仍停留在服务器列表，并检查页码是否录入正确"
+            )
+        print(
+            f"[Lineage][切换大区] 点击服务器列表第 {page} 页，"
+            f"source={source}，coordinate=({point[0]},{point[1]})",
+            flush=True,
+        )
+        # 分页数字通常较小，限制在识别中心附近的 2px 安全范围。
+        self._click(point, radius_x=2, radius_y=2)
+        self.wait_after_step(
+            f"切换到服务器列表第 {page} 页",
+            profile="panel",
+            fixed_wait=1.0,
+        )
+
     def _select_server(self, target: TargetRegion) -> None:
+        # 无法可靠判断当前停留在哪一页，因此每笔交易都显式点击数据库配置页码。
+        self._select_server_page(target.select_page)
         left, top, right, bottom = Ui.SERVER_REGION
         if target.select_x is not None and target.select_y is not None:
             point = (target.select_x, target.select_y)
@@ -806,7 +1413,8 @@ class LineageSessionNavigator:
             if point is None:
                 raise NavigationError(
                     f"大区未配置坐标，OCR 也未找到目标大区"
-                    f"（已连续检测 3 次）: {target.name or target.code}"
+                    f"（已连续检测 {STEP_VERIFY_ATTEMPTS} 次）: "
+                    f"{target.name or target.code}"
                 )
             source = "OCR 定位"
         if not (left <= point[0] < right and top <= point[1] < bottom):
@@ -816,80 +1424,171 @@ class LineageSessionNavigator:
         print(
             f"[Lineage] 选择大区 id={target.region_id} "
             f"target='{_printable(target.name or target.code)}' source={source} "
-            f"coordinate=({point[0]},{point[1]})"
+            f"coordinate=({point[0]},{point[1]})，"
+            f"随机偏移=X±{Ui.SERVER_SELECT_RADIUS_X}px/"
+            f"Y±{Ui.SERVER_SELECT_RADIUS_Y}px"
         )
-        self._click(point)
+        self._click(
+            point,
+            radius_x=Ui.SERVER_SELECT_RADIUS_X,
+            radius_y=Ui.SERVER_SELECT_RADIUS_Y,
+        )
         confirm = self.wait_for_step(
-            f"选中大区 {_printable(target.name or target.code)}",
-            lambda: self._find(Ui.SERVER_CONFIRM, Ui.SERVER_REGION),
-            profile="panel",
+            f"选择大区 {_printable(target.name or target.code)} 后等待账号确认页",
+            lambda: self._find(
+                Ui.ACCOUNT_CONFIRM_BUTTON,
+                Ui.ACCOUNT_CONFIRM_REGION,
+            ),
+            profile="server_connect",
         )
         if confirm is None:
-            raise NavigationError("选中大区后未找到确认按钮")
+            raise NavigationError("选择大区后未进入账号确认页，或未找到 OK 按钮")
+        print(
+            f"[Lineage][切换大区] 点击账号确认页 OK，"
+            f"coordinate=({confirm[0]},{confirm[1]})",
+            flush=True,
+        )
         self._click(confirm)
         if not self.wait_for_step(
-            "确认大区后进入选择角色界面",
+            "账号确认页点击 OK 后进入选择角色界面",
             self._is_character_screen,
             profile="screen",
         ):
-            raise NavigationError("确认大区后未进入选择角色界面")
+            raise NavigationError("账号确认页点击 OK 后未进入选择角色界面")
 
     def _select_character_and_login(self) -> None:
-        color = self.vision.pixel(Ui.CHARACTER_SELECTED_PIXEL)
-        if color == (0, 0, 0):
-            left, top, right, bottom = Ui.CHARACTER_PICK_REGION
-            self._click(((left + right) // 2, (top + bottom) // 2))
-            selected = self.wait_for_step(
-                "选择登录角色",
-                lambda: self.vision.pixel(Ui.CHARACTER_SELECTED_PIXEL) != (0, 0, 0),
-                profile="panel",
-            )
-            if not selected:
-                raise NavigationError("点击角色后角色仍未选中")
+        # 角色栏位固定，但人物外观可能变化，因此只点击固定栏位，不识别人像。
+        left, top, right, bottom = Ui.CHARACTER_PICK_REGION
+        character_point = ((left + right) // 2, (top + bottom) // 2)
+        print(
+            f"[Lineage][选择角色] 点击固定角色栏位，"
+            f"coordinate=({character_point[0]},{character_point[1]})",
+            flush=True,
+        )
+        self._click(character_point, radius_x=12, radius_y=20)
+        selected = self.wait_for_step(
+            "点击角色后等待资料字段填充",
+            self._is_character_selected,
+            profile="panel",
+        )
+        if not selected:
+            raise NavigationError("点击固定角色栏位后，角色资料字段仍为空")
         login = self.wait_for_step(
-            "等待角色登录按钮可用",
+            "选择角色后等待 OK 按钮可用",
             lambda: self._find(Ui.CHARACTER_LOGIN, Ui.CHARACTER_ACTION_REGION),
-            profile="recognition",
+            profile="panel",
         )
         if login is None:
-            raise NavigationError("选择角色界面未找到登录按钮")
+            raise NavigationError("选择固定角色栏位后未找到可用的 OK 按钮")
+        print(
+            f"[Lineage][选择角色] 点击 OK 进入游戏，"
+            f"coordinate=({login[0]},{login[1]})",
+            flush=True,
+        )
         self._click(login)
         if not self.wait_for_step(
             "角色登录后进入游戏主界面",
             self._is_in_game,
             profile="screen",
-            fixed_wait=5.0,
+            fixed_wait=1.0,
         ):
             raise NavigationError("角色登录后未进入游戏")
 
-    def ensure_inventory_open(self, recognition_images: list[str]) -> None:
+    def _is_character_selected(self) -> bool:
+        bright_pixels = self.vision.bright_pixel_count(
+            Ui.CHARACTER_NAME_VALUE_REGION,
+            Ui.CHARACTER_VALUE_BRIGHTNESS,
+        )
+        selected = bright_pixels >= Ui.CHARACTER_VALUE_MIN_BRIGHT_PIXELS
+        print(
+            "[Lineage][选择角色] 资料字段检测: "
+            f"bright_pixels={bright_pixels}，"
+            f"required={Ui.CHARACTER_VALUE_MIN_BRIGHT_PIXELS}，"
+            f"selected={'是' if selected else '否'}",
+            flush=True,
+        )
+        return selected
+
+    def ensure_inventory_open(self) -> None:
+        print(
+            "[Lineage][物品栏] 角色登录完成，开始检查物品栏打开状态",
+            flush=True,
+        )
+
+        inventory_open = self._find_for_decision(
+            "物品栏右侧滚动条与底框",
+            Ui.INVENTORY_OPEN,
+            Ui.INVENTORY_OPEN_REGION,
+            threshold=0.82,
+            log_category="物品栏判断",
+        )
+        if inventory_open is not None:
+            print(
+                f"[Lineage][物品栏] 已检测到打开状态，"
+                f"anchor=({inventory_open[0]},{inventory_open[1]})",
+                flush=True,
+            )
+        else:
+            inventory_button = self._find(
+                Ui.INVENTORY_BUTTON,
+                Ui.INVENTORY_BUTTON_REGION,
+            )
+            if inventory_button is None:
+                inventory_button = Ui.INVENTORY_BUTTON_FALLBACK
+                source = "800x600 固定按钮坐标"
+            else:
+                source = "模板定位"
+            print(
+                f"[Lineage][物品栏] 未检测到打开状态，主动点击物品栏按钮，"
+                f"source={source}，"
+                f"coordinate=({inventory_button[0]},{inventory_button[1]})",
+                flush=True,
+            )
+            self._click(inventory_button)
+            inventory_open = self.wait_for_step(
+                "主动打开物品栏面板",
+                lambda: self._find_for_decision(
+                    "物品栏右侧滚动条与底框",
+                    Ui.INVENTORY_OPEN,
+                    Ui.INVENTORY_OPEN_REGION,
+                    threshold=0.82,
+                    log_category="物品栏判断",
+                ),
+                profile="panel",
+            )
+            if inventory_open is None:
+                raise NavigationError(
+                    f"主动点击物品栏按钮后连续 {STEP_VERIFY_ATTEMPTS} 次"
+                    "仍未检测到物品栏打开状态"
+                )
+
+        print("[Lineage][物品栏] 已确认物品栏处于打开状态", flush=True)
+
+    def ensure_inventory_items(self, recognition_images: list[str]) -> None:
         if not recognition_images:
             raise NavigationError("订单明细缺少物品识别图片")
-        if any(
-            self.vision.find_image(image, Ui.INVENTORY_REGION, threshold=0.90)
-            for image in recognition_images
-        ):
-            return
-        inventory = self._find(Ui.INVENTORY_BUTTON, Ui.INVENTORY_REGION)
-        if inventory is None:
-            inventory = self.wait_for_step(
-                "查找物品栏按钮",
-                lambda: self._find(Ui.INVENTORY_BUTTON, Ui.INVENTORY_REGION),
-                profile="recognition",
-            )
-        if inventory is None:
-            raise NavigationError("连续 3 次未找到物品栏按钮，无法打开物品栏")
-        self._click(inventory)
+        left, top, right, bottom = Ui.INVENTORY_CONTENT_REGION
+        print(
+            f"[Lineage][物品栏] 开始识别订单物品；"
+            f"待识别图片={len(recognition_images)} 张，"
+            f"识别区域=X[{left},{right - 1}] Y[{top},{bottom - 1}]",
+            flush=True,
+        )
         found = self.wait_for_step(
-            "打开物品栏并识别订单物品",
+            "物品栏已打开，识别订单物品",
             lambda: any(
-                self.vision.find_image(image, Ui.INVENTORY_REGION, threshold=0.90)
+                self.vision.find_image(
+                    image,
+                    Ui.INVENTORY_CONTENT_REGION,
+                    threshold=0.90,
+                )
                 for image in recognition_images
             ),
             profile="recognition",
         )
         if not found:
-            raise NavigationError("点击物品栏按钮后未识别到订单物品")
+            raise NavigationError("物品栏已打开，但未识别到订单物品")
+        print("[Lineage][物品栏] 已识别到订单物品", flush=True)
 
     def ensure_target_region(self, order: dict) -> TargetRegion:
         target = TargetRegion.from_order(order)
@@ -905,22 +1604,35 @@ class LineageSessionNavigator:
             profile="screen",
             fixed_wait=1.0,
         ):
-            raise NavigationError("激活游戏窗口后连续 3 次仍无法确认客户区可操作")
+            raise NavigationError(
+                f"激活游戏窗口后连续 {STEP_VERIFY_ATTEMPTS} 次"
+                "仍无法确认客户区可操作"
+            )
 
         print(
             "[Lineage] 每次交易重新选择订单大区: "
-            f"{_printable(target.name or target.code)}，页码={target.select_page}"
+            f"{_printable(target.name or target.code)}，页码={target.select_page}",
+            flush=True,
         )
         self._reach_server_screen()
         self._select_server(target)
         self._select_character_and_login()
 
+        print(
+            "[Lineage][流程衔接] 已进入游戏主界面，先检查并打开物品栏",
+            flush=True,
+        )
+        self.ensure_inventory_open()
+        print(
+            "[Lineage][流程衔接] 物品栏已打开，开始整理订单物品识别信息",
+            flush=True,
+        )
         recognition_images = list(dict.fromkeys(
             image
             for detail in (order.get("details") or [])
             for image in item_recognition_images(detail)
         ))
-        self.ensure_inventory_open(recognition_images)
+        self.ensure_inventory_items(recognition_images)
         if self.runtime_status is not None:
             self.runtime_status.update(
                 game_id=order.get("game_id"),

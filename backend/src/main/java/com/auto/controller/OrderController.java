@@ -121,6 +121,10 @@ public class OrderController {
     private Map<String, Object> toFullMap(GameItemOrder order, List<GameItemOrderDetail> details) {
         Map<String, Object> map = objectMapper.convertValue(order, Map.class);
         map.put("details", details);
+        GameRegion region = order.getRegionId() == null
+                ? null : regionService.getById(order.getRegionId());
+        map.put("region_name", region == null ? null : region.getName());
+        map.put("region_code", region == null ? null : region.getCode());
         TradeAssignment review = latestBuyerReview(order.getId());
         map.put("buyer_review", review == null ? null : toBuyerReviewMap(review));
         appendRetryMetadata(map, order);

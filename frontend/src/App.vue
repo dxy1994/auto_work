@@ -27,10 +27,6 @@
             <el-icon><User /></el-icon>
             <span>平台账号</span>
           </el-menu-item>
-          <el-menu-item index="/platform-schedules">
-            <el-icon><Clock /></el-icon>
-            <span>定时调度</span>
-          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="game-config">

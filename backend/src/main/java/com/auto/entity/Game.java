@@ -33,7 +33,7 @@ public class Game {
     private String tradeType = "script";
 
     /** 游戏 Worker 等待买家交易申请的最长秒数。 */
-    private Integer tradeTimeoutSeconds = 300;
+    private Integer tradeTimeoutSeconds = 600;
 
     private Integer sortOrder = 0;
 

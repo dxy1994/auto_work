@@ -14,6 +14,7 @@ from game_executor.main import (
     _dispatch_message,
     _heartbeat,
     _probe_connected_games,
+    _retry_pending_game_recovery,
     _run_trade_assignment,
     _send_runtime_heartbeat,
 )
@@ -32,10 +33,17 @@ class _Executor:
 
 
 class _RuntimeProbeExecutor(_Executor):
-    def __init__(self, runtime, ready=False, ui_health="unhealthy"):
+    def __init__(
+        self,
+        runtime,
+        ready=False,
+        ui_health="unhealthy",
+        recovery_pending=False,
+    ):
         self.runtime = runtime
         self.ready = ready
         self.ui_health = ui_health
+        self.recovery_pending = recovery_pending
         self.probe_calls = 0
 
     def probe_runtime(self):
@@ -45,6 +53,9 @@ class _RuntimeProbeExecutor(_Executor):
             ui_health=self.ui_health,
         )
         return self.ready
+
+    def runtime_recovery_pending(self):
+        return self.recovery_pending
 
 
 class GameExecutorCoreTest(unittest.TestCase):
@@ -189,6 +200,60 @@ class GameExecutorDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
             alert = await _probe_connected_games(ctx)
 
         self.assertEqual("", alert)
+
+    async def test_connected_probe_only_says_recovering_when_recovery_is_pending(self):
+        registry = ExecutorRegistry()
+        ctx = AppContext(asyncio.get_running_loop())
+        ctx.runtime_status = RuntimeStatus()
+        executor = _RuntimeProbeExecutor(
+            ctx.runtime_status,
+            ui_health="recoverable",
+            recovery_pending=False,
+        )
+        registry.register(executor)
+
+        with patch("game_executor.main.EXECUTOR_REGISTRY", registry):
+            alert = await _probe_connected_games(ctx)
+
+        self.assertIn("将在收到交易任务后自动恢复", alert)
+        self.assertNotIn("程序正在自动恢复", alert)
+
+        executor.recovery_pending = True
+        with patch("game_executor.main.EXECUTOR_REGISTRY", registry):
+            alert = await _probe_connected_games(ctx)
+
+        self.assertIn("程序正在自动恢复", alert)
+
+    async def test_connect_recovery_retries_pending_window_and_reports_success(self):
+        registry = ExecutorRegistry()
+        ctx = AppContext(asyncio.get_running_loop())
+        ctx.runtime_status = RuntimeStatus()
+        executor = _RuntimeProbeExecutor(
+            ctx.runtime_status,
+            ui_health="recoverable",
+            recovery_pending=True,
+        )
+
+        def recover():
+            executor.probe_calls += 1
+            executor.ready = True
+            executor.ui_health = "ready"
+            executor.recovery_pending = False
+            ctx.runtime_status.update(client_status="logged_in", ui_health="ready")
+            return True
+
+        executor.probe_runtime = recover
+        registry.register(executor)
+        client = type("Client", (), {"send": AsyncMock()})()
+
+        with patch("game_executor.main.EXECUTOR_REGISTRY", registry), patch(
+            "game_executor.main.CONNECT_RECOVERY_INTERVAL_SECONDS", 0
+        ):
+            await _retry_pending_game_recovery(client, ctx)
+
+        self.assertEqual(1, executor.probe_calls)
+        client.send.assert_awaited()
+        self.assertEqual("ready", ctx.runtime_status.snapshot()["ui_health"])
 
     async def test_idle_heartbeat_reports_cached_status_without_probing_window(self):
         registry = ExecutorRegistry()

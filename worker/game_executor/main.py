@@ -46,6 +46,9 @@ TERMINAL_TRADE_STATUSES = {
     "wait_web_confirm",
 }
 
+CONNECT_RECOVERY_ATTEMPTS = 3
+CONNECT_RECOVERY_INTERVAL_SECONDS = 3.0
+
 
 def _create_hardware_controller():
     if executor_config.MANUAL_ACTIONS:
@@ -61,6 +64,11 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
     trade_task_gate = ctx.trade_task_gate
 
     def progress(status, message):
+        print(
+            f"[GameExecutor][Trade] assignment_id={assignment_id} "
+            f"status={status} message={message}",
+            flush=True,
+        )
         runtime_status.update(executor_status=status)
         reporter.report_trade_status(assignment_id, status, message)
 
@@ -80,6 +88,11 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
             )
         )
 
+    print(
+        f"[GameExecutor][Trade] assignment_id={assignment_id} "
+        "status=started message=trade executor started",
+        flush=True,
+    )
     reporter.report_trade_status(assignment_id, "started", "trade executor started")
     try:
         result = await asyncio.wait_for(
@@ -90,6 +103,13 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
         terminal_status = result.get("status", "completed" if success else "failed")
         if terminal_status not in TERMINAL_TRADE_STATUSES:
             terminal_status = "failed"
+        print(
+            f"[GameExecutor][Trade] assignment_id={assignment_id} "
+            f"status={terminal_status} "
+            f"error_code={result.get('error_code', '')} "
+            f"message={result.get('message', '')}",
+            flush=True,
+        )
         reporter.report_trade_status(
             assignment_id,
             terminal_status,
@@ -98,6 +118,12 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
         )
     except asyncio.TimeoutError:
         executor.cancel()
+        print(
+            f"[GameExecutor][Trade] assignment_id={assignment_id} "
+            "status=verification_failed error_code=EXECUTION_WATCHDOG_TIMEOUT "
+            "message=worker execution watchdog timed out",
+            flush=True,
+        )
         reporter.report_trade_status(
             assignment_id,
             "verification_failed",
@@ -106,11 +132,22 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
         )
     except asyncio.CancelledError:
         executor.cancel()
+        print(
+            f"[GameExecutor][Trade] assignment_id={assignment_id} "
+            "status=cancelled error_code=TRADE_CANCELLED "
+            "message=trade execution task cancelled",
+            flush=True,
+        )
         reporter.report_trade_status(
             assignment_id, "cancelled", "trade execution task cancelled", "TRADE_CANCELLED"
         )
         raise
     except Exception as exc:
+        print(
+            f"[GameExecutor][Trade] assignment_id={assignment_id} "
+            f"status=failed error_code=EXECUTOR_EXCEPTION message={exc}",
+            flush=True,
+        )
         reporter.report_trade_status(
             assignment_id, "failed", f"executor error: {exc}", "EXECUTOR_EXCEPTION"
         )
@@ -233,6 +270,10 @@ def _game_display_name(executor) -> str:
         or "未知游戏"
     ).strip()
 
+def _runtime_recovery_pending(executor) -> bool:
+    check = getattr(executor, "runtime_recovery_pending", None)
+    return bool(check()) if callable(check) else False
+
 
 async def _probe_connected_games(ctx: AppContext) -> str:
     """总控注册成功后立即检查全部游戏，返回需要语音播报的内容。"""
@@ -257,12 +298,76 @@ async def _probe_connected_games(ctx: AppContext) -> str:
             print(f"[GameExecutor] {game_name}游戏状态正常")
             continue
 
-        if ui_health in {"recoverable", "starting"}:
+        if _runtime_recovery_pending(executor):
             alerts.append(f"{game_name}游戏状态暂未就绪，程序正在自动恢复")
+        elif ui_health in {"recoverable", "starting"}:
+            alerts.append(f"{game_name}游戏状态暂未就绪，将在收到交易任务后自动恢复")
         else:
             alerts.append(f"{game_name}游戏状态异常，请检查游戏客户端")
 
     return "。".join(alerts) + ("。" if alerts else "")
+
+async def _retry_pending_game_recovery(client, ctx: AppContext) -> None:
+    """注册后仅重试确实已执行过的窗口恢复，不在空闲心跳中持续操作游戏。"""
+    pending = [
+        executor for executor in EXECUTOR_REGISTRY.executors()
+        if _runtime_recovery_pending(executor)
+    ]
+    if not pending:
+        return
+
+    names = "、".join(_game_display_name(executor) for executor in pending)
+    print(
+        f"[GameExecutor] 已启动连接恢复重试: {names}，"
+        f"最多 {CONNECT_RECOVERY_ATTEMPTS} 次，"
+        f"间隔 {CONNECT_RECOVERY_INTERVAL_SECONDS:g} 秒"
+    )
+    for attempt in range(1, CONNECT_RECOVERY_ATTEMPTS + 1):
+        await asyncio.sleep(CONNECT_RECOVERY_INTERVAL_SECONDS)
+        if ctx.active_trade() is not None:
+            print("[GameExecutor] 已收到交易任务，停止连接恢复重试，交由任务流程接管")
+            return
+
+        for executor in tuple(pending):
+            if not _runtime_recovery_pending(executor):
+                pending.remove(executor)
+                continue
+            game_name = _game_display_name(executor)
+            print(
+                f"[GameExecutor] {game_name}连接恢复重试 "
+                f"{attempt}/{CONNECT_RECOVERY_ATTEMPTS}"
+            )
+            probe = getattr(executor, "probe_runtime", None)
+            try:
+                ready = bool(await asyncio.to_thread(probe))
+            except Exception as exc:
+                ready = False
+                ctx.runtime_status.update(
+                    client_status="not_ready",
+                    ui_health="unhealthy",
+                )
+                print(f"[GameExecutor] {game_name}连接恢复重试异常: {exc}")
+            await _send_runtime_heartbeat(client, ctx)
+
+            if ready:
+                pending.remove(executor)
+                print(f"[GameExecutor] {game_name}游戏状态已自动恢复")
+            elif not _runtime_recovery_pending(executor):
+                pending.remove(executor)
+                print(
+                    f"[GameExecutor] {game_name}窗口已恢复，但尚未进入游戏主界面；"
+                    "将在收到交易任务后继续"
+                )
+
+        if not pending:
+            return
+
+    for executor in pending:
+        print(
+            f"[GameExecutor] {_game_display_name(executor)}经过 "
+            f"{CONNECT_RECOVERY_ATTEMPTS} 次连接恢复重试仍未就绪，"
+            "将在收到交易任务后再次尝试"
+        )
 
 
 async def _send_runtime_heartbeat(client, ctx: AppContext) -> None:
@@ -303,7 +408,7 @@ async def _connect_once(ctx: AppContext):
         print(f"[GameExecutor] 已连接总控，注册中: {info}")
 
         hb = asyncio.create_task(_heartbeat(client, ctx))
-        announcement_tasks: set[asyncio.Task] = set()
+        background_tasks: set[asyncio.Task] = set()
         try:
             async for raw in ws:
                 try:
@@ -319,12 +424,20 @@ async def _connect_once(ctx: AppContext):
                             asyncio.to_thread(speak_text, alert_text),
                             name="game-runtime-voice-alert",
                         )
-                        announcement_tasks.add(task)
-                        task.add_done_callback(announcement_tasks.discard)
+                        background_tasks.add(task)
+                        task.add_done_callback(background_tasks.discard)
+                    recovery_task = asyncio.create_task(
+                        _retry_pending_game_recovery(client, ctx),
+                        name="game-runtime-connect-recovery",
+                    )
+                    background_tasks.add(recovery_task)
+                    recovery_task.add_done_callback(background_tasks.discard)
                     continue
                 await _dispatch_message(msg, ctx)
         finally:
             hb.cancel()
+            for task in tuple(background_tasks):
+                task.cancel()
             active = ctx.active_trade()
             if active is not None:
                 active["executor"].cancel()
@@ -361,7 +474,8 @@ def start():
     if executor_config.MANUAL_ACTIONS:
         print(
             "[GameExecutor] 人工操作测试模式已启用：订单、识别、等待和终态上报均为真实流程；"
-            "程序不会发送 HID，请按 [MANUAL-ACTION] 日志手动操作游戏"
+            "程序不会发送 HID；[GAME-ACTION] 会提前显示最终坐标和输入文字，"
+            "请按 [MANUAL-ACTION] 指引手动操作游戏"
         )
     asyncio.run(main_loop())
 

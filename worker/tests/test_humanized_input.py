@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -152,6 +153,135 @@ class HumanizedInputControllerTest(unittest.TestCase):
             self.assertTrue(controller.type_text("123"))
 
         self.assertEqual(1, device.planned_actions)
+
+    def test_action_log_contains_actual_coordinate_and_complete_input_text(self):
+        device = _Device()
+        controller = HumanizedInputController(
+            device,
+            policy=ZERO_DELAY_POLICY,
+            random_source=_ConstantRandom(),
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch("builtins.print") as output:
+            controller.click_at(100, 200)
+            controller.type_text("250000")
+
+        actions = []
+        for call in output.call_args_list:
+            line = call.args[0]
+            if line.startswith("[GAME-ACTION] "):
+                actions.append(json.loads(line.removeprefix("[GAME-ACTION] ")))
+
+        self.assertEqual([97, 197], actions[0]["actual"])
+        self.assertEqual("screen_absolute", actions[0]["coordinate_space"])
+        self.assertEqual("250000", actions[1]["text"])
+        self.assertEqual("planned", actions[1]["phase"])
+
+    def test_manual_click_logs_client_and_screen_coordinate_conversion(self):
+        device = ManualActionHardwareController(action_wait_seconds=0)
+        controller = HumanizedInputController(
+            device,
+            policy=ZERO_DELAY_POLICY,
+            random_source=_ConstantRandom(),
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch("builtins.print") as output:
+            controller.click_at(
+                984,
+                797,
+                radius_x=0,
+                radius_y=0,
+                coordinate_origin=(190, 213),
+            )
+
+        logged = {}
+        for call in output.call_args_list:
+            line = call.args[0]
+            if line.startswith("[GAME-ACTION] "):
+                logged["game"] = json.loads(
+                    line.removeprefix("[GAME-ACTION] ")
+                )
+            elif line.startswith("[MANUAL-ACTION] "):
+                logged["manual"] = json.loads(
+                    line.removeprefix("[MANUAL-ACTION] ")
+                )
+
+        for action in logged.values():
+            self.assertEqual([190, 213], action["client_origin"])
+            self.assertEqual([794, 584], action["client_target"])
+            self.assertEqual([794, 584], action["client_actual"])
+            self.assertEqual([984, 797], action["screen_target"])
+            self.assertEqual([984, 797], action["screen_actual"])
+            self.assertEqual(
+                [794, 584, 794, 584],
+                action["client_action_bounds"],
+            )
+            self.assertEqual(
+                [984, 797, 984, 797],
+                action["screen_action_bounds"],
+            )
+        self.assertIn("游戏客户区坐标 (794,584)", logged["manual"]["instruction"])
+        self.assertIn("客户区原点 (190,213)", logged["manual"]["instruction"])
+        self.assertIn(
+            "允许操作范围 X[794,794] Y[584,584]",
+            logged["manual"]["instruction"],
+        )
+
+    def test_click_logs_effective_action_region_after_bounds_intersection(self):
+        device = _Device()
+        controller = HumanizedInputController(
+            device,
+            policy=ZERO_DELAY_POLICY,
+            random_source=_ConstantRandom(),
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch("builtins.print") as output:
+            controller.click_at(
+                110,
+                220,
+                radius_x=3,
+                radius_y=2,
+                bounds=(109, 219, 112, 225),
+                coordinate_origin=(10, 20),
+            )
+
+        line = next(
+            call.args[0]
+            for call in output.call_args_list
+            if call.args[0].startswith("[GAME-ACTION] ")
+        )
+        action = json.loads(line.removeprefix("[GAME-ACTION] "))
+        self.assertEqual([109, 219, 112, 222], action["screen_action_bounds"])
+        self.assertEqual([99, 199, 102, 202], action["client_action_bounds"])
+
+    def test_click_visualizer_path_is_included_without_changing_action(self):
+        device = _Device()
+        controller = HumanizedInputController(
+            device,
+            policy=ZERO_DELAY_POLICY,
+            random_source=_ConstantRandom(),
+            sleep=lambda _seconds: None,
+        )
+        visualized = []
+        controller.set_action_visualizer(
+            lambda action: visualized.append(action) or r"C:\temp\action.png"
+        )
+
+        with mock.patch("builtins.print") as output:
+            self.assertTrue(controller.click_at(100, 200))
+
+        line = next(
+            call.args[0]
+            for call in output.call_args_list
+            if call.args[0].startswith("[GAME-ACTION] ")
+        )
+        action = json.loads(line.removeprefix("[GAME-ACTION] "))
+        self.assertEqual(r"C:\temp\action.png", action["visual_debug_image"])
+        self.assertEqual("mouse_click", visualized[0]["action"])
+        self.assertEqual(1, len(device.clicks))
 
     def test_cancelled_action_never_reaches_device(self):
         device = _Device()

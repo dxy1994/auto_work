@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -16,17 +17,22 @@ from game_executor.executor.lineage_classic.navigation import (
     WINDOW_TITLE_RE,
     region_text_matches,
 )
+import game_executor.executor.lineage_classic.navigation as lineage_navigation
 from game_executor.executor.lineage_classic.paddle_ocr import (
     build_paddle_ocr_engine,
     paddle_ocr_boxes,
     paddle_ocr_text,
 )
-from game_executor.executor.lineage_classic.policy import trade_timeout_seconds
+from game_executor.executor.lineage_classic.policy import (
+    buyer_poll_schedule,
+    trade_timeout_seconds,
+)
 from game_executor.executor.lineage_classic.executor import (
     LineageClassicExecutor,
     TradeUi,
     buyer_ocr_action,
     customer_name_prefix_matches,
+    random_region_point,
     region_center,
 )
 from game_executor.status import RuntimeStatus
@@ -105,7 +111,8 @@ class RuntimeProbeTest(unittest.TestCase):
         self.assertFalse(ready)
         self.assertEqual("not_ready", runtime.snapshot()["client_status"])
         self.assertEqual("recoverable", runtime.snapshot()["ui_health"])
-        self.assertTrue(any("下次心跳重试" in call.args[0] for call in output.call_args_list))
+        self.assertTrue(executor.runtime_recovery_pending())
+        self.assertTrue(any("连接后的有限次数恢复重试" in call.args[0] for call in output.call_args_list))
 
     def test_restored_window_stays_recoverable_when_focus_is_temporarily_denied(self):
         window = mock.Mock()
@@ -124,7 +131,35 @@ class RuntimeProbeTest(unittest.TestCase):
         self.assertFalse(ready)
         self.assertEqual("not_ready", runtime.snapshot()["client_status"])
         self.assertEqual("recoverable", runtime.snapshot()["ui_health"])
+        self.assertTrue(executor.runtime_recovery_pending())
         self.assertTrue(any("无法切换到前台" in call.args[0] for call in output.call_args_list))
+
+    def test_visible_window_outside_game_waits_for_order_instead_of_claiming_recovery(self):
+        window = mock.Mock()
+        window.client_size.return_value = (800, 600)
+        runtime = RuntimeStatus()
+        executor = LineageClassicExecutor(mock.Mock(), runtime)
+        navigator = mock.Mock()
+        navigator._is_in_game.return_value = False
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.ClientWindow.find",
+            return_value=window,
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.executor.TemplateVision"
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.executor.LineageSessionNavigator",
+            return_value=navigator,
+        ), mock.patch("builtins.print") as output:
+            ready = executor.probe_runtime()
+
+        self.assertFalse(ready)
+        self.assertFalse(executor.runtime_recovery_pending())
+        self.assertEqual("recoverable", runtime.snapshot()["ui_health"])
+        self.assertTrue(any(
+            "将在收到交易任务后按订单信息恢复" in call.args[0]
+            for call in output.call_args_list
+        ))
 
     def test_client_window_restore_waits_for_nonzero_client_size(self):
         window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
@@ -145,6 +180,19 @@ class RuntimeProbeTest(unittest.TestCase):
 
         self.assertEqual((800, 600), size)
         fake_gui.ShowWindowAsync.assert_called_once_with(123, 9)
+
+    def test_client_origin_uses_game_area_origin_without_title_offset(self):
+        window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
+        fake_gui = mock.Mock()
+        fake_gui.ClientToScreen.return_value = (190, 213)
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32gui", fake_gui
+        ):
+            origin = window.client_origin()
+
+        self.assertEqual((190, 213), origin)
+        fake_gui.ClientToScreen.assert_called_once_with(123, (0, 0))
 
     def test_client_window_restore_uses_fallback_strategies(self):
         window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
@@ -220,16 +268,24 @@ class _Hardware:
 
 
 class _Vision:
+    TEMPLATE_SIZES = {
+        Ui.MENU_BUTTON: (9, 27),
+        Ui.EXIT_PANEL_TRIGGER: (22, 28),
+        Ui.RELOGIN_BUTTON: (80, 39),
+        Ui.INVENTORY_OPEN: (27, 42),
+    }
     CENTERS = {
-        Ui.MENU_BUTTON: (775, 70),
-        Ui.EXIT_PANEL_TRIGGER: (745, 90),
-        Ui.RELOGIN_BUTTON: (700, 160),
-        Ui.CHARACTER_SCREEN: (350, 90),
-        Ui.CHARACTER_EXIT: (100, 380),
-        Ui.CHARACTER_LOGIN: (350, 380),
-        Ui.SERVER_SCREEN: (390, 117),
-        Ui.SERVER_CONFIRM: (500, 410),
-        Ui.INVENTORY_BUTTON: (750, 300),
+        Ui.IN_GAME_ANCHOR: (98, 459),
+        Ui.MENU_BUTTON: (794, 584),
+        Ui.EXIT_PANEL_TRIGGER: (778, 584),
+        Ui.RELOGIN_BUTTON: (693, 82),
+        Ui.CHARACTER_SCREEN: (119, 368),
+        Ui.CHARACTER_EXIT: (703, 537),
+        Ui.CHARACTER_LOGIN: (700, 512),
+        Ui.SERVER_SCREEN: (301, 132),
+        Ui.ACCOUNT_CONFIRM_BUTTON: (642, 451),
+        Ui.INVENTORY_BUTTON: (704, 585),
+        Ui.INVENTORY_OPEN: (784, 337),
     }
 
     def __init__(
@@ -237,13 +293,16 @@ class _Vision:
         state="game",
         current_text="别的大区",
         inventory_open=False,
+        inventory_button_visible=True,
         server_text=None,
         ocr_point=(310, 154),
+        page_points=None,
         item_points=None,
     ):
         self.state = state
         self.current_text = current_text
         self.inventory_open = inventory_open
+        self.inventory_button_visible = inventory_button_visible
         self.menu_open = False
         self.exit_panel_open = False
         self.server_selected = False
@@ -251,13 +310,24 @@ class _Vision:
         self.server_text = server_text or ORDER["region_code"]
         self.ocr_point = ocr_point
         self.find_text_calls = 0
+        self.page_points = page_points or {
+            1: (340, 353),
+            2: (364, 353),
+        }
+        self.page_number_calls = []
+        self.current_page = None
         self.item_points = item_points or {
             "/uploads/images/adena.png": (680, 200),
             "/uploads/images/adena-selected.png": (680, 200),
         }
         self.find_image_calls = []
+        self.find_calls = []
+        self.bright_pixel_calls = []
 
-    def find(self, template, _region, threshold=0.84):
+    def find(self, template, region, threshold=0.84):
+        self.find_calls.append((template, region, threshold))
+        if template == Ui.IN_GAME_ANCHOR:
+            return self.CENTERS[template] if self.state == "game" else None
         if template == Ui.CHARACTER_SCREEN:
             return self.CENTERS[template] if self.state == "character" else None
         if template == Ui.SERVER_SCREEN:
@@ -270,16 +340,35 @@ class _Vision:
             return self.CENTERS[template] if self.exit_panel_open else None
         if template == Ui.CHARACTER_EXIT:
             return self.CENTERS[template] if self.state == "character" else None
-        if template == Ui.SERVER_CONFIRM:
-            return self.CENTERS[template] if self.state == "server" and self.server_selected else None
+        if template == Ui.ACCOUNT_CONFIRM_BUTTON:
+            return self.CENTERS[template] if self.state == "account_confirm" else None
         if template == Ui.CHARACTER_LOGIN:
             return self.CENTERS[template] if self.state == "character" else None
         if template == Ui.INVENTORY_BUTTON:
-            return self.CENTERS[template] if self.state == "game" and not self.inventory_open else None
+            return (
+                self.CENTERS[template]
+                if self.state == "game"
+                and not self.inventory_open
+                and self.inventory_button_visible
+                else None
+            )
+        if template == Ui.INVENTORY_OPEN:
+            return (
+                self.CENTERS[template]
+                if self.state == "game" and self.inventory_open
+                else None
+            )
         return None
+
+    def template_size(self, template):
+        return self.TEMPLATE_SIZES[template]
 
     def pixel(self, _point):
         return (20, 20, 20) if self.character_selected else (0, 0, 0)
+
+    def bright_pixel_count(self, region, threshold):
+        self.bright_pixel_calls.append((region, threshold))
+        return 149 if self.character_selected else 0
 
     def read_text(self, _region):
         if self.state == "game":
@@ -292,12 +381,27 @@ class _Vision:
         self.find_text_calls += 1
         return self.ocr_point
 
-    def find_image(self, image_source, _region, threshold=0.90):
-        self.find_image_calls.append((image_source, threshold))
+    def find_page_number(self, page, _region):
+        self.page_number_calls.append(page)
+        return self.page_points.get(page)
+
+    def find_image(self, image_source, region, threshold=0.90):
+        self.find_image_calls.append((image_source, region, threshold))
         return self.item_points.get(image_source) if self.inventory_open else None
 
     def clicked(self, point):
         # 正式输入层会在模板中心附近选择安全落点，测试状态机按同样容差处理。
+        menu_left, menu_top, menu_right, menu_bottom = Ui.MENU_BUTTON_CLICK_REGION
+        if (
+            menu_left <= point[0] < menu_right
+            and menu_top <= point[1] < menu_bottom
+        ):
+            self.menu_open = True
+            return
+        for page, center in self.page_points.items():
+            if abs(point[0] - center[0]) <= 2 and abs(point[1] - center[1]) <= 2:
+                self.current_page = page
+                return
         for center in self.CENTERS.values():
             if abs(point[0] - center[0]) <= 3 and abs(point[1] - center[1]) <= 3:
                 point = center
@@ -312,7 +416,8 @@ class _Vision:
             self.state = "server"
         elif self.state == "server" and point not in self.CENTERS.values():
             self.server_selected = True
-        elif point == self.CENTERS[Ui.SERVER_CONFIRM]:
+            self.state = "account_confirm"
+        elif point == self.CENTERS[Ui.ACCOUNT_CONFIRM_BUTTON]:
             self.state = "character"
         elif self.state == "character" and point[0] in range(136, 226) and point[1] in range(57, 295):
             self.character_selected = True
@@ -324,7 +429,253 @@ class _Vision:
 
 
 class LineageNavigationTest(unittest.TestCase):
-    def test_screen_step_wait_uses_business_delay_and_three_detection_attempts(self):
+    def test_in_game_detection_uses_dedicated_status_bar_anchor_first(self):
+        vision = mock.Mock()
+        vision.find.side_effect = lambda template, *_args: (
+            (98, 459) if template == Ui.IN_GAME_ANCHOR else None
+        )
+        navigator = LineageSessionNavigator(
+            mock.Mock(),
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertTrue(navigator._is_in_game())
+        vision.find.assert_called_once_with(
+            Ui.IN_GAME_ANCHOR,
+            Ui.IN_GAME_ANCHOR_REGION,
+            0.72,
+        )
+        self.assertEqual((200, 465, 300, 500), Ui.IN_GAME_ANCHOR_REGION)
+
+    def test_inventory_uses_separate_content_and_bottom_button_regions(self):
+        vision = _Vision(inventory_open=False)
+        navigator = LineageSessionNavigator(
+            _Hardware(vision),
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch("builtins.print") as output:
+            navigator.ensure_inventory_open()
+            navigator.ensure_inventory_items(["/uploads/images/adena.png"])
+
+        self.assertTrue(vision.inventory_open)
+        lines = [str(call.args[0]) for call in output.call_args_list]
+        self.assertTrue(any(
+            "角色登录完成，开始检查物品栏" in line
+            for line in lines
+        ))
+        self.assertTrue(any(
+            "已识别到订单物品" in line
+            for line in lines
+        ))
+        self.assertIn(
+            (Ui.INVENTORY_BUTTON, Ui.INVENTORY_BUTTON_REGION, 0.84),
+            vision.find_calls,
+        )
+        self.assertIn(
+            (Ui.INVENTORY_OPEN, Ui.INVENTORY_OPEN_REGION, 0.82),
+            vision.find_calls,
+        )
+        self.assertTrue(all(
+            region == Ui.INVENTORY_CONTENT_REGION
+            for _image, region, _threshold in vision.find_image_calls
+        ))
+        self.assertEqual((600, 15, 770, 360), Ui.INVENTORY_CONTENT_REGION)
+        self.assertEqual((755, 290, 800, 370), Ui.INVENTORY_OPEN_REGION)
+        self.assertEqual((630, 560, 730, 600), Ui.INVENTORY_BUTTON_REGION)
+
+    def test_inventory_already_open_does_not_click_toggle(self):
+        vision = _Vision(inventory_open=True)
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware,
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch("builtins.print") as output:
+            navigator.ensure_inventory_open()
+
+        self.assertEqual([], hardware.moves)
+        self.assertTrue(any(
+            "已检测到打开状态" in str(call.args[0])
+            for call in output.call_args_list
+        ))
+
+    def test_inventory_uses_fixed_toggle_coordinate_when_template_is_missing(self):
+        vision = _Vision(
+            inventory_open=False,
+            inventory_button_visible=False,
+        )
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware,
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch("builtins.print") as output:
+            navigator.ensure_inventory_open()
+
+        self.assertTrue(vision.inventory_open)
+        self.assertLessEqual(
+            abs(hardware.moves[0][0] - Ui.INVENTORY_BUTTON_FALLBACK[0]),
+            3,
+        )
+        self.assertLessEqual(
+            abs(hardware.moves[0][1] - Ui.INVENTORY_BUTTON_FALLBACK[1]),
+            3,
+        )
+        self.assertTrue(any(
+            "source=800x600 固定按钮坐标" in str(call.args[0])
+            for call in output.call_args_list
+        ))
+
+    def test_menu_toggle_uses_bottom_right_region_and_two_state_threshold(self):
+        vision = _Vision()
+        navigator = LineageSessionNavigator(
+            _Hardware(vision),
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        point = navigator._find_menu_button()
+
+        self.assertEqual(_Vision.CENTERS[Ui.MENU_BUTTON], point)
+        self.assertEqual(
+            (Ui.MENU_BUTTON, Ui.MENU_BUTTON_REGION, 0.60),
+            vision.find_calls[-1],
+        )
+        self.assertEqual((785, 565, 800, 600), Ui.MENU_BUTTON_REGION)
+        self.assertEqual((788, 570, 800, 600), Ui.MENU_BUTTON_CLICK_REGION)
+        self.assertEqual((755, 560, 795, 600), Ui.EXIT_PANEL_TRIGGER_REGION)
+
+    def test_menu_click_randomization_stays_inside_confirmed_button_bounds(self):
+        vision = _Vision()
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware,
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        navigator._open_exit_panel_and_relogin()
+
+        menu_x, menu_y = hardware.moves[0]
+        self.assertTrue(789 <= menu_x <= 798)
+        self.assertTrue(571 <= menu_y <= 598)
+        self.assertTrue(vision.menu_open)
+
+    def test_menu_decision_logs_each_probe_and_final_branch(self):
+        vision = _Vision()
+        navigator = LineageSessionNavigator(
+            _Hardware(vision),
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch("builtins.print") as output:
+            navigator._open_exit_panel_and_relogin()
+
+        lines = [str(call.args[0]) for call in output.call_args_list]
+        self.assertTrue(any(
+            "[菜单判断] Restart 操作面板按钮: 结果=未命中" in line
+            for line in lines
+        ))
+        self.assertTrue(any(
+            "[菜单判断] 紫色 Restart 面板触发按钮: 结果=未命中" in line
+            for line in lines
+        ))
+        self.assertTrue(any(
+            "[菜单判断] 右下角切换菜单按钮: 结果=命中" in line
+            for line in lines
+        ))
+        self.assertTrue(any(
+            "matched_region=X[790,798] Y[571,597] size=9x27" in line
+            for line in lines
+        ))
+        self.assertTrue(any(
+            "search_region=X[785,799] Y[565,599]" in line
+            for line in lines
+        ))
+        self.assertTrue(any(
+            "[菜单判断结论] 未识别到紫色触发按钮" in line
+            for line in lines
+        ))
+
+    def test_open_menu_continues_from_exit_trigger_without_toggling_closed(self):
+        vision = _Vision()
+        vision.menu_open = True
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware,
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        navigator._open_exit_panel_and_relogin()
+
+        self.assertEqual("character", vision.state)
+        self.assertTrue(vision.exit_panel_open)
+        self.assertLessEqual(
+            abs(hardware.moves[0][0] - _Vision.CENTERS[Ui.EXIT_PANEL_TRIGGER][0]),
+            3,
+        )
+        self.assertFalse(any(
+            abs(x - _Vision.CENTERS[Ui.MENU_BUTTON][0]) <= 3
+            and abs(y - _Vision.CENTERS[Ui.MENU_BUTTON][1]) <= 3
+            for x, y in hardware.moves
+        ))
+
+    def test_character_selection_uses_fixed_slot_and_ok_not_character_appearance(self):
+        vision = _Vision(state="character")
+        vision.pixel = mock.Mock(side_effect=AssertionError(
+            "角色外观或旧像素不应参与选择"
+        ))
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware,
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        navigator._select_character_and_login()
+
+        slot_center = (
+            (Ui.CHARACTER_PICK_REGION[0] + Ui.CHARACTER_PICK_REGION[2]) // 2,
+            (Ui.CHARACTER_PICK_REGION[1] + Ui.CHARACTER_PICK_REGION[3]) // 2,
+        )
+        self.assertLessEqual(abs(hardware.moves[0][0] - slot_center[0]), 12)
+        self.assertLessEqual(abs(hardware.moves[0][1] - slot_center[1]), 20)
+        self.assertTrue(vision.character_selected)
+        self.assertEqual("game", vision.state)
+        self.assertIn(
+            (Ui.CHARACTER_LOGIN, Ui.CHARACTER_ACTION_REGION, 0.84),
+            vision.find_calls,
+        )
+        self.assertEqual(
+            [(
+                Ui.CHARACTER_NAME_VALUE_REGION,
+                Ui.CHARACTER_VALUE_BRIGHTNESS,
+            )],
+            vision.bright_pixel_calls,
+        )
+        vision.pixel.assert_not_called()
+        self.assertEqual((640, 480, 780, 555), Ui.CHARACTER_ACTION_REGION)
+        self.assertEqual((212, 367, 450, 383), Ui.CHARACTER_NAME_VALUE_REGION)
+
+    def test_screen_step_wait_uses_business_delay_and_configured_detection_attempts(self):
         sleeps = []
         random_ranges = []
         outcomes = iter([False, False, (320, 180)])
@@ -346,12 +697,46 @@ class LineageNavigationTest(unittest.TestCase):
             )
 
         self.assertEqual((320, 180), result)
-        self.assertEqual([(3.0, 10.0)], random_ranges)
-        # 画面切换：固定 3 + 随机 7，前两次未就绪各等待 2 秒。
-        self.assertAlmostEqual(14.0, sum(sleeps), places=5)
-        self.assertTrue(any("第 3/3 次 已就绪" in call.args[0] for call in output.call_args_list))
+        self.assertEqual([(1.0, 4.0)], random_ranges)
+        # 画面切换：固定 1 + 随机上限 4，前两次未就绪各等待 1 秒。
+        self.assertAlmostEqual(7.0, sum(sleeps), places=5)
+        self.assertTrue(any(
+            f"第 3/{lineage_navigation.STEP_VERIFY_ATTEMPTS} 次 已就绪"
+            in call.args[0]
+            for call in output.call_args_list
+        ))
 
-    def test_failed_step_only_reports_error_after_three_checks(self):
+    def test_server_connect_initial_wait_is_2_to_5_seconds_and_keeps_checks(self):
+        sleeps = []
+        random_ranges = []
+        outcomes = iter([None, (642, 451)])
+        navigator = LineageSessionNavigator(
+            mock.Mock(),
+            _Window(),
+            mock.Mock(),
+            sleep=sleeps.append,
+            random_uniform=lambda low, high: (
+                random_ranges.append((low, high)) or high
+            ),
+        )
+
+        with mock.patch("builtins.print") as output:
+            result = navigator.wait_for_step(
+                "等待账号确认页",
+                lambda: next(outcomes),
+                profile="server_connect",
+            )
+
+        self.assertEqual((642, 451), result)
+        self.assertEqual([(1.0, 4.0)], random_ranges)
+        self.assertAlmostEqual(6.0, sum(sleeps), places=5)
+        self.assertTrue(any(
+            f"第 2/{lineage_navigation.STEP_VERIFY_ATTEMPTS} 次 已就绪"
+            in call.args[0]
+            for call in output.call_args_list
+        ))
+
+    def test_failed_step_only_reports_error_after_configured_checks(self):
         checks = 0
         navigator = LineageSessionNavigator(
             mock.Mock(),
@@ -374,8 +759,12 @@ class LineageNavigationTest(unittest.TestCase):
             )
 
         self.assertIsNone(result)
-        self.assertEqual(3, checks)
-        self.assertTrue(any("连续 3 次检测" in call.args[0] for call in output.call_args_list))
+        self.assertEqual(lineage_navigation.STEP_VERIFY_ATTEMPTS, checks)
+        self.assertTrue(any(
+            f"连续 {lineage_navigation.STEP_VERIFY_ATTEMPTS} 次检测"
+            in call.args[0]
+            for call in output.call_args_list
+        ))
 
     def test_item_drag_delay_is_shorter_than_screen_transition(self):
         screen_sleeps = []
@@ -395,9 +784,9 @@ class LineageNavigationTest(unittest.TestCase):
             screen.wait_after_step("切换画面", profile="screen")
             item.wait_after_step("拖拽物品", profile="item_drag")
 
-        self.assertAlmostEqual(13.0, sum(screen_sleeps), places=5)
+        self.assertAlmostEqual(5.0, sum(screen_sleeps), places=5)
         self.assertAlmostEqual(1.4, sum(item_sleeps), places=5)
-        self.assertGreater(sum(screen_sleeps), sum(item_sleeps) * 5)
+        self.assertGreater(sum(screen_sleeps), sum(item_sleeps) * 3)
 
     def test_buyer_ocr_at_90_or_above_auto_accepts_only_matching_name(self):
         self.assertEqual("accept", buyer_ocr_action("홍길동이", "홍길동", 90.0))
@@ -407,11 +796,97 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual("review", buyer_ocr_action("홍길동", "홍길동", 89.9))
         self.assertEqual("review", buyer_ocr_action("", "홍길동", -1.0))
 
+    def test_chat_text_is_not_read_as_buyer_without_trade_request_popup(self):
+        executor = LineageClassicExecutor(object())
+        vision = mock.Mock()
+        vision.find.return_value = None
+        vision.read_text_result.return_value = SimpleNamespace(
+            text="[TURTLE] 6힘지",
+            confidence=99.0,
+        )
+        navigator = SimpleNamespace(
+            vision=vision,
+            _raise_if_cancelled=mock.Mock(),
+            sleep=mock.Mock(),
+        )
+
+        with mock.patch.object(
+            lineage_navigation.time,
+            "monotonic",
+            side_effect=[0.0, 0.1, 1.1],
+        ):
+            observed = executor._wait_for_expected_buyer(
+                navigator,
+                "주문고객",
+                timeout=1.0,
+            )
+
+        self.assertIsNone(observed)
+        vision.find.assert_called_once_with(
+            TradeUi.REQUEST_TEMPLATE,
+            TradeUi.REQUEST_TEMPLATE_REGION,
+            threshold=0.86,
+        )
+        vision.read_text_result.assert_not_called()
+
+    def test_buyer_name_is_read_only_after_trade_request_popup_is_visible(self):
+        executor = LineageClassicExecutor(object())
+        vision = mock.Mock()
+        vision.find.return_value = (415, 532)
+        vision.read_text_result.return_value = SimpleNamespace(
+            text="Buyer27",
+            confidence=96.0,
+        )
+        navigator = SimpleNamespace(
+            vision=vision,
+            _raise_if_cancelled=mock.Mock(),
+            sleep=mock.Mock(),
+        )
+
+        with mock.patch.object(
+            lineage_navigation.time,
+            "monotonic",
+            side_effect=[0.0, 0.1, 0.2],
+        ):
+            observed = executor._wait_for_expected_buyer(
+                navigator,
+                "Buyer27",
+                timeout=1.0,
+            )
+
+        self.assertEqual("Buyer27", observed)
+        self.assertEqual(2, vision.find.call_count)
+        self.assertEqual(2, vision.read_text_result.call_count)
+        vision.read_text_result.assert_called_with(TradeUi.CUSTOMER_NAME_REGION)
+
     def test_trade_fixed_action_regions_use_the_provided_centers(self):
         self.assertEqual((537, 551), region_center(TradeUi.REQUEST_ACCEPT_REGION))
         self.assertEqual((568, 551), region_center(TradeUi.REQUEST_REJECT_REGION))
         self.assertEqual((537, 551), region_center(TradeUi.FINAL_ACCEPT_REGION))
         self.assertEqual((568, 551), region_center(TradeUi.FINAL_REJECT_REGION))
+
+    def test_trade_window_regions_separate_my_items_from_buyer_items(self):
+        self.assertEqual((0, 0, 235, 360), TradeUi.TRADE_WINDOW_REGION)
+        self.assertEqual((22, 38, 190, 166), TradeUi.MY_TRADE_REGION)
+        self.assertEqual((50, 65, 162, 140), TradeUi.MY_TRADE_DROP_REGION)
+        self.assertEqual((22, 203, 190, 330), TradeUi.BUYER_TRADE_REGION)
+        self.assertEqual((120, 330, 225, 360), TradeUi.TRADE_ACTION_REGION)
+        self.assertEqual((106, 102), region_center(TradeUi.MY_TRADE_REGION))
+        self.assertEqual((106, 102), region_center(TradeUi.MY_TRADE_DROP_REGION))
+        self.assertEqual(
+            (50, 65),
+            random_region_point(
+                TradeUi.MY_TRADE_DROP_REGION,
+                lambda low, _high: low,
+            ),
+        )
+        self.assertEqual(
+            (161, 139),
+            random_region_point(
+                TradeUi.MY_TRADE_DROP_REGION,
+                lambda _low, high: high,
+            ),
+        )
 
     def test_trade_region_click_varies_only_inside_button_safe_area(self):
         vision = _Vision()
@@ -482,7 +957,7 @@ class LineageNavigationTest(unittest.TestCase):
             (transfer.source, transfer.quantity) for transfer in transfers
         ])
 
-    def test_item_missing_selected_recognition_image_is_rejected(self):
+    def test_item_accepts_unselected_recognition_image_without_selected_image(self):
         executor = LineageClassicExecutor(object())
         order = {
             "asset_type": "item",
@@ -494,16 +969,74 @@ class LineageNavigationTest(unittest.TestCase):
             }],
         }
 
-        with self.assertRaisesRegex(NavigationError, "缺少选中状态识别图片"):
+        transfers = executor._build_transfers(
+            order,
+            _instant_navigator(_Vision(
+                inventory_open=True,
+                item_points={"/images/red.png": (680, 200)},
+            )),
+        )
+
+        self.assertEqual([((680, 200), 3)], [
+            (transfer.source, transfer.quantity) for transfer in transfers
+        ])
+
+    def test_item_requires_at_least_one_recognition_image(self):
+        executor = LineageClassicExecutor(object())
+        order = {
+            "asset_type": "item",
+            "details": [{
+                "item_id": 11,
+                "item_name": "红水",
+                "quantity": 3,
+            }],
+        }
+
+        with self.assertRaisesRegex(NavigationError, "至少提供一张"):
             executor._build_transfers(
                 order, _instant_navigator(_Vision(inventory_open=True))
             )
 
     def test_trade_timeout_uses_order_value_and_safe_bounds(self):
-        self.assertEqual(300, trade_timeout_seconds({}))
+        self.assertEqual(600, trade_timeout_seconds({}))
         self.assertEqual(600, trade_timeout_seconds({"trade_timeout_seconds": 600}))
         self.assertEqual(30, trade_timeout_seconds({"trade_timeout_seconds": 1}))
         self.assertEqual(7200, trade_timeout_seconds({"trade_timeout_seconds": 99999}))
+
+    def test_buyer_poll_schedule_changes_at_one_and_seven_minutes(self):
+        self.assertEqual(("初始低频", 5.0), buyer_poll_schedule(0))
+        self.assertEqual(("初始低频", 5.0), buyer_poll_schedule(59.9))
+        self.assertEqual(("中段高频", 2.0), buyer_poll_schedule(60))
+        self.assertEqual(("中段高频", 2.0), buyer_poll_schedule(419.9))
+        self.assertEqual(("后段低频", 5.0), buyer_poll_schedule(420))
+        self.assertEqual(("后段低频", 5.0), buyer_poll_schedule(600))
+
+    def test_screen_capture_timeout_reports_error_instead_of_hanging(self):
+        vision = object.__new__(TemplateVision)
+        vision.window = _Window()
+        release = threading.Event()
+        started = threading.Event()
+
+        def blocked_grab(**_kwargs):
+            started.set()
+            release.wait(1.0)
+            return mock.Mock()
+
+        try:
+            with mock.patch.object(
+                lineage_navigation,
+                "ImageGrab",
+                SimpleNamespace(grab=blocked_grab),
+            ), mock.patch.object(
+                lineage_navigation,
+                "CAPTURE_TIMEOUT_SECONDS",
+                0.01,
+            ):
+                with self.assertRaisesRegex(NavigationError, "截图超过"):
+                    vision._capture(Ui.SERVER_REGION)
+            self.assertTrue(started.is_set())
+        finally:
+            release.set()
 
     def test_all_navigation_templates_can_be_loaded_from_unicode_paths(self):
         try:
@@ -512,6 +1045,8 @@ class LineageNavigationTest(unittest.TestCase):
             self.skipTest(str(exc))
         templates = (
             Ui.INVENTORY_BUTTON,
+            Ui.INVENTORY_OPEN,
+            Ui.IN_GAME_ANCHOR,
             Ui.MENU_BUTTON,
             Ui.EXIT_PANEL_TRIGGER,
             Ui.RELOGIN_BUTTON,
@@ -585,9 +1120,51 @@ class LineageNavigationTest(unittest.TestCase):
 
         navigator._select_server(TargetRegion.from_order(ORDER))
 
-        self.assertLessEqual(abs(ORDER["region_select_x"] - hardware.moves[0][0]), 3)
-        self.assertLessEqual(abs(ORDER["region_select_y"] - hardware.moves[0][1]), 3)
+        self.assertEqual([], vision.page_number_calls)
+        self.assertEqual(1, vision.current_page)
+        self.assertEqual(20, Ui.SERVER_SELECT_RADIUS_X)
+        self.assertEqual(2, Ui.SERVER_SELECT_RADIUS_Y)
+        self.assertLessEqual(
+            abs(ORDER["region_select_x"] - hardware.moves[1][0]),
+            Ui.SERVER_SELECT_RADIUS_X,
+        )
+        self.assertLessEqual(
+            abs(ORDER["region_select_y"] - hardware.moves[1][1]),
+            Ui.SERVER_SELECT_RADIUS_Y,
+        )
         self.assertEqual(0, vision.find_text_calls)
+        self.assertEqual("character", vision.state)
+
+    def test_server_selection_switches_to_configured_page_before_server_coordinate(self):
+        order = {**ORDER, "region_select_page": 2}
+        vision = _Vision(state="server")
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware, _Window(), vision, sleep=lambda _seconds: None
+        )
+
+        navigator._select_server(TargetRegion.from_order(order))
+
+        self.assertEqual([], vision.page_number_calls)
+        self.assertEqual(2, vision.current_page)
+        self.assertLessEqual(abs(364 - hardware.moves[0][0]), 2)
+        self.assertLessEqual(abs(353 - hardware.moves[0][1]), 2)
+        self.assertLessEqual(
+            abs(ORDER["region_select_x"] - hardware.moves[1][0]),
+            Ui.SERVER_SELECT_RADIUS_X,
+        )
+        self.assertLessEqual(
+            abs(ORDER["region_select_y"] - hardware.moves[1][1]),
+            Ui.SERVER_SELECT_RADIUS_Y,
+        )
+        self.assertIn(
+            (
+                Ui.ACCOUNT_CONFIRM_BUTTON,
+                Ui.ACCOUNT_CONFIRM_REGION,
+                0.84,
+            ),
+            vision.find_calls,
+        )
         self.assertEqual("character", vision.state)
 
     def test_server_selection_falls_back_to_ocr_when_coordinate_is_missing(self):
@@ -603,8 +1180,14 @@ class LineageNavigationTest(unittest.TestCase):
 
         navigator._select_server(TargetRegion.from_order(order))
 
-        self.assertLessEqual(abs(470 - hardware.moves[0][0]), 3)
-        self.assertLessEqual(abs(173 - hardware.moves[0][1]), 3)
+        self.assertLessEqual(
+            abs(470 - hardware.moves[1][0]),
+            Ui.SERVER_SELECT_RADIUS_X,
+        )
+        self.assertLessEqual(
+            abs(173 - hardware.moves[1][1]),
+            Ui.SERVER_SELECT_RADIUS_Y,
+        )
         self.assertEqual(1, vision.find_text_calls)
 
     def test_server_selection_without_coordinate_stops_when_ocr_finds_nothing(self):
@@ -621,6 +1204,25 @@ class LineageNavigationTest(unittest.TestCase):
         with self.assertRaisesRegex(NavigationError, "OCR 也未找到"):
             navigator._select_server(TargetRegion.from_order(order))
 
+        self.assertEqual(1, len(hardware.moves))
+
+    def test_server_selection_stops_when_non_visible_page_cannot_be_located(self):
+        vision = _Vision(state="server", page_points={3: (320, 390)})
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware, _Window(), vision, sleep=lambda _seconds: None
+        )
+
+        with self.assertRaisesRegex(NavigationError, "第 7 页分页按钮"):
+            navigator._select_server(TargetRegion.from_order({
+                **ORDER,
+                "region_select_page": 7,
+            }))
+
+        self.assertEqual(
+            [7] * lineage_navigation.STEP_VERIFY_ATTEMPTS,
+            vision.page_number_calls,
+        )
         self.assertEqual([], hardware.moves)
 
     def test_ocr_matches_name_or_korean_code(self):
@@ -701,6 +1303,33 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertTrue(window.focused)
         self.assertTrue(window.validated)
 
+    def test_single_recognition_state_continues_after_inventory_is_opened(self):
+        order = {
+            **ORDER,
+            "details": [{
+                "item_id": 1,
+                "item_name": "Adena",
+                "quantity": 1,
+                "recognition_image_unselected_url": "/uploads/images/adena.png",
+            }],
+        }
+        vision = _Vision(current_text=ORDER["region_code"], inventory_open=False)
+        navigator = LineageSessionNavigator(
+            _Hardware(vision), _Window(), vision, sleep=lambda _seconds: None
+        )
+
+        navigator.ensure_target_region(order)
+
+        self.assertTrue(vision.inventory_open)
+        self.assertIn(
+            (
+                "/uploads/images/adena.png",
+                Ui.INVENTORY_CONTENT_REGION,
+                0.90,
+            ),
+            vision.find_image_calls,
+        )
+
     def test_switch_region_uses_menu_fallback_and_returns_to_game(self):
         vision = _Vision(current_text="켄라우헬", inventory_open=False)
         hardware = _Hardware(vision)
@@ -717,8 +1346,8 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual("game", vision.state)
         server_clicks = [
             point for point in hardware.moves
-            if abs(point[0] - ORDER["region_select_x"]) <= 3
-            and abs(point[1] - ORDER["region_select_y"]) <= 3
+            if abs(point[0] - ORDER["region_select_x"]) <= Ui.SERVER_SELECT_RADIUS_X
+            and abs(point[1] - ORDER["region_select_y"]) <= Ui.SERVER_SELECT_RADIUS_Y
         ]
         self.assertEqual(1, len(server_clicks))
 

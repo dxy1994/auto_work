@@ -22,20 +22,31 @@ from game_executor.executor.lineage_classic.navigation import (
     build_navigator,
     item_recognition_images,
 )
-from game_executor.executor.lineage_classic.policy import trade_timeout_seconds
+from game_executor.executor.lineage_classic.policy import (
+    buyer_poll_schedule,
+    trade_timeout_seconds,
+)
 
 
 class TradeUi:
-    # 整图只辅助判断弹窗是否存在，不用于客户身份判断。
+    # 交易申请整行会随买家名长度横向移动，只有右下角 Yes/No 基本固定。
+    # 先识别 Yes/No 确认弹窗存在，再单独 OCR 左侧买家名；聊天框文字
+    # 不能作为交易申请出现的依据。
     REQUEST_TEMPLATE = "交易弹窗提醒.png"
     CONFIRM_BUTTON_TEMPLATE = "交易确认按钮.png"
     CANCEL_BUTTON_TEMPLATE = "交易取消按钮.png"
     FINAL_CONFIRM_TEMPLATE = "最终确认交易判断.png"
+    REQUEST_TEMPLATE_REGION = (515, 535, 595, 565)
     CUSTOMER_NAME_REGION = (144, 516, 241, 538)
     REQUEST_ACCEPT_REGION = (528, 547, 547, 556)
     REQUEST_REJECT_REGION = (561, 547, 575, 556)
-    BOTH_TRADE_REGION = (9, 11, 215, 355)
-    MY_TRADE_REGION = (26, 45, 180, 156)
+    TRADE_WINDOW_REGION = (0, 0, 235, 360)
+    MY_TRADE_REGION = (22, 38, 190, 166)
+    MY_TRADE_DROP_REGION = (50, 65, 162, 140)
+    BUYER_TRADE_REGION = (22, 203, 190, 330)
+    TRADE_ACTION_REGION = (120, 330, 225, 360)
+    # 兼容仍引用旧名称的扩展代码。
+    BOTH_TRADE_REGION = TRADE_WINDOW_REGION
     FINAL_ACCEPT_REGION = (528, 547, 547, 556)
     FINAL_REJECT_REGION = (561, 547, 575, 556)
     REQUEST_REVIEW_SCREENSHOT_REGION = (120, 490, 590, 570)
@@ -51,6 +62,22 @@ class TradeTransfer:
 def region_center(region: tuple[int, int, int, int]) -> tuple[int, int]:
     left, top, right, bottom = region
     return (left + right) // 2, (top + bottom) // 2
+
+
+def random_region_point(
+    region: tuple[int, int, int, int],
+    random_uniform: Callable[[float, float], float],
+) -> tuple[int, int]:
+    """在区域内生成可复现注入的随机落点，右、下边界不包含。"""
+    left, top, right, bottom = region
+    if right <= left or bottom <= top:
+        raise ValueError(f"无效区域: {region}")
+    x = int(round(random_uniform(left, right - 1)))
+    y = int(round(random_uniform(top, bottom - 1)))
+    return (
+        min(right - 1, max(left, x)),
+        min(bottom - 1, max(top, y)),
+    )
 
 
 def _normalized_customer_name(value: object) -> str:
@@ -96,6 +123,7 @@ class LineageClassicExecutor(BaseGameExecutor):
         self._pending_review_id: Optional[str] = None
         self._review_decision: Optional[bool] = None
         self._phase = "idle"
+        self._runtime_recovery_pending = False
 
     def set_progress_callback(self, callback: Optional[Callable[[str, str], None]]) -> None:
         self._progress = callback
@@ -119,27 +147,39 @@ class LineageClassicExecutor(BaseGameExecutor):
         with self._review_condition:
             self._review_condition.notify_all()
 
+    def runtime_recovery_pending(self) -> bool:
+        """连接检查是否已实际尝试恢复窗口、但仍需要有限次数重试。"""
+        return self._runtime_recovery_pending
+
     def probe_runtime(self) -> bool:
-        """启动和空闲期检查唯一的天堂窗口，并自动恢复最小化窗口。"""
+        """连接检查唯一的天堂窗口；只自动恢复最小化窗口，不在空闲期选服。"""
         recoverable = False
+        self._runtime_recovery_pending = False
+        print("[Lineage] 开始检查天堂经典版游戏运行状态")
         try:
             window = ClientWindow.find()
             size = window.client_size()
+            print(f"[Lineage] 已找到游戏窗口，当前客户区 {size[0]}x{size[1]}")
             if size == (0, 0):
                 print("[Lineage] 检测到游戏窗口最小化（客户区 0x0），正在自动恢复")
                 recoverable = True
+                self._runtime_recovery_pending = True
                 try:
                     size = window.restore()
                 except NavigationError as exc:
-                    print(f"[Lineage] 游戏窗口本次自动恢复未完成: {exc}，将在下次心跳重试")
+                    print(
+                        f"[Lineage] 游戏窗口本次自动恢复未完成: {exc}，"
+                        "将进行连接后的有限次数恢复重试"
+                    )
                     size = (0, 0)
 
                 if size == (0, 0):
                     print(
-                        "[Lineage] 游戏窗口暂未恢复完成（客户区仍为 0x0），"
-                        "保持可自动恢复状态，将在下次心跳重试"
+                        "[Lineage] 游戏窗口本次自动恢复未完成（客户区仍为 0x0），"
+                        "将进行连接后的有限次数恢复重试"
                     )
                 else:
+                    self._runtime_recovery_pending = False
                     print(
                         f"[Lineage] 游戏窗口已自动恢复，客户区 {size[0]}x{size[1]}，"
                         "继续检查登录界面"
@@ -147,9 +187,10 @@ class LineageClassicExecutor(BaseGameExecutor):
                     try:
                         window.focus()
                     except NavigationError as exc:
+                        self._runtime_recovery_pending = True
                         print(
                             f"[Lineage] 游戏窗口已恢复但本次无法切换到前台: {exc}，"
-                            "保持可自动恢复状态，将在下次心跳重试"
+                            "将进行连接后的有限次数恢复重试"
                         )
                         size = (0, 0)
 
@@ -166,8 +207,15 @@ class LineageClassicExecutor(BaseGameExecutor):
                     input_controller=self._input,
                 )
                 ready = navigator._is_in_game()
-                # 登录页、选服页等状态会由 ensure_target_region 自动继续。
-                recoverable = not ready
+                if ready:
+                    print("[Lineage] 天堂经典版已处于游戏主界面，运行状态正常")
+                else:
+                    # 没有订单时缺少目标大区，不能在连接检查阶段自行选服。
+                    recoverable = True
+                    print(
+                        "[Lineage] 游戏窗口可操作，但当前不在游戏主界面；"
+                        "空闲期不会自动选择大区，将在收到交易任务后按订单信息恢复"
+                    )
         except NavigationError as exc:
             print(f"[Lineage] 运行态检查失败: {exc}")
             ready = False
@@ -254,7 +302,9 @@ class LineageClassicExecutor(BaseGameExecutor):
         trade_cancel = navigator.wait_for_step(
             "接受买家申请后进入交易界面",
             lambda: navigator.vision.find(
-                TradeUi.CANCEL_BUTTON_TEMPLATE, TradeUi.BOTH_TRADE_REGION, threshold=0.90
+                TradeUi.CANCEL_BUTTON_TEMPLATE,
+                TradeUi.TRADE_ACTION_REGION,
+                threshold=0.90,
             ),
             profile="screen",
             fixed_wait=1.0,
@@ -262,8 +312,28 @@ class LineageClassicExecutor(BaseGameExecutor):
         if trade_cancel is None:
             raise NavigationError("接受申请后未识别到交易界面")
 
-        destination = region_center(TradeUi.MY_TRADE_REGION)
-        for transfer in transfers:
+        print(
+            "[Lineage][交易界面] 已确认交易窗口；"
+            f"我方物品区=X[{TradeUi.MY_TRADE_REGION[0]},{TradeUi.MY_TRADE_REGION[2] - 1}] "
+            f"Y[{TradeUi.MY_TRADE_REGION[1]},{TradeUi.MY_TRADE_REGION[3] - 1}]，"
+            f"买方物品区=X[{TradeUi.BUYER_TRADE_REGION[0]},{TradeUi.BUYER_TRADE_REGION[2] - 1}] "
+            f"Y[{TradeUi.BUYER_TRADE_REGION[1]},{TradeUi.BUYER_TRADE_REGION[3] - 1}]，"
+            f"统一拖拽范围=我方中心区域 "
+            f"X[{TradeUi.MY_TRADE_DROP_REGION[0]},{TradeUi.MY_TRADE_DROP_REGION[2] - 1}] "
+            f"Y[{TradeUi.MY_TRADE_DROP_REGION[1]},{TradeUi.MY_TRADE_DROP_REGION[3] - 1}]",
+            flush=True,
+        )
+        for index, transfer in enumerate(transfers):
+            destination = random_region_point(
+                TradeUi.MY_TRADE_DROP_REGION,
+                navigator.random_uniform,
+            )
+            print(
+                f"[Lineage][交易界面] 准备放入第 {index + 1}/{len(transfers)} 项 "
+                f"{transfer.label}；我方中心区域随机目标="
+                f"({destination[0]},{destination[1]})，由游戏自动排序",
+                flush=True,
+            )
             navigator.drag(transfer.source, destination)
             navigator.wait_after_step(
                 f"拖入交易物品 {transfer.label}",
@@ -279,7 +349,9 @@ class LineageClassicExecutor(BaseGameExecutor):
         confirm = navigator.wait_for_step(
             "等待交易确认按钮可用",
             lambda: navigator.vision.find(
-                TradeUi.CONFIRM_BUTTON_TEMPLATE, TradeUi.BOTH_TRADE_REGION, threshold=0.90
+                TradeUi.CONFIRM_BUTTON_TEMPLATE,
+                TradeUi.TRADE_ACTION_REGION,
+                threshold=0.90,
             ),
             profile="panel",
         )
@@ -293,7 +365,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                 TradeUi.FINAL_CONFIRM_TEMPLATE, Ui.FULL_CLIENT, threshold=0.90
             ),
             profile="screen",
-            fixed_wait=1.5,
+            fixed_wait=1.0,
         )
         if final_prompt is None:
             return self._result(
@@ -339,27 +411,58 @@ class LineageClassicExecutor(BaseGameExecutor):
         expected_buyer: str,
         timeout: float,
     ) -> Optional[str]:
-        """90 分及以上自动按前缀决策；低置信结果必须由前端人工决策。"""
-        deadline = time.monotonic() + timeout
+        """先确认交易申请弹窗，再 OCR 买家名并按置信度决策。"""
+        started = time.monotonic()
+        deadline = started + timeout
         last_name = ""
         stable_frames = 0
         rejected_name = ""
-        while time.monotonic() < deadline:
+        last_poll_phase = ""
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            poll_phase, poll_interval = buyer_poll_schedule(now - started)
+            if poll_phase != last_poll_phase:
+                print(
+                    f"[Lineage][等待买家] 进入{poll_phase}阶段，"
+                    f"已等待={now - started:.1f}s，检测间隔={poll_interval:g}s",
+                    flush=True,
+                )
+                last_poll_phase = poll_phase
             navigator._raise_if_cancelled()
-            ocr = navigator.vision.read_text_result(TradeUi.CUSTOMER_NAME_REGION)
-            observed = ocr.text.strip()
-            normalized = _normalized_customer_name(observed)
-            request_visible = bool(normalized)
-            if not request_visible:
-                request_visible = navigator.vision.find(
-                    TradeUi.REQUEST_TEMPLATE, Ui.FULL_CLIENT, threshold=0.72
-                ) is not None
-            if not request_visible:
+            request_marker = navigator.vision.find(
+                TradeUi.REQUEST_TEMPLATE,
+                TradeUi.REQUEST_TEMPLATE_REGION,
+                threshold=0.86,
+            )
+            if request_marker is None:
                 last_name = ""
                 stable_frames = 0
                 rejected_name = ""
-                navigator.sleep(0.35)
+                navigator.sleep(poll_interval)
                 continue
+
+            if not last_name:
+                request_left, request_top, request_right, request_bottom = (
+                    TradeUi.REQUEST_TEMPLATE_REGION
+                )
+                name_left, name_top, name_right, name_bottom = (
+                    TradeUi.CUSTOMER_NAME_REGION
+                )
+                print(
+                    f"[Lineage][交易申请] Yes/No 模板已命中，"
+                    f"coordinate=({request_marker[0]},{request_marker[1]})，"
+                    f"模板搜索范围=X[{request_left},{request_right - 1}] "
+                    f"Y[{request_top},{request_bottom - 1}]，"
+                    f"玩家名识别范围=X[{name_left},{name_right - 1}] "
+                    f"Y[{name_top},{name_bottom - 1}]",
+                    flush=True,
+                )
+
+            ocr = navigator.vision.read_text_result(TradeUi.CUSTOMER_NAME_REGION)
+            observed = ocr.text.strip()
+            normalized = _normalized_customer_name(observed)
 
             frame_key = normalized or "<unreadable>"
             if frame_key == last_name:
@@ -386,7 +489,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                     rejected_name = frame_key
                     self._emit("waiting_buyer", "人工已拒绝本次申请，继续等待买家")
                     navigator.wait_after_step("拒绝本次买家交易申请", profile="panel")
-            navigator.sleep(0.35)
+            navigator.sleep(poll_interval)
         return None
 
     def _request_human_buyer_review(
@@ -445,7 +548,9 @@ class LineageClassicExecutor(BaseGameExecutor):
             def locate_source():
                 for image in images:
                     source_point = navigator.vision.find_image(
-                        image, Ui.INVENTORY_REGION, threshold=0.90
+                        image,
+                        Ui.INVENTORY_CONTENT_REGION,
+                        threshold=0.90,
                     )
                     if source_point is not None:
                         return source_point
@@ -489,7 +594,9 @@ class LineageClassicExecutor(BaseGameExecutor):
                 TradeUi.FINAL_CONFIRM_TEMPLATE, Ui.FULL_CLIENT, threshold=0.90
             )
             cancel_button = navigator.vision.find(
-                TradeUi.CANCEL_BUTTON_TEMPLATE, TradeUi.BOTH_TRADE_REGION, threshold=0.90
+                TradeUi.CANCEL_BUTTON_TEMPLATE,
+                TradeUi.TRADE_ACTION_REGION,
+                threshold=0.90,
             )
             if final_prompt is None and cancel_button is None and navigator._is_in_game():
                 stable_frames += 1
@@ -503,7 +610,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             "最终确认后验证交易窗口关闭",
             trade_closed_sample,
             profile="final_verify",
-            fixed_wait=min(3.0, max(1.0, timeout / 4)),
+            fixed_wait=1.0,
             attempts=3,
             probe_interval=0.5,
         )
@@ -513,6 +620,10 @@ class LineageClassicExecutor(BaseGameExecutor):
         self._phase = status
         if self._cancel_event.is_set():
             raise NavigationCancelled("交易已取消")
+        print(
+            f"[Lineage][流程状态] {status}: {message}",
+            flush=True,
+        )
         if self._progress is not None:
             self._progress(status, message)
 

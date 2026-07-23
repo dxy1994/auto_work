@@ -1078,7 +1078,7 @@ public class TradeDispatchCoordinator {
 
     private int executionTimeoutSeconds(TradeOffer offer) {
         Object raw = offer.orderPayload().get("trade_timeout_seconds");
-        int waitingSeconds = raw instanceof Number number ? number.intValue() : 300;
+        int waitingSeconds = raw instanceof Number number ? number.intValue() : 600;
         waitingSeconds = Math.max(30, Math.min(7200, waitingSeconds));
         return waitingSeconds + EXECUTION_WATCHDOG_GRACE_SECONDS;
     }
@@ -1090,7 +1090,7 @@ public class TradeDispatchCoordinator {
         payload.put("game_code", game.getCode());
         payload.put("game_account_id", gameAccountId);
         payload.put("trade_timeout_seconds",
-                game.getTradeTimeoutSeconds() != null ? game.getTradeTimeoutSeconds() : 300);
+                game.getTradeTimeoutSeconds() != null ? game.getTradeTimeoutSeconds() : 600);
         payload.put("region_id", order.getRegionId());
         GameRegion region = gameRegionService.getById(order.getRegionId());
         if (region != null) {

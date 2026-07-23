@@ -14,7 +14,7 @@
       <el-table-column prop="name" label="游戏名称" min-width="150" />
       <el-table-column prop="platform" label="平台" width="100" />
       <el-table-column prop="trade_timeout_seconds" label="交易超时" width="100" align="center">
-        <template #default="{ row }">{{ row.trade_timeout_seconds ?? 300 }} 秒</template>
+        <template #default="{ row }">{{ row.trade_timeout_seconds ?? 600 }} 秒</template>
       </el-table-column>
       <el-table-column prop="sort_order" label="排序" width="70" align="center" />
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
@@ -360,7 +360,7 @@ const gameRules = {
 
 const defaultGameForm = () => ({
   name: '', code: '', platform: '', trade_type: 'script',
-  trade_timeout_seconds: 300, icon: '', sort_order: 0, remark: '',
+  trade_timeout_seconds: 600, icon: '', sort_order: 0, remark: '',
 })
 const gameForm = reactive(defaultGameForm())
 

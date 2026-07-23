@@ -17,12 +17,6 @@ const routes = [
     component: () => import('../views/AccountList.vue'),
     meta: { title: '平台账号' },
   },
-  {
-    path: '/platform-schedules',
-    name: 'PlatformScheduleManagement',
-    component: () => import('../views/ScheduleManagement.vue'),
-    meta: { title: '定时调度' },
-  },
   // ── 中控平台 ──
   {
     path: '/games',

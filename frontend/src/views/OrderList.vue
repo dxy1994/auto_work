@@ -371,7 +371,10 @@
       <!-- 订单信息 -->
       <el-descriptions :column="2" border size="small" title="订单信息" class="detail-section">
         <el-descriptions-item label="游戏">{{ gameNameMap[currentOrder?.game_id] || currentOrder?.game_id }}</el-descriptions-item>
-        <el-descriptions-item label="大区">{{ regionNameMap[currentOrder?.region_id] || currentOrder?.region_id }}</el-descriptions-item>
+        <el-descriptions-item label="大区">{{ currentOrder?.region_name || regionNameMap[currentOrder?.region_id] || currentOrder?.region_id }}</el-descriptions-item>
+        <el-descriptions-item label="大区编码">
+          <code class="region-code">{{ currentOrder?.region_code || regionCodeMap[currentOrder?.region_id] || '-' }}</code>
+        </el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="orderStatusType(currentOrder?.status)" size="small">{{ orderStatusLabel(currentOrder?.status) }}</el-tag>
         </el-descriptions-item>
@@ -552,6 +555,7 @@ function onCurrentChange(row) { currentRow.value = row }
 
 const gameNameMap = computed(() => Object.fromEntries(gameList.value.map(g => [g.id, g.name])))
 const regionNameMap = computed(() => Object.fromEntries(allRegions.value.map(r => [r.id, r.name])))
+const regionCodeMap = computed(() => Object.fromEntries(allRegions.value.map(r => [r.id, r.code])))
 const machineNameMap = computed(() => Object.fromEntries(machineList.value.map(m => [m.id, m.name || m.mac_address])))
 const websiteNameMap = computed(() => Object.fromEntries(websiteList.value.map(w => [w.id, w.name])))
 
@@ -1116,6 +1120,7 @@ onBeforeUnmount(clearAutoRefreshTimer)
 .copy-order-alert { margin-bottom: 14px; }
 .retry-resume-info { margin-top: -8px; padding: 10px 12px; color: #b45309; font-size: 13px; border: 1px solid #f3d19e; border-radius: 6px; background: #fdf6ec; }
 .error-code-text { margin-left: 8px; color: #909399; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.region-code { color: #606266; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .buyer-review-detail { padding: 14px; border: 1px solid #f3d19e; border-radius: 8px; background: #fdf6ec; }
 .buyer-review-detail-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .buyer-review-detail-image { width: 100%; min-height: 90px; max-height: 210px; margin-top: 12px; border: 1px solid #dcdfe6; border-radius: 6px; background: #111827; }

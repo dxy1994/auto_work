@@ -15,6 +15,7 @@ class ManualActionHardwareController:
     def __init__(self, action_wait_seconds: float = 5.0):
         self._connected = True
         self._cursor: tuple[int, int] | None = None
+        self._coordinate_context: dict[str, object] = {}
         self._action_wait_seconds = max(0.0, float(action_wait_seconds))
         self.planned_actions = 0
 
@@ -39,14 +40,44 @@ class ManualActionHardwareController:
         self._cursor = (int(x), int(y))
         return True
 
+    def set_coordinate_context(self, context):
+        self._coordinate_context = dict(context or {})
+
     def mouse_click(self, button="left"):
         x, y = self._cursor or (None, None)
+        context = self._take_coordinate_context()
+        client_actual = context.get("client_actual")
+        client_origin = context.get("client_origin")
+        client_action_bounds = context.get("client_action_bounds")
+        if isinstance(client_actual, list) and isinstance(client_origin, list):
+            action_range_text = ""
+            if isinstance(client_action_bounds, list):
+                action_range_text = (
+                    f"；允许操作范围 X[{client_action_bounds[0]},"
+                    f"{client_action_bounds[2]}] "
+                    f"Y[{client_action_bounds[1]},"
+                    f"{client_action_bounds[3]}]"
+                )
+            instruction = (
+                f"请手动在游戏客户区坐标 "
+                f"({client_actual[0]},{client_actual[1]}) "
+                f"执行{self._button_name(button)}单击"
+                f"（屏幕绝对坐标 ({x},{y})；"
+                f"客户区原点 ({client_origin[0]},{client_origin[1]})"
+                f"{action_range_text}）"
+            )
+        else:
+            instruction = (
+                f"请手动在屏幕坐标 ({x},{y}) "
+                f"执行{self._button_name(button)}单击"
+            )
         return self._required_action(
             "mouse_click",
-            f"请手动在屏幕坐标 ({x},{y}) 执行{self._button_name(button)}单击",
+            instruction,
             x=x,
             y=y,
             button=button,
+            **context,
         )
 
     def mouse_double_click(self, button="left"):
@@ -60,13 +91,35 @@ class ManualActionHardwareController:
         )
 
     def mouse_drag(self, x1, y1, x2, y2):
+        context = self._take_coordinate_context()
+        client_start = context.get("client_actual_start")
+        client_end = context.get("client_actual_end")
+        client_origin = context.get("client_origin")
+        if (
+            isinstance(client_start, list)
+            and isinstance(client_end, list)
+            and isinstance(client_origin, list)
+        ):
+            instruction = (
+                f"请手动从游戏客户区坐标 ({client_start[0]},{client_start[1]}) "
+                f"拖拽到 ({client_end[0]},{client_end[1]})"
+                f"（屏幕绝对坐标 ({int(x1)},{int(y1)}) "
+                f"到 ({int(x2)},{int(y2)})；"
+                f"客户区原点 ({client_origin[0]},{client_origin[1]})）"
+            )
+        else:
+            instruction = (
+                f"请手动从屏幕坐标 ({int(x1)},{int(y1)}) "
+                f"拖拽到 ({int(x2)},{int(y2)})"
+            )
         return self._required_action(
             "mouse_drag",
-            f"请手动从屏幕坐标 ({int(x1)},{int(y1)}) 拖拽到 ({int(x2)},{int(y2)})",
+            instruction,
             x1=int(x1),
             y1=int(y1),
             x2=int(x2),
             y2=int(y2),
+            **context,
         )
 
     def key_press(self, key, duration_ms=100):
@@ -138,6 +191,11 @@ class ManualActionHardwareController:
         if self._action_wait_seconds:
             time.sleep(self._action_wait_seconds)
         return True
+
+    def _take_coordinate_context(self):
+        context = self._coordinate_context
+        self._coordinate_context = {}
+        return context
 
     @staticmethod
     def _button_name(button):

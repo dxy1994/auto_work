@@ -16,6 +16,7 @@ import java.util.Map;
 @RequestMapping("/api/games")
 public class GameController {
 
+    private static final int DEFAULT_TRADE_TIMEOUT_SECONDS = 600;
     private static final int MIN_TRADE_TIMEOUT_SECONDS = 30;
     private static final int MAX_TRADE_TIMEOUT_SECONDS = 7200;
 
@@ -88,7 +89,7 @@ public class GameController {
     }
 
     private int validateTradeTimeout(Integer seconds) {
-        int value = seconds != null ? seconds : 300;
+        int value = seconds != null ? seconds : DEFAULT_TRADE_TIMEOUT_SECONDS;
         if (value < MIN_TRADE_TIMEOUT_SECONDS || value > MAX_TRADE_TIMEOUT_SECONDS) {
             throw ApiException.badRequest("交易超时时间必须在 30 到 7200 秒之间");
         }

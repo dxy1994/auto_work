@@ -39,18 +39,6 @@ export const getOrderCheckStatus = (accountId) =>
 export const cancelOrderCheck = (accountId) =>
   request.post(`/automation/order-check/${accountId}/cancel`)
 
-// ── 定时执行配置 ──────────────────────────────────────────
-export const getAllSchedules = (params) => request.get('/platform-schedules', { params })
-export const getSchedule = (accountId) => request.get(`/platform-schedules/${accountId}`)
-export const upsertSchedule = (accountId, data) => request.put(`/platform-schedules/${accountId}`, data)
-export const copySchedule = (accountId, targetAccountIds) =>
-  request.post(`/platform-schedules/${accountId}/copy`, { target_account_ids: targetAccountIds })
-export const uploadAlertAudio = (accountId, file) => {
-  const formData = new FormData()
-  formData.append('file', file)
-  return request.post(`/platform-schedules/${accountId}/audio`, formData)
-}
-
 // ── 中控平台：游戏管理 ────────────────────────────────────
 export const getGames = (params) => request.get('/games', { params })
 export const getAllGames = () => request.get('/games/all')
