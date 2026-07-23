@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 
 from common.config import BACKEND_WS_URL
 
+from game_executor.executor.hardware.humanized import HumanizedInputController
 from game_executor.executor.lineage_classic.paddle_ocr import (
     recognize_korean,
     recognize_korean_boxes,
@@ -524,6 +525,7 @@ class LineageSessionNavigator:
         sleep: Callable[[float], None] = time.sleep,
         cancelled: Optional[Callable[[], bool]] = None,
         random_uniform: Callable[[float, float], float] = random.uniform,
+        input_controller: Optional[HumanizedInputController] = None,
     ):
         self.hardware = hardware
         self.window = window
@@ -532,30 +534,79 @@ class LineageSessionNavigator:
         self.sleep = sleep
         self.cancelled = cancelled or (lambda: False)
         self.random_uniform = random_uniform
+        self.input = input_controller or HumanizedInputController(
+            hardware,
+            sleep=sleep,
+            cancelled=self.cancelled,
+        )
 
-    def _click(self, point: tuple[int, int]) -> None:
+    def _screen_bounds(self) -> tuple[int, int, int, int]:
+        ox, oy = self.window.client_origin()
+        return ox, oy, ox + CLIENT_SIZE[0] - 1, oy + CLIENT_SIZE[1] - 1
+
+    def _click(
+        self,
+        point: tuple[int, int],
+        *,
+        radius_x: Optional[int] = None,
+        radius_y: Optional[int] = None,
+    ) -> None:
         self._raise_if_cancelled()
         ox, oy = self.window.client_origin()
         x, y = point
-        try:
-            moved = self.hardware.mouse_move(ox + x, oy + y, jitter_x=0, jitter_y=0)
-        except TypeError:
-            moved = self.hardware.mouse_move(ox + x, oy + y)
-        if moved is False or self.hardware.mouse_click() is False:
+        if self.input.click_at(
+            ox + x,
+            oy + y,
+            radius_x=radius_x,
+            radius_y=radius_y,
+            bounds=self._screen_bounds(),
+        ) is False:
+            self._raise_if_cancelled()
             raise NavigationError(f"硬件点击失败: ({x}, {y})")
 
-    def click(self, point: tuple[int, int]) -> None:
-        """按游戏客户区相对坐标点击，供交易执行器复用。"""
-        self._click(point)
+    def click(
+        self,
+        point: tuple[int, int],
+        *,
+        radius_x: Optional[int] = None,
+        radius_y: Optional[int] = None,
+    ) -> None:
+        """在游戏客户区目标点附近执行有界变化点击。"""
+        self._click(point, radius_x=radius_x, radius_y=radius_y)
+
+    def click_region(self, region: tuple[int, int, int, int]) -> None:
+        """在按钮区域内部变化落点，并保留边缘安全距离。"""
+        left, top, right, bottom = region
+        center = ((left + right) // 2, (top + bottom) // 2)
+        radius_x = max(0, (right - left) // 2 - 2)
+        radius_y = max(0, (bottom - top) // 2 - 2)
+        self._click(center, radius_x=radius_x, radius_y=radius_y)
 
     def drag(self, start: tuple[int, int], end: tuple[int, int]) -> None:
-        """按游戏客户区相对坐标拖拽。"""
+        """按游戏客户区相对坐标执行起终点均有界变化的拖拽。"""
         self._raise_if_cancelled()
         ox, oy = self.window.client_origin()
-        if self.hardware.mouse_drag(
-            ox + start[0], oy + start[1], ox + end[0], oy + end[1]
+        if self.input.drag(
+            (ox + start[0], oy + start[1]),
+            (ox + end[0], oy + end[1]),
+            bounds=self._screen_bounds(),
         ) is False:
+            self._raise_if_cancelled()
             raise NavigationError(f"硬件拖拽失败: {start} -> {end}")
+
+    def type_text(self, text: object) -> None:
+        """通过统一输入层拟人化输入文本。"""
+        self._raise_if_cancelled()
+        if self.input.type_text(text) is False:
+            self._raise_if_cancelled()
+            raise NavigationError("硬件文本输入失败")
+
+    def press_key(self, key: str) -> None:
+        """通过统一输入层拟人化执行单键。"""
+        self._raise_if_cancelled()
+        if self.input.press_key(key) is False:
+            self._raise_if_cancelled()
+            raise NavigationError(f"硬件按键失败: {key}")
 
     def _raise_if_cancelled(self) -> None:
         if self.cancelled():
@@ -886,6 +937,7 @@ def build_navigator(
     runtime_status=None,
     account: str = "",
     cancelled: Optional[Callable[[], bool]] = None,
+    input_controller: Optional[HumanizedInputController] = None,
 ) -> LineageSessionNavigator:
     window = ClientWindow.find(account=account)
     return LineageSessionNavigator(
@@ -894,4 +946,5 @@ def build_navigator(
         vision=TemplateVision(window),
         runtime_status=runtime_status,
         cancelled=cancelled,
+        input_controller=input_controller,
     )

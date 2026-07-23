@@ -297,6 +297,11 @@ class _Vision:
         return self.item_points.get(image_source) if self.inventory_open else None
 
     def clicked(self, point):
+        # 正式输入层会在模板中心附近选择安全落点，测试状态机按同样容差处理。
+        for center in self.CENTERS.values():
+            if abs(point[0] - center[0]) <= 3 and abs(point[1] - center[1]) <= 3:
+                point = center
+                break
         if point == self.CENTERS[Ui.MENU_BUTTON]:
             self.menu_open = True
         elif point == self.CENTERS[Ui.EXIT_PANEL_TRIGGER]:
@@ -407,6 +412,19 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual((568, 551), region_center(TradeUi.REQUEST_REJECT_REGION))
         self.assertEqual((537, 551), region_center(TradeUi.FINAL_ACCEPT_REGION))
         self.assertEqual((568, 551), region_center(TradeUi.FINAL_REJECT_REGION))
+
+    def test_trade_region_click_varies_only_inside_button_safe_area(self):
+        vision = _Vision()
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware, _Window(), vision, sleep=lambda _seconds: None
+        )
+
+        for _ in range(20):
+            navigator.click_region(TradeUi.REQUEST_ACCEPT_REGION)
+
+        self.assertTrue(all(530 <= x <= 544 for x, _y in hardware.moves))
+        self.assertTrue(all(549 <= y <= 553 for _x, y in hardware.moves))
 
     def test_customer_name_uses_expected_prefix_and_allows_korean_particles(self):
         self.assertTrue(customer_name_prefix_matches("홍길동이", "홍길동"))
@@ -567,8 +585,8 @@ class LineageNavigationTest(unittest.TestCase):
 
         navigator._select_server(TargetRegion.from_order(ORDER))
 
-        self.assertEqual(ORDER["region_select_x"], hardware.moves[0][0])
-        self.assertEqual(ORDER["region_select_y"], hardware.moves[0][1])
+        self.assertLessEqual(abs(ORDER["region_select_x"] - hardware.moves[0][0]), 3)
+        self.assertLessEqual(abs(ORDER["region_select_y"] - hardware.moves[0][1]), 3)
         self.assertEqual(0, vision.find_text_calls)
         self.assertEqual("character", vision.state)
 
@@ -585,7 +603,8 @@ class LineageNavigationTest(unittest.TestCase):
 
         navigator._select_server(TargetRegion.from_order(order))
 
-        self.assertEqual((470, 173), hardware.moves[0])
+        self.assertLessEqual(abs(470 - hardware.moves[0][0]), 3)
+        self.assertLessEqual(abs(173 - hardware.moves[0][1]), 3)
         self.assertEqual(1, vision.find_text_calls)
 
     def test_server_selection_without_coordinate_stops_when_ocr_finds_nothing(self):
@@ -696,10 +715,12 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertTrue(vision.character_selected)
         self.assertTrue(vision.inventory_open)
         self.assertEqual("game", vision.state)
-        self.assertEqual(
-            1,
-            hardware.moves.count((ORDER["region_select_x"], ORDER["region_select_y"])),
-        )
+        server_clicks = [
+            point for point in hardware.moves
+            if abs(point[0] - ORDER["region_select_x"]) <= 3
+            and abs(point[1] - ORDER["region_select_y"]) <= 3
+        ]
+        self.assertEqual(1, len(server_clicks))
 
 
 if __name__ == "__main__":

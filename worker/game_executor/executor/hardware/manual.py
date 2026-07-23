@@ -94,6 +94,16 @@ class ManualActionHardwareController:
             delay_ms=delay_ms,
         )
 
+    def key_type_plan(self, text, plan):
+        """合并输出拟人化逐字计划，避免人工模式要求操作者逐字确认。"""
+        return self._required_action(
+            "key_type",
+            f"请手动输入：{text}",
+            text=str(text),
+            typing_plan=plan,
+            humanized=True,
+        )
+
     def wait(self, ms, jitter=0):
         delay_ms = max(0, int(ms))
         self._log(

@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Callable, Optional
 
 from game_executor.executor.base import BaseGameExecutor
+from game_executor.executor.hardware.humanized import HumanizedInputController
 from game_executor.executor.lineage_classic.navigation import (
     ClientWindow,
     NavigationCancelled,
@@ -81,9 +82,13 @@ class LineageClassicExecutor(BaseGameExecutor):
     game_name = "天堂经典版"
 
     def __init__(self, hw, runtime_status=None):
-        super().__init__(hw)
-        self._runtime_status = runtime_status
         self._cancel_event = threading.Event()
+        super().__init__(hw)
+        self._input = HumanizedInputController(
+            hw,
+            cancelled=self._cancel_event.is_set,
+        )
+        self._runtime_status = runtime_status
         self._progress: Optional[Callable[[str, str], None]] = None
         self._buyer_review_callback: Optional[Callable[[dict], None]] = None
         self._trade_screenshot_callback: Optional[Callable[[str], bool]] = None
@@ -154,7 +159,11 @@ class LineageClassicExecutor(BaseGameExecutor):
                 # 使用同一次读取结果校验，避免校验过程中窗口状态变化把 0x0 误判为永久异常。
                 window.validate_size(size)
                 navigator = LineageSessionNavigator(
-                    self._hw, window, TemplateVision(window), runtime_status=self._runtime_status
+                    self._hw,
+                    window,
+                    TemplateVision(window),
+                    runtime_status=self._runtime_status,
+                    input_controller=self._input,
                 )
                 ready = navigator._is_in_game()
                 # 登录页、选服页等状态会由 ensure_target_region 自动继续。
@@ -207,6 +216,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             self._hw,
             runtime_status=self._runtime_status,
             cancelled=self._cancel_event.is_set,
+            input_controller=self._input,
         )
 
         self._emit("switching_region", "正在确认并切换到订单大区")
@@ -240,7 +250,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             "trading",
             f"已核验买家 {observed_buyer}，正在放入 {len(transfers)} 项交易资产",
         )
-        navigator.click(region_center(TradeUi.REQUEST_ACCEPT_REGION))
+        navigator.click_region(TradeUi.REQUEST_ACCEPT_REGION)
         trade_cancel = navigator.wait_for_step(
             "接受买家申请后进入交易界面",
             lambda: navigator.vision.find(
@@ -259,9 +269,8 @@ class LineageClassicExecutor(BaseGameExecutor):
                 f"拖入交易物品 {transfer.label}",
                 profile="item_drag",
             )
-            if (self._hw.key_type(str(transfer.quantity)) is False
-                    or self._hw.key_press("ENTER") is False):
-                raise NavigationError(f"硬件输入 {transfer.label} 数量失败")
+            navigator.type_text(str(transfer.quantity))
+            navigator.press_key("ENTER")
             navigator.wait_after_step(
                 f"输入 {transfer.label} 数量 {transfer.quantity} 并确认",
                 profile="input",
@@ -294,7 +303,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                 "未识别到最终交易确认提示",
             )
         if self._trade_screenshot_callback is None:
-            navigator.click(region_center(TradeUi.FINAL_REJECT_REGION))
+            navigator.click_region(TradeUi.FINAL_REJECT_REGION)
             navigator.wait_after_step("拒绝未留存截图的最终交易", profile="panel")
             return self._result(
                 False,
@@ -304,7 +313,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             )
         trade_screenshot = navigator.vision.capture_data_url(Ui.FULL_CLIENT)
         if not self._trade_screenshot_callback(trade_screenshot):
-            navigator.click(region_center(TradeUi.FINAL_REJECT_REGION))
+            navigator.click_region(TradeUi.FINAL_REJECT_REGION)
             navigator.wait_after_step("拒绝截图保存失败的最终交易", profile="panel")
             return self._result(
                 False,
@@ -312,7 +321,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                 "TRADE_SCREENSHOT_SAVE_FAILED",
                 "最终确认前交易截图未保存到服务器，已拒绝最终交易",
             )
-        navigator.click(region_center(TradeUi.FINAL_ACCEPT_REGION))
+        navigator.click_region(TradeUi.FINAL_ACCEPT_REGION)
 
         self._emit("verifying", "交易确认已提交，正在验证结果")
         if not self._wait_for_trade_closed(navigator, timeout=12):
@@ -373,7 +382,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                     )
                     if approved:
                         return observed or "人工确认的买家"
-                    navigator.click(region_center(TradeUi.REQUEST_REJECT_REGION))
+                    navigator.click_region(TradeUi.REQUEST_REJECT_REGION)
                     rejected_name = frame_key
                     self._emit("waiting_buyer", "人工已拒绝本次申请，继续等待买家")
                     navigator.wait_after_step("拒绝本次买家交易申请", profile="panel")

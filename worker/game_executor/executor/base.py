@@ -2,18 +2,18 @@
 游戏交易执行器抽象基类。
 
 每个游戏实现一个子类，覆写 execute() 方法，
-通过 HardwareController 发送键鼠指令到 ESP32C3。
+通过统一输入层发送动作，底层设备适配器可在硬件安装包到位后替换。
 """
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from game_executor.executor.hardware.controller import HardwareController
+from game_executor.executor.hardware.humanized import InputDeviceAdapter
 
 
 class BaseGameExecutor(ABC):
     """游戏交易执行器基类。"""
 
-    def __init__(self, hw: HardwareController):
+    def __init__(self, hw: InputDeviceAdapter):
         self._hw = hw
 
     @property

@@ -19,7 +19,11 @@ from urllib.request import Request, urlopen
 
 
 class HardwareController:
-    """通过 ESP32C3 HTTP 网关发送真实 USB HID 指令。"""
+    """通过 ESP32C3 HTTP 网关发送真实 USB HID 指令。
+
+    这是底层设备适配器；游戏业务应调用 HumanizedInputController，避免把
+    落点变化、操作节奏或未来安装包协议散落到各游戏执行器中。
+    """
 
     def __init__(self, esp32_host: str = "192.168.1.100"):
         host = esp32_host.strip().rstrip("/")
