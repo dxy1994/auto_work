@@ -22,6 +22,7 @@ from monitor.browser.audio import play_alert_audio_async
 SELL_REGIST_URL = "https://www.itemmania.com/myroom/sell/sell_regist.html"
 SELL_ING_URL = "https://www.itemmania.com/myroom/sell/sell_ing.html"
 SELL_ING_VIEW_URL = "https://www.itemmania.com/myroom/sell/sell_ing_view.html"
+COUPON_ADD_PATH = "/myroom/coupon/add_reg.html"
 
 ORDER_TABLE_SELECTOR = ".g_blue_table.tb_list"
 REFRESH_TABLE_SELECTOR = ".g_blue_table.tb_list"
@@ -29,6 +30,7 @@ REFRESH_ROW_SELECTOR = ".g_blue_table.tb_list tbody tr"
 MIN_COMMIT_TIMEOUT_MS = 15000
 MIN_READY_TIMEOUT_MS = 20000
 COMMIT_GRACE_SECONDS = 3.0
+REFRESH_RESULT_TIMEOUT_SECONDS = 15.0
 
 # ── 韩文状态 → 英文映射 ──
 STATUS_MAP = {
@@ -237,8 +239,18 @@ class ManiaRefreshWorker(PageWorker):
                        self._last_refresh).total_seconds()
             if elapsed >= interval:
                 try:
-                    await self._do_refresh(wait_timeout)
+                    result = await self._do_refresh(wait_timeout)
                     self._last_refresh = datetime.datetime.now()
+                    if result == "coupon_required":
+                        message = (
+                            f"mania账号{self._session.account_id}"
+                            "重新上架次数不足，请购买"
+                        )
+                        print(
+                            f"[{self._log_tag}] ItemMania 重新上架次数"
+                            "已用完，已恢复到上架页并发出语音提醒"
+                        )
+                        await play_alert_audio_async(text=message)
                 except Exception as e:
                     print(f"[{self._log_tag}] 刷新异常: {e}")
             await asyncio.sleep(5)
@@ -268,12 +280,76 @@ class ManiaRefreshWorker(PageWorker):
                 btn = rows.nth(row_count - 1).locator(
                     ".flex_box .reregist").first
                 if await btn.count() > 0:
-                    await btn.click(timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
-                    await self.page.wait_for_timeout(2000)
+                    previous_origin = await _read_document_time_origin(
+                        self.page)
+                    click_error = None
+                    try:
+                        await btn.click(
+                            timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
+                    except Exception as e:
+                        if self.page.is_closed():
+                            raise
+                        click_error = e
+                        print(
+                            f"[{self._log_tag}] 重新上架点击等待异常: {e}；"
+                            "继续检查平台实际返回页面"
+                        )
+
+                    result = await self._wait_refresh_result(
+                        previous_origin, timeout)
+                    if click_error is not None:
+                        print(
+                            f"[{self._log_tag}] 点击调用虽超时，但已根据"
+                            f"最终页面确认结果={result}"
+                        )
+                    return result
                 else:
                     print(f"[{self._log_tag}] 未找到 reregist 按钮")
             else:
                 print(f"[{self._log_tag}] 无可刷新的商品")
+            return "nothing_to_refresh"
+
+    async def _wait_refresh_result(
+            self, previous_origin: Optional[float], timeout: int) -> str:
+        """确认重新上架提交的最终落点，避免把优惠券页当作成功。"""
+        deadline = time.monotonic() + max(
+            REFRESH_RESULT_TIMEOUT_SECONDS,
+            max(timeout, MIN_COMMIT_TIMEOUT_MS) / 1000,
+        )
+        while time.monotonic() < deadline:
+            current_url = self.page.url
+            if COUPON_ADD_PATH in current_url:
+                print(
+                    f"[{self._log_tag}] 重新上架未成功，ItemMania 返回"
+                    f"优惠券登记页: {current_url}"
+                )
+                await self._goto_refresh_page(
+                    SELL_REGIST_URL,
+                    timeout,
+                    reason="优惠券页-恢复上架页",
+                )
+                return "coupon_required"
+
+            current_origin = await _read_document_time_origin(self.page)
+            document_changed = (
+                previous_origin is None
+                or (
+                    current_origin is not None
+                    and current_origin != previous_origin
+                )
+            )
+            if document_changed and SELL_REGIST_URL in current_url:
+                if await self._wait_refresh_table(timeout):
+                    print(f"[{self._log_tag}] 重新上架提交成功")
+                    return "refreshed"
+
+            if self.page.is_closed():
+                raise RuntimeError("重新上架结果检查时页面已关闭")
+            await asyncio.sleep(0.25)
+
+        raise RuntimeError(
+            f"重新上架提交后未进入有效结果页，当前地址={self.page.url}"
+        )
 
     async def _ensure_refresh_page_ready(self, timeout: int):
         async with self._monitor.navigation_lock:
@@ -634,7 +710,9 @@ class ItemmaniaMonitor(BaseOrderMonitor):
 
             buyer = ''
             try:
-                buyer_el = detail_page.locator('span.f_black.f_20').first
+                buyer_li = detail_page.locator('li').filter(
+                    has_text='구매자 캐릭터명').first
+                buyer_el = buyer_li.locator('span.f_black.f_20').first
                 if await buyer_el.count() > 0:
                     buyer = (await buyer_el.inner_text()).strip()
             except Exception:
@@ -643,13 +721,22 @@ class ItemmaniaMonitor(BaseOrderMonitor):
                 try:
                     result = await detail_page.evaluate("""
                         async () => {
-                            const lis = document.querySelectorAll('li');
-                            for (const li of lis) {
-                                const text = li.textContent || '';
-                                const m = text.match(
-                                    /구매자\\s*캐릭터명\\s*:\\s*(.+)/
+                            const labels = document.querySelectorAll(
+                                'span.f_gray3'
+                            );
+                            for (const label of labels) {
+                                if (!(label.textContent || '').includes(
+                                    '구매자 캐릭터명'
+                                )) {
+                                    continue;
+                                }
+                                const li = label.closest('li');
+                                const value = li && li.querySelector(
+                                    'span.f_black.f_20'
                                 );
-                                if (m) return m[1].trim();
+                                if (value) {
+                                    return (value.textContent || '').trim();
+                                }
                             }
                             return '';
                         }
@@ -657,7 +744,11 @@ class ItemmaniaMonitor(BaseOrderMonitor):
                     buyer = (result or "").strip()
                 except Exception:
                     pass
-            data['buyer_name'] = buyer or f"buyer-{trade_id}"
+            if not buyer:
+                raise ValueError(
+                    "详情页未提取到买家角色名，停止上报，避免生成伪造买家名"
+                )
+            data['buyer_name'] = buyer
 
             print(
                 f"[{self._log_tag}] 详情页提取完成 (trade_id={trade_id}):\n"

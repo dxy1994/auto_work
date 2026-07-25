@@ -11,8 +11,10 @@ WORKER_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(WORKER_ROOT))
 
 from monitor.monitoring.platforms.itemmania import (  # noqa: E402
+    COUPON_ADD_PATH,
     ManiaOrderWorker,
     ManiaRefreshWorker,
+    SELL_REGIST_URL,
 )
 from monitor.monitoring.platforms import itemmania as itemmania_module  # noqa: E402
 
@@ -90,12 +92,63 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
         page.wait_for_selector.assert_awaited_once()
         self.assertEqual("commit", page.goto.await_args.kwargs["wait_until"])
 
+    async def test_coupon_redirect_is_not_treated_as_refresh_success(self):
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaRefreshWorker(_FakeSession(), None, monitor)
+        page = SimpleNamespace(
+            url=f"https://www.itemmania.com{COUPON_ADD_PATH}",
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._page = page
+        worker._goto_refresh_page = AsyncMock()
+
+        result = await worker._wait_refresh_result(100.0, 10000)
+
+        self.assertEqual("coupon_required", result)
+        worker._goto_refresh_page.assert_awaited_once_with(
+            SELL_REGIST_URL,
+            10000,
+            reason="优惠券页-恢复上架页",
+        )
+
+    async def test_refresh_result_requires_a_new_business_document(self):
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaRefreshWorker(_FakeSession(), None, monitor)
+        page = SimpleNamespace(
+            url=SELL_REGIST_URL,
+            evaluate=AsyncMock(return_value=200.0),
+            wait_for_selector=AsyncMock(),
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._page = page
+
+        result = await worker._wait_refresh_result(100.0, 10000)
+
+        self.assertEqual("refreshed", result)
+        page.wait_for_selector.assert_awaited_once()
+
+    def test_refresh_worker_has_no_coupon_cooldown(self):
+        source = inspect.getsource(ManiaRefreshWorker.run)
+
+        self.assertNotIn("coupon_blocked_until", source)
+        self.assertNotIn("COUPON_RETRY_INTERVAL_SECONDS", source)
+        self.assertIn("重新上架次数不足，请购买", source)
+        self.assertIn("play_alert_audio_async", source)
+
     def test_refresh_worker_uses_locators_instead_of_element_handles(self):
         source = inspect.getsource(ManiaRefreshWorker._do_refresh)
 
         self.assertIn(".locator(", source)
         self.assertNotIn("query_selector", source)
         self.assertNotIn("networkidle", source)
+
+    def test_detail_extraction_does_not_fabricate_buyer_name(self):
+        source = inspect.getsource(
+            itemmania_module.ItemmaniaMonitor._fetch_order_detail)
+
+        self.assertNotIn('f"buyer-', source)
+        self.assertIn("구매자 캐릭터명", source)
+        self.assertIn("停止上报", source)
 
 
 if __name__ == "__main__":

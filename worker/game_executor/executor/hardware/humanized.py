@@ -272,12 +272,28 @@ class HumanizedInputController:
             actual_end = self._vary_point(
                 "drag_end", int(end[0]), int(end[1]), er, er, bounds
             )
+            start_action_bounds = self._effective_point_bounds(
+                int(start[0]),
+                int(start[1]),
+                sr,
+                sr,
+                bounds,
+            )
+            end_action_bounds = self._effective_point_bounds(
+                int(end[0]),
+                int(end[1]),
+                er,
+                er,
+                bounds,
+            )
             coordinate_details = self._drag_coordinate_details(
                 start,
                 end,
                 actual_start,
                 actual_end,
                 coordinate_origin,
+                start_action_bounds,
+                end_action_bounds,
             )
             client_actual_start = coordinate_details.get("client_actual_start")
             client_actual_end = coordinate_details.get("client_actual_end")
@@ -405,7 +421,14 @@ class HumanizedInputController:
             ),
             **details,
         }
-        if action == "mouse_click" and callable(self._action_visualizer):
+        visualized_actions = {
+            "mouse_click",
+            "mouse_drag",
+            "key_type",
+            "key_press",
+            "key_combo",
+        }
+        if action in visualized_actions and callable(self._action_visualizer):
             try:
                 image_path = self._action_visualizer(dict(payload))
                 if image_path:
@@ -477,11 +500,18 @@ class HumanizedInputController:
         actual_start: tuple[int, int],
         actual_end: tuple[int, int],
         coordinate_origin: Optional[tuple[int, int]],
+        start_action_bounds: Optional[ScreenBounds] = None,
+        end_action_bounds: Optional[ScreenBounds] = None,
     ) -> dict[str, object]:
+        details: dict[str, object] = {}
+        if start_action_bounds is not None:
+            details["screen_start_action_bounds"] = list(start_action_bounds)
+        if end_action_bounds is not None:
+            details["screen_end_action_bounds"] = list(end_action_bounds)
         if coordinate_origin is None:
-            return {}
+            return details
         ox, oy = (int(value) for value in coordinate_origin)
-        return {
+        details.update({
             "client_origin": [ox, oy],
             "client_target_start": [target_start[0] - ox, target_start[1] - oy],
             "client_target_end": [target_end[0] - ox, target_end[1] - oy],
@@ -491,7 +521,24 @@ class HumanizedInputController:
             "screen_target_end": list(target_end),
             "screen_actual_start": list(actual_start),
             "screen_actual_end": list(actual_end),
-        }
+        })
+        if start_action_bounds is not None:
+            left, top, right, bottom = start_action_bounds
+            details["client_start_action_bounds"] = [
+                left - ox,
+                top - oy,
+                right - ox,
+                bottom - oy,
+            ]
+        if end_action_bounds is not None:
+            left, top, right, bottom = end_action_bounds
+            details["client_end_action_bounds"] = [
+                left - ox,
+                top - oy,
+                right - ox,
+                bottom - oy,
+            ]
+        return details
 
     @staticmethod
     def _point_instruction(

@@ -283,6 +283,73 @@ class HumanizedInputControllerTest(unittest.TestCase):
         self.assertEqual("mouse_click", visualized[0]["action"])
         self.assertEqual(1, len(device.clicks))
 
+    def test_visualizer_receives_drag_and_keyboard_actions(self):
+        device = _Device()
+        controller = HumanizedInputController(
+            device,
+            policy=ZERO_DELAY_POLICY,
+            random_source=_ConstantRandom(),
+            sleep=lambda _seconds: None,
+        )
+        visualized = []
+        controller.set_action_visualizer(
+            lambda action: visualized.append(action) or (
+                rf"C:\temp\{action['action']}.png"
+            )
+        )
+
+        with mock.patch("builtins.print") as output:
+            self.assertTrue(controller.drag(
+                (100, 100),
+                (300, 300),
+                coordinate_origin=(10, 20),
+            ))
+            self.assertTrue(controller.type_text("27"))
+            self.assertTrue(controller.press_key("enter"))
+            self.assertTrue(controller.press_combo(["ctrl", "a"]))
+
+        self.assertEqual(
+            ["mouse_drag", "key_type", "key_press", "key_combo"],
+            [action["action"] for action in visualized],
+        )
+        logged_actions = [
+            json.loads(call.args[0].removeprefix("[GAME-ACTION] "))
+            for call in output.call_args_list
+            if call.args[0].startswith("[GAME-ACTION] ")
+        ]
+        self.assertTrue(all("visual_debug_image" in action for action in logged_actions))
+        self.assertEqual(1, len(device.drags))
+        self.assertEqual(["2", "7", "enter"], [key for key, _hold in device.keys])
+        self.assertEqual([(["ctrl", "a"], 55)], device.combos)
+
+    def test_drag_logs_effective_start_and_end_regions(self):
+        device = _Device()
+        controller = HumanizedInputController(
+            device,
+            policy=ZERO_DELAY_POLICY,
+            random_source=_ConstantRandom(),
+            sleep=lambda _seconds: None,
+        )
+
+        with mock.patch("builtins.print") as output:
+            self.assertTrue(controller.drag(
+                (100, 100),
+                (300, 300),
+                bounds=(0, 0, 799, 599),
+                coordinate_origin=(10, 20),
+            ))
+
+        line = next(
+            call.args[0]
+            for call in output.call_args_list
+            if call.args[0].startswith("[GAME-ACTION] ")
+        )
+        action = json.loads(line.removeprefix("[GAME-ACTION] "))
+        self.assertEqual([98, 98, 102, 102], action["screen_start_action_bounds"])
+        self.assertEqual([294, 294, 306, 306], action["screen_end_action_bounds"])
+        self.assertEqual([88, 78, 92, 82], action["client_start_action_bounds"])
+        self.assertEqual([284, 274, 296, 286], action["client_end_action_bounds"])
+
     def test_cancelled_action_never_reaches_device(self):
         device = _Device()
         controller = HumanizedInputController(

@@ -8,6 +8,7 @@ set "VENV_DIR=%PROJECT_ROOT%\.venv-monitor"
 set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "DIST_DIR=%WORKER_DIR%\dist\monitor"
 set "BUILD_DIR=%WORKER_DIR%\build\monitor"
+set "PACKAGE_ZIP=%WORKER_DIR%\dist\auto-monitor-windows-x64.zip"
 set "BOOTSTRAP_PYTHON="
 set "BOOTSTRAP_ARGS="
 
@@ -78,10 +79,28 @@ if exist "%WORKER_DIR%\.env" (
 ) else if not exist "%DIST_DIR%\.env" (
     copy /y "%WORKER_DIR%\.env.monitor.example" "%DIST_DIR%\.env" >nul
 )
+copy /y "%PROJECT_ROOT%\scripts\check-monitor-package.bat" "%DIST_DIR%\check-monitor-package.bat" >nul
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+    "(Get-FileHash -LiteralPath '%DIST_DIR%\auto-monitor.exe' -Algorithm SHA256).Hash | Set-Content -LiteralPath '%DIST_DIR%\auto-monitor.exe.sha256' -Encoding ASCII"
+if errorlevel 1 (
+    echo [ERROR] Failed to create SHA256 file.
+    exit /b 1
+)
+
+if exist "%PACKAGE_ZIP%" del /q "%PACKAGE_ZIP%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+    "Compress-Archive -LiteralPath '%DIST_DIR%\auto-monitor.exe','%DIST_DIR%\auto-monitor.exe.sha256','%DIST_DIR%\check-monitor-package.bat','%DIST_DIR%\.env','%DIST_DIR%\.env.monitor.example' -DestinationPath '%PACKAGE_ZIP%' -CompressionLevel Optimal -Force"
+if errorlevel 1 (
+    echo [ERROR] Failed to create deployment ZIP.
+    exit /b 1
+)
+
 if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
 if exist "%WORKER_DIR%\auto-monitor.spec" del /q "%WORKER_DIR%\auto-monitor.spec"
 
 echo [SUCCESS] %DIST_DIR%\auto-monitor.exe
+echo [SUCCESS] %PACKAGE_ZIP%
 exit /b 0
 
 :find_bootstrap_python

@@ -18,6 +18,11 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,6 +33,13 @@ import java.util.UUID;
 public class MarketplaceOrderIngestionService {
 
     private static final Logger log = LoggerFactory.getLogger(MarketplaceOrderIngestionService.class);
+    private static final DateTimeFormatter PLATFORM_TIME_WITH_YEAR =
+            new DateTimeFormatterBuilder()
+                    .appendPattern("yyyy-MM-dd HH:mm")
+                    .optionalStart()
+                    .appendPattern(":ss")
+                    .optionalEnd()
+                    .toFormatter();
 
     private final PlatformAccountService accountService;
     private final GameRegionService regionService;
@@ -139,14 +151,13 @@ public class MarketplaceOrderIngestionService {
         order.setSaleQuantity(message.saleQuantity());
         if (message.platformOrderTime() != null
                 && !message.platformOrderTime().isEmpty()) {
-            try {
-                order.setPlatformOrderTime(
-                        java.time.LocalDateTime.parse(
-                                message.platformOrderTime(),
-                                java.time.format.DateTimeFormatter.ofPattern(
-                                        "MM-dd HH:mm")));
-            } catch (Exception ignore) {
-                // 解析失败忽略，保留为空
+            LocalDateTime platformOrderTime =
+                    parsePlatformOrderTime(message.platformOrderTime());
+            if (platformOrderTime != null) {
+                order.setPlatformOrderTime(platformOrderTime);
+            } else {
+                log.warn("[Order] 无法解析平台订单时间 sourceOrderNo={} value={}",
+                        message.sourceOrderNo(), message.platformOrderTime());
             }
         }
         if (message.platformPrice() != null) {
@@ -214,6 +225,38 @@ public class MarketplaceOrderIngestionService {
         }
 
         return order;
+    }
+
+    static LocalDateTime parsePlatformOrderTime(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+
+        String normalized = value.trim().replace('T', ' ');
+        try {
+            return LocalDateTime.parse(normalized, PLATFORM_TIME_WITH_YEAR);
+        } catch (Exception ignore) {
+            // 继续兼容旧 Worker 上报的 MM-dd HH:mm[:ss]。
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        DateTimeFormatter withoutYear = new DateTimeFormatterBuilder()
+                .appendPattern("MM-dd HH:mm")
+                .optionalStart()
+                .appendPattern(":ss")
+                .optionalEnd()
+                .parseDefaulting(ChronoField.YEAR, LocalDate.now().getYear())
+                .toFormatter();
+        try {
+            LocalDateTime parsed = LocalDateTime.parse(normalized, withoutYear);
+            // 跨年时，12 月的订单可能在次年 1 月才被采集。
+            if (parsed.isAfter(now.plusDays(1))) {
+                parsed = parsed.minusYears(1);
+            }
+            return parsed;
+        } catch (Exception ignore) {
+            return null;
+        }
     }
 
     /** 批量查重：返回已存在于 DB 的 source_order_no 集合，供 Worker 端预过滤。 */

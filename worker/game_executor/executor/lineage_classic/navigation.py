@@ -521,11 +521,51 @@ class TemplateVision:
         return int(width), int(height)
 
     def save_action_visualization(self, action: dict[str, object]) -> Optional[str]:
-        """保存标注了识别范围、操作范围和最终落点的 800x600 客户区截图。"""
+        """保存点击、拖拽或键盘动作的 800x600 客户区示意图。"""
         if not ACTION_DEBUG_IMAGES_ENABLED:
             return None
         if Image is None or ImageDraw is None:
             raise NavigationError("未安装 Pillow，无法生成操作标注图")
+        action_name = str(action.get("action") or "")
+        if action_name not in {
+            "mouse_click",
+            "mouse_drag",
+            "key_type",
+            "key_press",
+            "key_combo",
+        }:
+            return None
+
+        source = self._capture(Ui.FULL_CLIENT)
+        image = Image.fromarray(source[:, :, ::-1]).convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        if action_name == "mouse_click":
+            drawn = self._draw_click_action_visualization(draw, action)
+        elif action_name == "mouse_drag":
+            drawn = self._draw_drag_action_visualization(draw, action)
+        else:
+            drawn = self._draw_keyboard_action_visualization(draw, action)
+        if not drawn:
+            return None
+
+        ACTION_DEBUG_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+        self._debug_image_sequence += 1
+        now = time.time()
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+        milliseconds = int((now % 1) * 1000)
+        path = ACTION_DEBUG_IMAGE_DIR / (
+            f"lineage_action_{timestamp}_{milliseconds:03d}_"
+            f"{self._debug_image_sequence:04d}.png"
+        )
+        image.save(path, format="PNG")
+        return str(path.resolve())
+
+    def _draw_click_action_visualization(
+        self,
+        draw,
+        action: dict[str, object],
+    ) -> bool:
         target = action.get("client_target")
         actual = action.get("client_actual")
         action_bounds = action.get("client_action_bounds")
@@ -537,11 +577,7 @@ class TemplateVision:
             and isinstance(action_bounds, list)
             and len(action_bounds) == 4
         ):
-            return None
-
-        source = self._capture(Ui.FULL_CLIENT)
-        image = Image.fromarray(source[:, :, ::-1]).convert("RGB")
-        draw = ImageDraw.Draw(image)
+            return False
 
         nearest_match = None
         nearest_distance = float("inf")
@@ -598,18 +634,232 @@ class TemplateVision:
         draw.rectangle((4, 4, 370, 86), fill=(0, 0, 0))
         for index, line in enumerate(legend_lines):
             draw.text((10, 8 + index * 15), line, fill=(255, 255, 255))
+        return True
 
-        ACTION_DEBUG_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-        self._debug_image_sequence += 1
-        now = time.time()
-        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
-        milliseconds = int((now % 1) * 1000)
-        path = ACTION_DEBUG_IMAGE_DIR / (
-            f"lineage_action_{timestamp}_{milliseconds:03d}_"
-            f"{self._debug_image_sequence:04d}.png"
+    def _draw_drag_action_visualization(
+        self,
+        draw,
+        action: dict[str, object],
+    ) -> bool:
+        target_start = action.get("client_target_start")
+        target_end = action.get("client_target_end")
+        actual_start = action.get("client_actual_start")
+        actual_end = action.get("client_actual_end")
+        points = (target_start, target_end, actual_start, actual_end)
+        if not all(isinstance(point, list) and len(point) == 2 for point in points):
+            return False
+
+        start_bounds = action.get("client_start_action_bounds")
+        end_bounds = action.get("client_end_action_bounds")
+        for bounds in (start_bounds, end_bounds):
+            if isinstance(bounds, list) and len(bounds) == 4:
+                draw.rectangle(tuple(bounds), outline=(0, 255, 0), width=3)
+
+        target_start_point = tuple(int(value) for value in target_start)
+        target_end_point = tuple(int(value) for value in target_end)
+        actual_start_point = tuple(int(value) for value in actual_start)
+        actual_end_point = tuple(int(value) for value in actual_end)
+        self._draw_debug_point(
+            draw,
+            target_start_point,
+            (0, 128, 255),
+            radius=6,
         )
-        image.save(path, format="PNG")
-        return str(path.resolve())
+        self._draw_debug_point(
+            draw,
+            target_end_point,
+            (0, 128, 255),
+            radius=6,
+        )
+
+        trajectory = self._debug_drag_trajectory(
+            actual_start_point,
+            actual_end_point,
+        )
+        draw.line(trajectory, fill=(255, 0, 255), width=4)
+        if len(trajectory) >= 2:
+            self._draw_debug_arrow_head(
+                draw,
+                trajectory[-2],
+                trajectory[-1],
+                (255, 0, 255),
+            )
+        self._draw_debug_point(
+            draw,
+            actual_start_point,
+            (255, 0, 0),
+            radius=4,
+        )
+        self._draw_debug_point(
+            draw,
+            actual_end_point,
+            (255, 0, 0),
+            radius=4,
+        )
+        draw.text(
+            (actual_start_point[0] + 8, actual_start_point[1] - 14),
+            "START",
+            fill=(255, 255, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0),
+        )
+        draw.text(
+            (actual_end_point[0] + 8, actual_end_point[1] - 14),
+            "END",
+            fill=(255, 255, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0),
+        )
+
+        legend_lines = [
+            "DRAG TRAJECTORY",
+            "GREEN: allowed start/end regions",
+            (
+                "BLUE: configured targets "
+                f"({target_start_point[0]},{target_start_point[1]}) -> "
+                f"({target_end_point[0]},{target_end_point[1]})"
+            ),
+            (
+                "RED: actual endpoints "
+                f"({actual_start_point[0]},{actual_start_point[1]}) -> "
+                f"({actual_end_point[0]},{actual_end_point[1]})"
+            ),
+            "MAGENTA: drag direction and trajectory",
+        ]
+        draw.rectangle((4, 4, 492, 86), fill=(0, 0, 0))
+        for index, line in enumerate(legend_lines):
+            draw.text((10, 8 + index * 15), line, fill=(255, 255, 255))
+        return True
+
+    @staticmethod
+    def _debug_drag_trajectory(
+        start: tuple[int, int],
+        end: tuple[int, int],
+    ) -> list[tuple[int, int]]:
+        """生成仅用于标注图的稳定曲线；硬件仍负责真正的拟人化轨迹。"""
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        distance = math.hypot(dx, dy)
+        if distance < 1:
+            return [start, end]
+        bend = min(42.0, max(12.0, distance * 0.10))
+        control = (
+            (start[0] + end[0]) / 2 - dy / distance * bend,
+            (start[1] + end[1]) / 2 + dx / distance * bend,
+        )
+        result = []
+        for index in range(25):
+            t = index / 24
+            one_minus_t = 1 - t
+            result.append((
+                round(
+                    one_minus_t * one_minus_t * start[0]
+                    + 2 * one_minus_t * t * control[0]
+                    + t * t * end[0]
+                ),
+                round(
+                    one_minus_t * one_minus_t * start[1]
+                    + 2 * one_minus_t * t * control[1]
+                    + t * t * end[1]
+                ),
+            ))
+        return result
+
+    @staticmethod
+    def _draw_debug_arrow_head(
+        draw,
+        before: tuple[int, int],
+        tip: tuple[int, int],
+        color: tuple[int, int, int],
+    ) -> None:
+        angle = math.atan2(tip[1] - before[1], tip[0] - before[0])
+        length = 13
+        spread = math.pi / 6
+        left = (
+            tip[0] - length * math.cos(angle - spread),
+            tip[1] - length * math.sin(angle - spread),
+        )
+        right = (
+            tip[0] - length * math.cos(angle + spread),
+            tip[1] - length * math.sin(angle + spread),
+        )
+        draw.polygon(
+            [tip, (round(left[0]), round(left[1])), (round(right[0]), round(right[1]))],
+            fill=color,
+        )
+
+    @classmethod
+    def _draw_keyboard_action_visualization(
+        cls,
+        draw,
+        action: dict[str, object],
+    ) -> bool:
+        action_name = str(action.get("action") or "")
+        if action_name == "key_type":
+            text = str(action.get("text") or "")
+            plan = action.get("typing_plan")
+            keys = [
+                str(item.get("key") or "")
+                for item in plan
+                if isinstance(item, dict)
+            ] if isinstance(plan, list) else list(text)
+            title = "KEYBOARD INPUT"
+            summary = f"Text: {cls._ascii_debug_text(text)}"
+            timing = "Each key uses the logged randomized hold and gap timing"
+        elif action_name == "key_press":
+            keys = [str(action.get("key") or "")]
+            title = "KEY PRESS"
+            summary = f"Key: {cls._ascii_debug_text(keys[0])}"
+            timing = f"Hold: {int(action.get('hold_ms') or 0)} ms"
+        elif action_name == "key_combo":
+            raw_keys = action.get("keys")
+            keys = [str(key) for key in raw_keys] if isinstance(raw_keys, list) else []
+            title = "KEY COMBINATION"
+            summary = "Keys: " + "+".join(cls._ascii_debug_text(key) for key in keys)
+            timing = f"Hold: {int(action.get('hold_ms') or 0)} ms"
+        else:
+            return False
+
+        safe_keys = [cls._ascii_debug_text(key) for key in keys]
+        panel_bottom = 136
+        draw.rectangle((4, 4, 795, panel_bottom), fill=(0, 0, 0))
+        draw.rectangle((4, 4, 795, panel_bottom), outline=(0, 220, 255), width=2)
+        draw.text((14, 12), title, fill=(0, 220, 255))
+        draw.text((14, 30), summary[:105], fill=(255, 255, 255))
+        draw.text((14, 48), timing, fill=(180, 180, 180))
+
+        x = 14
+        y = 72
+        visible_keys = safe_keys[:16]
+        if len(safe_keys) > len(visible_keys):
+            visible_keys.append("...")
+        for index, key in enumerate(visible_keys):
+            label = key or "SPACE"
+            cap_width = max(42, min(92, 22 + len(label) * 8))
+            if x + cap_width > 780:
+                break
+            draw.rectangle((x + 3, y + 4, x + cap_width + 3, y + 42), fill=(60, 60, 60))
+            draw.rectangle(
+                (x, y, x + cap_width, y + 38),
+                fill=(235, 235, 235),
+                outline=(120, 120, 120),
+                width=2,
+            )
+            text_left = x + max(7, (cap_width - len(label) * 7) // 2)
+            draw.text((text_left, y + 13), label, fill=(20, 20, 20))
+            x += cap_width + 10
+            if action_name == "key_combo" and index + 1 < len(visible_keys):
+                draw.text((x - 6, y + 13), "+", fill=(255, 255, 255))
+        return True
+
+    @staticmethod
+    def _ascii_debug_text(value: object) -> str:
+        text = str(value)
+        try:
+            text.encode("ascii")
+            return text
+        except UnicodeEncodeError:
+            return text.encode("unicode_escape").decode("ascii")
 
     @staticmethod
     def _draw_debug_point(draw, point, color, *, radius: int) -> None:
