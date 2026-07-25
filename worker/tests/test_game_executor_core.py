@@ -152,7 +152,33 @@ class _CancellableExecutor(_Executor):
         self.cancelled.set()
 
 
+class _BuyerReviewExecutor(_Executor):
+    def __init__(self):
+        self.decisions = []
+
+    def submit_buyer_review(self, review_id, approved):
+        self.decisions.append((review_id, approved))
+        return True
+
+
 class GameExecutorDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_rejected_buyer_review_is_delivered_to_active_executor(self):
+        ctx = AppContext(asyncio.get_running_loop())
+        ctx.reporter = _Reporter()
+        ctx.runtime_status = RuntimeStatus()
+        ctx.trade_task_gate = TradeTaskGate()
+        executor = _BuyerReviewExecutor()
+        ctx.set_active_trade("assignment-1", executor, None)
+
+        await _dispatch_message({
+            "type": "trade_buyer_review_decision",
+            "assignment_id": "assignment-1",
+            "review_id": "review-1",
+            "approved": False,
+        }, ctx)
+
+        self.assertEqual([("review-1", False)], executor.decisions)
+
     async def test_manual_mode_reports_the_real_success_terminal_status(self):
         ctx = AppContext(asyncio.get_running_loop())
         ctx.reporter = _Reporter()

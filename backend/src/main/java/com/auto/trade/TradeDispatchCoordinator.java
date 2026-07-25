@@ -81,6 +81,7 @@ public class TradeDispatchCoordinator {
     private final GameItemService itemService;
     private final GameRegionService gameRegionService;
     private final ManualOrderStatusService manualOrderStatusService;
+    private final BuyerReviewAuditService buyerReviewAuditService;
     private final TransactionTemplate committedTransaction;
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, TradeOffer> pendingOffers = new ConcurrentHashMap<>();
@@ -104,6 +105,7 @@ public class TradeDispatchCoordinator {
             GameItemService itemService,
             GameRegionService gameRegionService,
             ManualOrderStatusService manualOrderStatusService,
+            BuyerReviewAuditService buyerReviewAuditService,
             PlatformTransactionManager transactionManager) {
         this.orderService = orderService;
         this.machineGameService = machineGameService;
@@ -118,6 +120,7 @@ public class TradeDispatchCoordinator {
         this.itemService = itemService;
         this.gameRegionService = gameRegionService;
         this.manualOrderStatusService = manualOrderStatusService;
+        this.buyerReviewAuditService = buyerReviewAuditService;
         this.committedTransaction = new TransactionTemplate(transactionManager);
         this.committedTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -624,6 +627,13 @@ public class TradeDispatchCoordinator {
                     .set(TradeAssignment::getBuyerReviewDecidedAt, decidedAt));
             assignment.setBuyerReviewStatus(reviewStatus);
             assignment.setBuyerReviewDecidedAt(decidedAt);
+            if (!approved) {
+                GameItemOrder order = orderService.getById(orderId);
+                if (order == null) {
+                    throw new IllegalStateException("订单不存在，无法记录人工拒绝结果");
+                }
+                buyerReviewAuditService.recordRejected(order, assignment);
+            }
             return assignment;
         }
     }

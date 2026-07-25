@@ -26,6 +26,9 @@ from game_executor.executor.lineage_classic.paddle_ocr import (
     recognize_korean,
     recognize_korean_boxes,
 )
+from game_executor.executor.lineage_classic.player_name_ocr import (
+    recognize_expected_player_name,
+)
 
 try:
     import cv2
@@ -208,6 +211,60 @@ class TargetRegion:
         return target
 
 
+def _session_identifier(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().casefold()
+
+
+@dataclass(frozen=True)
+class RegionSessionKey:
+    game_id: str
+    game_account_id: str
+    window_account: str
+    region_id: int
+
+    @classmethod
+    def from_order(
+        cls,
+        order: dict,
+        target: TargetRegion,
+        window_account: object = "",
+    ) -> "RegionSessionKey":
+        return cls(
+            game_id=_session_identifier(order.get("game_id")),
+            game_account_id=_session_identifier(order.get("game_account_id")),
+            window_account=_session_identifier(window_account),
+            region_id=target.region_id,
+        )
+
+
+class RegionSessionCache:
+    """记录本进程已成功登录的游戏账号与大区。"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._key: Optional[RegionSessionKey] = None
+
+    def snapshot(self) -> Optional[RegionSessionKey]:
+        with self._lock:
+            return self._key
+
+    def matches(self, key: RegionSessionKey) -> bool:
+        with self._lock:
+            return self._key == key
+
+    def remember(self, key: RegionSessionKey) -> None:
+        with self._lock:
+            self._key = key
+
+    def invalidate(self) -> Optional[RegionSessionKey]:
+        with self._lock:
+            previous = self._key
+            self._key = None
+            return previous
+
+
 class ClientWindow:
     def __init__(self, hwnd: int, title: str):
         self.hwnd = hwnd
@@ -346,6 +403,7 @@ class Vision(Protocol):
 class OcrResult:
     text: str
     confidence: float
+    verified: bool = False
 
 
 class TemplateVision:
@@ -710,6 +768,59 @@ class TemplateVision:
                 self._ocr_warning_printed = True
             return OcrResult("", -1.0)
 
+    def read_player_name_result(
+        self,
+        region: tuple[int, int, int, int],
+        expected_name: str,
+    ) -> OcrResult:
+        """按订单姓名将英文/韩文分段后分别识别。"""
+        source = self._capture(region)
+        try:
+            result = recognize_expected_player_name(source, expected_name)
+            run_details = "；".join(
+                f"{run.kind} expected={run.expected!r} "
+                f"observed={run.observed!r} "
+                f"visual={run.visual_observed!r} "
+                f"confidence={run.confidence:.1f} "
+                f"high_risk_equivalent={run.high_risk_equivalent} "
+                f"cell=X[{region[0] + run.left},{region[0] + run.right - 1}] "
+                f"ocr=X[{region[0] + run.crop_left},"
+                f"{region[0] + run.crop_right - 1}]"
+                for run in result.runs
+            )
+            print(
+                f"[Lineage][玩家名分段识别] expected={expected_name!r}，"
+                f"observed={result.text!r}，"
+                f"visual_observed={result.visual_observed!r}，"
+                f"min_confidence={result.confidence:.1f}，"
+                f"avg_confidence={result.average_confidence:.1f}，"
+                f"verified={result.verified}，strategy={result.strategy}；"
+                f"{run_details}",
+                flush=True,
+            )
+            return OcrResult(
+                result.text,
+                result.confidence,
+                verified=result.verified,
+            )
+        except Exception as exc:
+            print(
+                f"[Lineage][玩家名分段识别] 执行失败，转用整行韩文 OCR 并保留人工复核: "
+                f"{exc}",
+                flush=True,
+            )
+            scaled = cv2.resize(
+                source, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC
+            )
+            enhanced = cv2.copyMakeBorder(
+                scaled, 12, 12, 12, 12, cv2.BORDER_REPLICATE
+            )
+            try:
+                text, confidence = recognize_korean(enhanced)
+                return OcrResult(text, confidence)
+            except Exception:
+                return OcrResult("", -1.0)
+
     def find_text(
         self,
         target: TargetRegion,
@@ -842,6 +953,7 @@ class LineageSessionNavigator:
         cancelled: Optional[Callable[[], bool]] = None,
         random_uniform: Callable[[float, float], float] = random.uniform,
         input_controller: Optional[HumanizedInputController] = None,
+        region_session_cache: Optional[RegionSessionCache] = None,
     ):
         self.hardware = hardware
         self.window = window
@@ -855,6 +967,7 @@ class LineageSessionNavigator:
             sleep=sleep,
             cancelled=self.cancelled,
         )
+        self.region_session_cache = region_session_cache
         action_visualizer = getattr(self.vision, "save_action_visualization", None)
         set_action_visualizer = getattr(self.input, "set_action_visualizer", None)
         if callable(action_visualizer) and callable(set_action_visualizer):
@@ -1592,6 +1705,11 @@ class LineageSessionNavigator:
 
     def ensure_target_region(self, order: dict) -> TargetRegion:
         target = TargetRegion.from_order(order)
+        cache_key = RegionSessionKey.from_order(
+            order,
+            target,
+            getattr(self.window, "account", ""),
+        )
         self.window.focus()
 
         def client_ready() -> bool:
@@ -1609,14 +1727,75 @@ class LineageSessionNavigator:
                 "仍无法确认客户区可操作"
             )
 
-        print(
-            "[Lineage] 每次交易重新选择订单大区: "
-            f"{_printable(target.name or target.code)}，页码={target.select_page}",
-            flush=True,
+        cache_hit = (
+            self.region_session_cache is not None
+            and self.region_session_cache.matches(cache_key)
         )
-        self._reach_server_screen()
-        self._select_server(target)
-        self._select_character_and_login()
+        reuse_region = False
+        if cache_hit:
+            print(
+                "[Lineage][大区缓存] 命中已登录大区: "
+                f"id={target.region_id} "
+                f"name={_printable(target.name or target.code)}，"
+                "开始确认游戏主界面",
+                flush=True,
+            )
+            reuse_region = self._trace_screen_probe(
+                "缓存大区是否仍在游戏主界面",
+                self._is_in_game,
+            )
+            if reuse_region:
+                print(
+                    "[Lineage][大区缓存] 当前仍在订单大区，"
+                    "跳过 Restart、选服和角色重新登录",
+                    flush=True,
+                )
+            else:
+                self.region_session_cache.invalidate()
+                print(
+                    "[Lineage][大区缓存] 缓存对应的游戏会话已失效，"
+                    "本次重新选择大区并登录",
+                    flush=True,
+                )
+        elif self.region_session_cache is not None:
+            previous = self.region_session_cache.invalidate()
+            if previous is None:
+                reason = "尚无成功登录记录"
+            elif previous.region_id != target.region_id:
+                reason = (
+                    f"订单大区已变化（缓存 region_id={previous.region_id}，"
+                    f"订单 region_id={target.region_id}）"
+                )
+            else:
+                reason = "游戏、账号或窗口会话标识已变化，不能复用大区登录缓存"
+            print(
+                f"[Lineage][大区缓存] 未命中: {reason}",
+                flush=True,
+            )
+
+        if not reuse_region:
+            print(
+                "[Lineage] 准备选择订单大区: "
+                f"{_printable(target.name or target.code)}，"
+                f"页码={target.select_page}",
+                flush=True,
+            )
+            try:
+                self._reach_server_screen()
+                self._select_server(target)
+                self._select_character_and_login()
+            except Exception:
+                if self.region_session_cache is not None:
+                    self.region_session_cache.invalidate()
+                raise
+            if self.region_session_cache is not None:
+                self.region_session_cache.remember(cache_key)
+                print(
+                    "[Lineage][大区缓存] 大区登录成功，已缓存: "
+                    f"id={target.region_id} "
+                    f"name={_printable(target.name or target.code)}",
+                    flush=True,
+                )
 
         print(
             "[Lineage][流程衔接] 已进入游戏主界面，先检查并打开物品栏",
@@ -1650,6 +1829,7 @@ def build_navigator(
     account: str = "",
     cancelled: Optional[Callable[[], bool]] = None,
     input_controller: Optional[HumanizedInputController] = None,
+    region_session_cache: Optional[RegionSessionCache] = None,
 ) -> LineageSessionNavigator:
     window = ClientWindow.find(account=account)
     return LineageSessionNavigator(
@@ -1659,4 +1839,5 @@ def build_navigator(
         runtime_status=runtime_status,
         cancelled=cancelled,
         input_controller=input_controller,
+        region_session_cache=region_session_cache,
     )

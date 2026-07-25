@@ -22,7 +22,6 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
   const voiceConsentRequired = ref(false)
   const voiceConsentGranted = ref(false)
   const lastUpdatedAt = ref(null)
-  const reviewDialogVisible = ref(false)
   const reviewDecisionLoading = ref(false)
   const dismissLoadingId = ref(null)
 
@@ -147,10 +146,10 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
       lastSignature = nextSignature
       fetchError.value = ''
       lastUpdatedAt.value = systemResponse.polled_at || orderResponse.polled_at || new Date().toISOString()
-      if (currentBuyerReview.value && !reviewDecisionLoading.value) {
-        reviewDialogVisible.value = true
-      } else if (!currentBuyerReview.value) {
-        reviewDialogVisible.value = false
+      // OCR 人工审核直接进入通知抽屉。所有机器的 pending 请求都在同一个列表中，
+      // 不再用只能展示一条的阻塞弹窗承载，避免后到请求覆盖先到请求。
+      if (changed && currentBuyerReview.value && !reviewDecisionLoading.value) {
+        drawerVisible.value = true
       }
 
       if (!nextTotal) {
@@ -177,12 +176,10 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
         review_id: item.review_id,
         approved: Boolean(approved),
       })
-      reviewDialogVisible.value = false
       await refresh()
       return response
     } finally {
       reviewDecisionLoading.value = false
-      if (currentBuyerReview.value) reviewDialogVisible.value = true
     }
   }
 
@@ -235,7 +232,6 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     voiceConsentRequired,
     voiceConsentGranted,
     lastUpdatedAt,
-    reviewDialogVisible,
     reviewDecisionLoading,
     dismissLoadingId,
     speechSupported,

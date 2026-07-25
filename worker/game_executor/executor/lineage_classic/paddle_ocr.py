@@ -9,6 +9,13 @@ from typing import Iterable
 
 _engine = None
 _engine_lock = threading.Lock()
+_text_recognition_engines: dict[str, object] = {}
+_text_recognition_engine_lock = threading.Lock()
+
+TEXT_RECOGNITION_MODELS = {
+    "english": "en_PP-OCRv5_mobile_rec",
+    "korean": "korean_PP-OCRv5_mobile_rec",
+}
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,50 @@ def recognize_korean_boxes(image) -> list[OcrTextBox]:
     """识别文本框，坐标相对于传入图像。"""
     results = get_paddle_ocr_engine().predict(image)
     return paddle_ocr_boxes(results)
+
+
+def build_text_recognition_engine(language: str):
+    """创建不包含文字检测步骤的单行识别器。"""
+    model_name = TEXT_RECOGNITION_MODELS.get(str(language).casefold())
+    if model_name is None:
+        raise ValueError(f"不支持的文字识别语言: {language}")
+    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+    try:
+        from paddleocr import TextRecognition
+    except ImportError as exc:
+        raise RuntimeError(
+            "当前 PaddleOCR 版本不支持 TextRecognition，请升级游戏执行端依赖"
+        ) from exc
+    return TextRecognition(
+        model_name=model_name,
+        device="cpu",
+        enable_mkldnn=False,
+    )
+
+
+def get_text_recognition_engine(language: str):
+    """按语言线程安全地延迟初始化纯识别模型。"""
+    key = str(language).casefold()
+    if key not in TEXT_RECOGNITION_MODELS:
+        raise ValueError(f"不支持的文字识别语言: {language}")
+    engine = _text_recognition_engines.get(key)
+    if engine is not None:
+        return engine
+    with _text_recognition_engine_lock:
+        engine = _text_recognition_engines.get(key)
+        if engine is None:
+            engine = build_text_recognition_engine(key)
+            _text_recognition_engines[key] = engine
+    return engine
+
+
+def recognize_text_line(image, language: str) -> tuple[str, float]:
+    """识别已经裁好的单行英文或韩文图片，不再执行文字框检测。"""
+    results = get_text_recognition_engine(language).predict(
+        input=image,
+        batch_size=1,
+    )
+    return paddle_ocr_text(results)
 
 
 def _result_data(result: object) -> dict | None:
@@ -149,6 +200,11 @@ def paddle_ocr_text(results: Iterable[object]) -> tuple[str, float]:
             continue
         texts = data.get("rec_texts")
         scores = data.get("rec_scores")
+        if texts is None and scores is None:
+            text = str(data.get("rec_text") or "").strip()
+            if text:
+                tokens.append((text, _confidence(data.get("rec_score"))))
+            continue
         if texts is None or scores is None:
             continue
         for raw_text, raw_score in zip(texts, scores):

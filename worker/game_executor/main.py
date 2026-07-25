@@ -245,15 +245,34 @@ async def _dispatch_message(msg, ctx: AppContext):
 
     elif mtype == "trade_buyer_review_decision":
         assignment_id = msg.get("assignment_id")
+        review_id = msg.get("review_id")
+        approved = bool(msg.get("approved"))
+        print(
+            f"[GameExecutor][BuyerReview] 收到总控决定 "
+            f"assignment_id={assignment_id} review_id={review_id} "
+            f"decision={'approved' if approved else 'rejected'}",
+            flush=True,
+        )
         active = ctx.active_trade(assignment_id)
         submit_review = (
             getattr(active["executor"], "submit_buyer_review", None)
             if active is not None else None
         )
-        if not callable(submit_review) or not submit_review(
-            msg.get("review_id"), bool(msg.get("approved"))
-        ):
-            print(f"[GameExecutor] 忽略已失效的买家审核决定: {msg.get('review_id')}")
+        accepted = callable(submit_review) and submit_review(review_id, approved)
+        if accepted:
+            print(
+                f"[GameExecutor][BuyerReview] 审核决定已交给交易执行线程 "
+                f"assignment_id={assignment_id} review_id={review_id}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[GameExecutor][BuyerReview] 忽略已失效的买家审核决定: "
+                f"assignment_id={assignment_id} review_id={review_id} "
+                f"active_assignment_id="
+                f"{active.get('assignment_id') if active is not None else None}",
+                flush=True,
+            )
 
     elif mtype == "trade_game_screenshot_saved":
         reporter.deliver_trade_game_screenshot_saved(

@@ -23,6 +23,13 @@ SELL_REGIST_URL = "https://www.itemmania.com/myroom/sell/sell_regist.html"
 SELL_ING_URL = "https://www.itemmania.com/myroom/sell/sell_ing.html"
 SELL_ING_VIEW_URL = "https://www.itemmania.com/myroom/sell/sell_ing_view.html"
 
+ORDER_TABLE_SELECTOR = ".g_blue_table.tb_list"
+REFRESH_TABLE_SELECTOR = ".g_blue_table.tb_list"
+REFRESH_ROW_SELECTOR = ".g_blue_table.tb_list tbody tr"
+MIN_COMMIT_TIMEOUT_MS = 15000
+MIN_READY_TIMEOUT_MS = 20000
+COMMIT_GRACE_SECONDS = 3.0
+
 # ── 韩文状态 → 英文映射 ──
 STATUS_MAP = {
     "거래중": "trading",
@@ -41,6 +48,28 @@ def _parse_ko_number(text: str) -> int:
     return int(_parse_ko_units(text))
 
 
+async def _read_document_time_origin(page) -> Optional[float]:
+    """读取当前文档代次；导航成功后 performance.timeOrigin 会变化。"""
+    try:
+        return float(await page.evaluate("performance.timeOrigin"))
+    except Exception:
+        return None
+
+
+async def _wait_for_document_change(page, previous_origin: Optional[float]) -> bool:
+    """导航 API 超时时，短暂复核新文档是否其实已经提交。"""
+    if previous_origin is None:
+        return False
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + COMMIT_GRACE_SECONDS
+    while loop.time() < deadline:
+        current_origin = await _read_document_time_origin(page)
+        if current_origin is not None and current_origin != previous_origin:
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
 class ManiaOrderWorker(PageWorker):
     """订单 Worker：固定在 sell_ing.html，定时刷新提取订单。"""
 
@@ -53,8 +82,7 @@ class ManiaOrderWorker(PageWorker):
         refresh_interval = cfg.get("refresh_interval", 3)
         wait_timeout = cfg.get("wait_timeout", 10000)
 
-        await self._navigate(SELL_ING_URL, "订单页")
-        await self._wait_page_stable()
+        await self._ensure_order_page_ready(wait_timeout)
 
         print(f"[{self._log_tag}] 订单监控循环开始 (interval={refresh_interval}s)")
         check_round = 0
@@ -73,8 +101,119 @@ class ManiaOrderWorker(PageWorker):
             except Exception as e:
                 print(f"[{self._log_tag}] 第{check_round}轮异常: {e}")
 
-            await self._safe_reload_or_navigate(SELL_ING_URL, wait_timeout)
+            await self._reload_order_page(wait_timeout)
             await asyncio.sleep(refresh_interval)
+
+    async def _ensure_order_page_ready(self, wait_timeout: int):
+        """进入订单页，并以业务表格而不是 networkidle 判断页面可用。"""
+        async with self._monitor.navigation_lock:
+            navigated = False
+            if SELL_ING_URL not in self.page.url:
+                committed = await self._goto_order_page(
+                    wait_timeout, reason="初始化订单页")
+                navigated = True
+                if not committed:
+                    raise RuntimeError("订单页初始化导航未提交")
+
+            if await self._wait_order_table(wait_timeout):
+                return
+
+            if navigated:
+                raise RuntimeError("订单页导航后仍未出现订单表格")
+
+            print(f"[{self._log_tag}] [订单页恢复] 当前页面关键区域未就绪，"
+                  "执行一次受控导航")
+            committed = await self._goto_order_page(
+                wait_timeout, reason="恢复订单页")
+            if committed and await self._wait_order_table(wait_timeout):
+                return
+
+        raise RuntimeError("订单页在受控导航后仍未出现订单表格")
+
+    async def _reload_order_page(self, wait_timeout: int):
+        """刷新订单页；提交超时后先复核页面，避免连续 reload + goto。"""
+        navigation_error = None
+        async with self._monitor.navigation_lock:
+            previous_origin = await _read_document_time_origin(self.page)
+            committed = False
+            try:
+                await self.page.reload(
+                    wait_until="commit",
+                    timeout=max(wait_timeout, MIN_COMMIT_TIMEOUT_MS),
+                )
+                committed = True
+            except Exception as e:
+                if self.page.is_closed():
+                    raise
+                navigation_error = e
+                print(f"[{self._log_tag}] [订单页恢复] reload 提交阶段异常: "
+                      f"{e}；先确认新文档是否已经提交")
+                committed = await _wait_for_document_change(
+                    self.page, previous_origin)
+
+            if committed and await self._wait_order_table(wait_timeout):
+                if navigation_error is not None:
+                    print(f"[{self._log_tag}] [订单页恢复] 页面实际已可用，"
+                          "已跳过重复 goto")
+                return
+
+            if committed:
+                print(f"[{self._log_tag}] [订单页恢复] 新文档已提交但订单表格"
+                      "仍未出现，执行一次受控 goto")
+            else:
+                print(f"[{self._log_tag}] [订单页恢复] 刷新未提交新文档，"
+                      "执行一次受控 goto")
+            try:
+                committed = await self._goto_order_page(
+                    wait_timeout, reason="刷新失败后的受控恢复")
+            except Exception as e:
+                navigation_error = e
+                committed = False
+
+            if committed and await self._wait_order_table(wait_timeout):
+                print(f"[{self._log_tag}] [订单页恢复] 受控 goto 后页面已恢复")
+                return
+
+        message = "订单页刷新和受控恢复后仍未出现订单表格"
+        if navigation_error is not None:
+            raise RuntimeError(message) from navigation_error
+        raise RuntimeError(message)
+
+    async def _goto_order_page(self, wait_timeout: int, reason: str):
+        """只等待导航提交，页面是否可用由订单表格单独判断。"""
+        print(f"[{self._log_tag}] [订单页导航] {reason}: {SELL_ING_URL}")
+        previous_origin = await _read_document_time_origin(self.page)
+        try:
+            await self.page.goto(
+                SELL_ING_URL,
+                wait_until="commit",
+                timeout=max(wait_timeout, MIN_COMMIT_TIMEOUT_MS),
+            )
+            return True
+        except Exception as e:
+            if self.page.is_closed():
+                raise
+            print(f"[{self._log_tag}] [订单页导航] 提交阶段异常: {e}；"
+                  "短暂复核新文档是否已经提交")
+            committed = await _wait_for_document_change(
+                self.page, previous_origin)
+            if committed:
+                print(f"[{self._log_tag}] [订单页导航] 新文档实际已提交")
+            return committed
+
+    async def _wait_order_table(self, wait_timeout: int) -> bool:
+        ready_timeout = max(wait_timeout, MIN_READY_TIMEOUT_MS)
+        try:
+            await self.page.wait_for_selector(
+                ORDER_TABLE_SELECTOR,
+                state="attached",
+                timeout=ready_timeout,
+            )
+            return True
+        except Exception as e:
+            print(f"[{self._log_tag}] [订单页检测] 等待订单表格超时"
+                  f"（{ready_timeout}ms）: {e}")
+            return False
 
 
 class ManiaRefreshWorker(PageWorker):
@@ -89,8 +228,7 @@ class ManiaRefreshWorker(PageWorker):
         wait_timeout = self._monitor.get_order_cfg().get("wait_timeout", 10000)
         interval = 40
 
-        await self._navigate(SELL_REGIST_URL, "刷新页")
-        await self._wait_page_stable()
+        await self._ensure_refresh_page_ready(wait_timeout)
         print(f"[{self._log_tag}] 刷新就绪 (间隔={interval}s)")
 
         while not self.stopped:
@@ -107,41 +245,94 @@ class ManiaRefreshWorker(PageWorker):
 
     async def _do_refresh(self, timeout: int):
         """翻到最后一页 → 点击「재등록」。"""
-        await self._navigate(SELL_REGIST_URL, "刷新-回到上架页",
-                             wait_until="commit", skip_networkidle=True)
+        async with self._monitor.navigation_lock:
+            # 每轮强制重新进入上架页，清理页面长期运行积累的脚本和 DOM 状态。
+            await self._goto_refresh_page(
+                SELL_REGIST_URL, timeout, reason="刷新-回到上架页")
 
-        try:
-            await self.page.wait_for_selector(".cpnt.last", timeout=3000)
-            last_link = await self.page.query_selector(".cpnt.last a")
-            if last_link:
+            last_link = self.page.locator(".cpnt.last a").first
+            if await last_link.count() > 0:
                 href = await last_link.get_attribute("href")
                 if href:
                     full_url = SELL_REGIST_URL + href
                     print(f"[{self._log_tag}] 跳转末页: {full_url}")
-                    await self.page.goto(full_url,
-                                         wait_until="commit",
-                                         timeout=timeout)
-                    await self.page.wait_for_timeout(1000)
-        except Exception:
-            print(f"[{self._log_tag}] 无分页元素")
+                    await self._goto_refresh_page(
+                        full_url, timeout, reason="刷新-进入末页")
+            else:
+                print(f"[{self._log_tag}] 无分页元素")
 
+            rows = self.page.locator(REFRESH_ROW_SELECTOR)
+            row_count = await rows.count()
+            print(f"[{self._log_tag}] 上架商品: {row_count}")
+            if row_count >= 1:
+                btn = rows.nth(row_count - 1).locator(
+                    ".flex_box .reregist").first
+                if await btn.count() > 0:
+                    await btn.click(timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
+                    await self.page.wait_for_timeout(2000)
+                else:
+                    print(f"[{self._log_tag}] 未找到 reregist 按钮")
+            else:
+                print(f"[{self._log_tag}] 无可刷新的商品")
+
+    async def _ensure_refresh_page_ready(self, timeout: int):
+        async with self._monitor.navigation_lock:
+            if SELL_REGIST_URL in self.page.url:
+                if await self._wait_refresh_table(timeout):
+                    return
+            await self._goto_refresh_page(
+                SELL_REGIST_URL, timeout, reason="初始化上架页")
+
+    async def _goto_refresh_page(self, url: str, timeout: int, reason: str):
+        """导航上架页并以业务表格判断可用，不等待 networkidle。"""
+        print(f"[{self._log_tag}] 导航到 ({reason}): {url}")
+        navigation_error = None
+        previous_origin = await _read_document_time_origin(self.page)
+        try:
+            await self.page.goto(
+                url,
+                wait_until="commit",
+                timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS),
+            )
+            committed = True
+        except Exception as e:
+            if self.page.is_closed():
+                raise
+            navigation_error = e
+            print(f"[{self._log_tag}] [{reason}] 提交阶段异常: {e}；"
+                  "短暂复核新文档是否已经提交")
+            committed = await _wait_for_document_change(
+                self.page, previous_origin)
+
+        if not committed:
+            message = f"{reason}导航未提交新文档"
+            if navigation_error is not None:
+                raise RuntimeError(message) from navigation_error
+            raise RuntimeError(message)
+
+        if await self._wait_refresh_table(timeout):
+            if navigation_error is not None:
+                print(f"[{self._log_tag}] [{reason}] 页面实际已可用")
+            return
+
+        message = f"{reason}后仍未出现上架表格"
+        if navigation_error is not None:
+            raise RuntimeError(message) from navigation_error
+        raise RuntimeError(message)
+
+    async def _wait_refresh_table(self, timeout: int) -> bool:
+        ready_timeout = max(timeout, MIN_READY_TIMEOUT_MS)
         try:
             await self.page.wait_for_selector(
-                ".g_blue_table.tb_list tbody tr", timeout=3000)
-        except Exception:
-            pass
-        trs = await self.page.query_selector_all(
-            ".g_blue_table.tb_list tbody tr")
-        print(f"[{self._log_tag}] 上架商品: {len(trs)}")
-        if len(trs) >= 1:
-            btn = await trs[-1].query_selector(".flex_box .reregist")
-            if btn:
-                await btn.click()
-                await self.page.wait_for_timeout(2000)
-            else:
-                print(f"[{self._log_tag}] 未找到 reregist 按钮")
-        else:
-            print(f"[{self._log_tag}] 无可刷新的商品")
+                REFRESH_TABLE_SELECTOR,
+                state="attached",
+                timeout=ready_timeout,
+            )
+            return True
+        except Exception as e:
+            print(f"[{self._log_tag}] [上架页检测] 等待上架表格超时"
+                  f"（{ready_timeout}ms）: {e}")
+            return False
 
 
 class ItemmaniaMonitor(BaseOrderMonitor):
@@ -156,6 +347,11 @@ class ItemmaniaMonitor(BaseOrderMonitor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._detail_fetch_cache: dict = {}
+        self._navigation_lock = asyncio.Lock()
+
+    @property
+    def navigation_lock(self) -> asyncio.Lock:
+        return self._navigation_lock
 
     def get_order_cfg(self) -> dict:
         return {

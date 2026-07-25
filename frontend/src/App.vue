@@ -144,50 +144,6 @@
     </template>
   </el-dialog>
 
-  <el-dialog
-    v-model="manualAlerts.reviewDialogVisible"
-    title="确认交易申请客户"
-    width="650px"
-    align-center
-    :show-close="false"
-    :close-on-click-modal="false"
-    :close-on-press-escape="false"
-  >
-    <template v-if="manualAlerts.currentBuyerReview">
-      <el-alert
-        title="OCR 置信度不足或玩家名不匹配，本次必须由人工判断"
-        type="warning"
-        :closable="false"
-        show-icon
-      />
-      <div class="buyer-review-names">
-        <div><span>订单客户名</span><strong>{{ manualAlerts.currentBuyerReview.expected_buyer || '-' }}</strong></div>
-        <div><span>OCR 识别（仅参考）</span><strong>{{ manualAlerts.currentBuyerReview.observed_buyer || '未识别' }}</strong></div>
-        <div><span>OCR 置信度</span><strong>{{ formatConfidence(manualAlerts.currentBuyerReview.ocr_confidence) }}</strong></div>
-      </div>
-      <el-image
-        class="buyer-review-image"
-        :src="manualAlerts.currentBuyerReview.screenshot_data_url"
-        :preview-src-list="[manualAlerts.currentBuyerReview.screenshot_data_url]"
-        fit="contain"
-      />
-    </template>
-    <template #footer>
-      <el-button
-        type="danger"
-        size="large"
-        :loading="manualAlerts.reviewDecisionLoading"
-        @click="handleBuyerReview(false)"
-      >不同意并拒绝申请</el-button>
-      <el-button
-        type="success"
-        size="large"
-        :loading="manualAlerts.reviewDecisionLoading"
-        @click="handleBuyerReview(true)"
-      >同意并继续交易</el-button>
-    </template>
-  </el-dialog>
-
   <el-drawer
     v-model="manualAlerts.drawerVisible"
     title="待处理提醒"
@@ -336,7 +292,7 @@ function formatConfidence(value) {
   return Number.isFinite(confidence) && confidence >= 0 ? `${confidence.toFixed(1)}%` : '无法识别'
 }
 
-async function handleBuyerReview(approved, item = manualAlerts.currentBuyerReview) {
+async function handleBuyerReview(approved, item) {
   try {
     const response = await manualAlerts.decideBuyerReview(item, approved)
     if (response) ElMessage.success(response.message)

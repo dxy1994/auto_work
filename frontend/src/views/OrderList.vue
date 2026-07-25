@@ -663,12 +663,13 @@ function orderLogLabel(type) {
     retry_greeting: '重新尝试招呼',
     retry_assignment: '重新尝试交易指派',
     reset_to_greeting: '恢复到招呼阶段',
+    buyer_review_rejected: '人工拒绝交易请求',
   }[type] || type || '未知事件'
 }
 function orderLogType(type) {
   if (['greeting_success', 'dequeue_assignment', 'offer_accepted', 'trade_completed', 'game_trade_completed'].includes(type)) return 'success'
   if (['queue_assignment', 'queued_offer_rejected', 'queued_offer_expired', 'queued_start_failed', 'queued_worker_disconnected', 'retry_greeting', 'retry_assignment', 'reset_to_greeting', 'manual_dispatch'].includes(type)) return 'warning'
-  if (type?.includes('failed') || ['no_greeting_script', 'no_sub_order', 'offer_rejected', 'offer_expired', 'worker_disconnected', 'trade_timed_out', 'trade_cancelled'].includes(type)) return 'danger'
+  if (type?.includes('failed') || ['no_greeting_script', 'no_sub_order', 'offer_rejected', 'offer_expired', 'worker_disconnected', 'trade_timed_out', 'trade_cancelled', 'buyer_review_rejected'].includes(type)) return 'danger'
   return 'primary'
 }
 function deliveryStateText(status) {

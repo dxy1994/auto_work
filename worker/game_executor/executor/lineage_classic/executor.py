@@ -17,6 +17,7 @@ from game_executor.executor.lineage_classic.navigation import (
     NavigationCancelled,
     NavigationError,
     LineageSessionNavigator,
+    RegionSessionCache,
     TemplateVision,
     Ui,
     build_navigator,
@@ -37,7 +38,9 @@ class TradeUi:
     CANCEL_BUTTON_TEMPLATE = "交易取消按钮.png"
     FINAL_CONFIRM_TEMPLATE = "最终确认交易判断.png"
     REQUEST_TEMPLATE_REGION = (515, 535, 595, 565)
-    CUSTOMER_NAME_REGION = (144, 516, 241, 538)
+    # 玩家名从左侧固定位置开始，但长度随英文/韩文字符宽度变化；提供足够宽的
+    # 原始区域，由已知订单姓名分段裁剪，不能把固定 97px 当作姓名宽度。
+    CUSTOMER_NAME_REGION = (140, 516, 360, 538)
     REQUEST_ACCEPT_REGION = (528, 547, 547, 556)
     REQUEST_REJECT_REGION = (561, 547, 575, 556)
     TRADE_WINDOW_REGION = (0, 0, 235, 360)
@@ -91,9 +94,18 @@ def customer_name_prefix_matches(observed: str, expected: str) -> bool:
     return bool(actual and prefix and actual.startswith(prefix))
 
 
-def buyer_ocr_action(observed: str, expected: str, confidence: float) -> str:
-    """只有 90 分及以上且前缀匹配才自动接受，其余情况全部交给人工。"""
-    if confidence >= 90.0 and customer_name_prefix_matches(observed, expected):
+def buyer_ocr_action(
+    observed: str,
+    expected: str,
+    confidence: float,
+    *,
+    verified: bool = False,
+) -> str:
+    """高置信整行结果或已知姓名分段严格核验通过时才自动接受。"""
+    if (
+        customer_name_prefix_matches(observed, expected)
+        and (confidence >= 90.0 or verified)
+    ):
         return "accept"
     return "review"
 
@@ -124,6 +136,7 @@ class LineageClassicExecutor(BaseGameExecutor):
         self._review_decision: Optional[bool] = None
         self._phase = "idle"
         self._runtime_recovery_pending = False
+        self._region_session_cache = RegionSessionCache()
 
     def set_progress_callback(self, callback: Optional[Callable[[str, str], None]]) -> None:
         self._progress = callback
@@ -137,9 +150,19 @@ class LineageClassicExecutor(BaseGameExecutor):
     def submit_buyer_review(self, review_id: str, approved: bool) -> bool:
         with self._review_condition:
             if not review_id or review_id != self._pending_review_id:
+                print(
+                    f"[Lineage][人工审核] 忽略失效决定: review_id={review_id!r}，"
+                    f"pending_review_id={self._pending_review_id!r}",
+                    flush=True,
+                )
                 return False
             self._review_decision = bool(approved)
             self._review_condition.notify_all()
+            print(
+                f"[Lineage][人工审核] 已接收总控决定: review_id={review_id}，"
+                f"decision={'同意' if approved else '拒绝'}，已唤醒交易执行线程",
+                flush=True,
+            )
             return True
 
     def cancel(self):
@@ -150,6 +173,15 @@ class LineageClassicExecutor(BaseGameExecutor):
     def runtime_recovery_pending(self) -> bool:
         """连接检查是否已实际尝试恢复窗口、但仍需要有限次数重试。"""
         return self._runtime_recovery_pending
+
+    def _invalidate_region_session_cache(self, reason: str) -> None:
+        previous = self._region_session_cache.invalidate()
+        if previous is not None:
+            print(
+                "[Lineage][大区缓存] 已失效: "
+                f"region_id={previous.region_id}，reason={reason}",
+                flush=True,
+            )
 
     def probe_runtime(self) -> bool:
         """连接检查唯一的天堂窗口；只自动恢复最小化窗口，不在空闲期选服。"""
@@ -210,6 +242,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                 if ready:
                     print("[Lineage] 天堂经典版已处于游戏主界面，运行状态正常")
                 else:
+                    self._invalidate_region_session_cache("游戏已离开主界面")
                     # 没有订单时缺少目标大区，不能在连接检查阶段自行选服。
                     recoverable = True
                     print(
@@ -217,6 +250,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                         "空闲期不会自动选择大区，将在收到交易任务后按订单信息恢复"
                     )
         except NavigationError as exc:
+            self._invalidate_region_session_cache("游戏窗口或会话不可用")
             print(f"[Lineage] 运行态检查失败: {exc}")
             ready = False
         if self._runtime_status is not None:
@@ -265,9 +299,10 @@ class LineageClassicExecutor(BaseGameExecutor):
             runtime_status=self._runtime_status,
             cancelled=self._cancel_event.is_set,
             input_controller=self._input,
+            region_session_cache=self._region_session_cache,
         )
 
-        self._emit("switching_region", "正在确认并切换到订单大区")
+        self._emit("switching_region", "正在确认订单大区")
         navigator.ensure_target_region(order)
 
         self._emit("waiting_buyer", "已进入目标大区，等待买家交易申请")
@@ -460,7 +495,20 @@ class LineageClassicExecutor(BaseGameExecutor):
                     flush=True,
                 )
 
-            ocr = navigator.vision.read_text_result(TradeUi.CUSTOMER_NAME_REGION)
+            read_player_name = getattr(
+                navigator.vision,
+                "read_player_name_result",
+                None,
+            )
+            if callable(read_player_name):
+                ocr = read_player_name(
+                    TradeUi.CUSTOMER_NAME_REGION,
+                    expected_buyer,
+                )
+            else:
+                ocr = navigator.vision.read_text_result(
+                    TradeUi.CUSTOMER_NAME_REGION
+                )
             observed = ocr.text.strip()
             normalized = _normalized_customer_name(observed)
 
@@ -471,8 +519,13 @@ class LineageClassicExecutor(BaseGameExecutor):
                 last_name = frame_key
                 stable_frames = 1
 
-            if stable_frames >= 2 and frame_key != rejected_name:
-                action = buyer_ocr_action(observed, expected_buyer, ocr.confidence)
+            if stable_frames >= 3 and frame_key != rejected_name:
+                action = buyer_ocr_action(
+                    observed,
+                    expected_buyer,
+                    ocr.confidence,
+                    verified=bool(getattr(ocr, "verified", False)),
+                )
                 if action == "accept":
                     print(
                         f"[Lineage] 高置信交易客户自动通过: observed='{observed}', "
@@ -485,12 +538,65 @@ class LineageClassicExecutor(BaseGameExecutor):
                     )
                     if approved:
                         return observed or "人工确认的买家"
-                    navigator.click_region(TradeUi.REQUEST_REJECT_REGION)
+                    self._reject_buyer_request(navigator)
                     rejected_name = frame_key
                     self._emit("waiting_buyer", "人工已拒绝本次申请，继续等待买家")
-                    navigator.wait_after_step("拒绝本次买家交易申请", profile="panel")
-            navigator.sleep(poll_interval)
+            # 弹窗已经出现后快速采集三帧，避免初始 5 秒轮询把一次识别拖到十几秒。
+            navigator.sleep(0.35)
         return None
+
+    def _reject_buyer_request(self, navigator) -> None:
+        """点击 No，并以 Yes/No 模板消失作为拒绝真正生效的依据。"""
+        max_attempts = 3
+        if getattr(self._hw, "manual_mode", False):
+            print(
+                "[Lineage][人工拒绝] 当前为 manual_actions 模式，不会发送 HID；"
+                "请根据紧随其后的 MANUAL-ACTION 坐标手动点击 No",
+                flush=True,
+            )
+        for attempt in range(1, max_attempts + 1):
+            print(
+                f"[Lineage][人工拒绝] 点击交易请求 No，"
+                f"第 {attempt}/{max_attempts} 次，"
+                f"范围=X[{TradeUi.REQUEST_REJECT_REGION[0]},"
+                f"{TradeUi.REQUEST_REJECT_REGION[2] - 1}] "
+                f"Y[{TradeUi.REQUEST_REJECT_REGION[1]},"
+                f"{TradeUi.REQUEST_REJECT_REGION[3] - 1}]",
+                flush=True,
+            )
+            navigator.click_region(TradeUi.REQUEST_REJECT_REGION)
+            print(
+                f"[Lineage][人工拒绝] No 点击动作已提交，"
+                f"开始确认交易请求是否关闭（第 {attempt}/{max_attempts} 次）",
+                flush=True,
+            )
+            closed = navigator.wait_for_step(
+                f"人工拒绝后确认交易请求关闭（第 {attempt}/{max_attempts} 次）",
+                lambda: navigator.vision.find(
+                    TradeUi.REQUEST_TEMPLATE,
+                    TradeUi.REQUEST_TEMPLATE_REGION,
+                    threshold=0.86,
+                ) is None,
+                profile="panel",
+                fixed_wait=0.5,
+                attempts=30,
+                probe_interval=0.5,
+            )
+            if closed:
+                print(
+                    "[Lineage][人工拒绝] Yes/No 模板已消失，"
+                    "确认当前交易请求已取消",
+                    flush=True,
+                )
+                return
+            if attempt < max_attempts:
+                print(
+                    "[Lineage][人工拒绝] 点击 No 后交易请求仍存在，准备重试",
+                    flush=True,
+                )
+        raise NavigationError(
+            "人工拒绝后连续 3 次点击 No，交易请求 Yes/No 弹窗仍未关闭"
+        )
 
     def _request_human_buyer_review(
         self,
@@ -529,7 +635,14 @@ class LineageClassicExecutor(BaseGameExecutor):
                     if remaining <= 0:
                         return False
                     self._review_condition.wait(timeout=min(0.5, remaining))
-                return self._review_decision
+                decision = self._review_decision
+                print(
+                    f"[Lineage][人工审核] 交易执行线程取得决定: "
+                    f"review_id={review_id}，"
+                    f"decision={'同意' if decision else '拒绝'}",
+                    flush=True,
+                )
+                return decision
         finally:
             with self._review_condition:
                 self._pending_review_id = None

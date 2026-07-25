@@ -67,6 +67,7 @@ class TradeQueueCoordinatorTest {
                 assignmentService, registry, selector, stateMachine, gameService,
                 mock(GameItemOrderDetailService.class), mock(GameItemService.class),
                 mock(GameRegionService.class), manualOrderStatusService,
+                mock(BuyerReviewAuditService.class),
                 new ImmediateTransactionManager());
     }
 

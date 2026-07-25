@@ -340,7 +340,8 @@ public class OrderController {
                     "review_id", reviewId,
                     "status", assignment.getBuyerReviewStatus(),
                     "message", Boolean.TRUE.equals(body.get("approved"))
-                            ? "已同意，交易流程继续" : "已拒绝，Worker 将继续等待买家");
+                            ? "已同意，交易流程继续"
+                            : "已拒绝，Worker 正在取消当前交易请求");
         } catch (IllegalStateException e) {
             throw ApiException.conflict(e.getMessage());
         }

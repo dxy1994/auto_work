@@ -102,6 +102,7 @@ class TradeDispatchCoordinatorTransactionTest {
                 orderService, machineGameService, gameAccountService, machineService,
                 assignmentService, registry, selector, stateMachine, gameService,
                 detailService, itemService, regionService, manualOrderStatusService,
+                mock(BuyerReviewAuditService.class),
                 transactionManager);
 
         TradeOffer offer = coordinator.dispatch(24);

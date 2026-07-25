@@ -11,6 +11,8 @@ from game_executor.executor.lineage_classic.navigation import (
     ClientWindow,
     LineageSessionNavigator,
     NavigationError,
+    RegionSessionCache,
+    RegionSessionKey,
     TargetRegion,
     TemplateVision,
     Ui,
@@ -20,6 +22,7 @@ from game_executor.executor.lineage_classic.navigation import (
 import game_executor.executor.lineage_classic.navigation as lineage_navigation
 from game_executor.executor.lineage_classic.paddle_ocr import (
     build_paddle_ocr_engine,
+    build_text_recognition_engine,
     paddle_ocr_boxes,
     paddle_ocr_text,
 )
@@ -139,6 +142,12 @@ class RuntimeProbeTest(unittest.TestCase):
         window.client_size.return_value = (800, 600)
         runtime = RuntimeStatus()
         executor = LineageClassicExecutor(mock.Mock(), runtime)
+        executor._region_session_cache.remember(
+            RegionSessionKey.from_order(
+                ORDER,
+                TargetRegion.from_order(ORDER),
+            )
+        )
         navigator = mock.Mock()
         navigator._is_in_game.return_value = False
 
@@ -155,6 +164,7 @@ class RuntimeProbeTest(unittest.TestCase):
 
         self.assertFalse(ready)
         self.assertFalse(executor.runtime_recovery_pending())
+        self.assertIsNone(executor._region_session_cache.snapshot())
         self.assertEqual("recoverable", runtime.snapshot()["ui_health"])
         self.assertTrue(any(
             "将在收到交易任务后按订单信息恢复" in call.args[0]
@@ -791,6 +801,15 @@ class LineageNavigationTest(unittest.TestCase):
     def test_buyer_ocr_at_90_or_above_auto_accepts_only_matching_name(self):
         self.assertEqual("accept", buyer_ocr_action("홍길동이", "홍길동", 90.0))
         self.assertEqual("review", buyer_ocr_action("홍길순", "홍길동", 99.0))
+        self.assertEqual(
+            "accept",
+            buyer_ocr_action(
+                "TT석사TT",
+                "TT석사TT",
+                84.0,
+                verified=True,
+            ),
+        )
 
     def test_buyer_ocr_below_90_always_needs_human_review(self):
         self.assertEqual("review", buyer_ocr_action("홍길동", "홍길동", 89.9))
@@ -833,7 +852,7 @@ class LineageNavigationTest(unittest.TestCase):
         executor = LineageClassicExecutor(object())
         vision = mock.Mock()
         vision.find.return_value = (415, 532)
-        vision.read_text_result.return_value = SimpleNamespace(
+        vision.read_player_name_result.return_value = SimpleNamespace(
             text="Buyer27",
             confidence=96.0,
         )
@@ -846,7 +865,7 @@ class LineageNavigationTest(unittest.TestCase):
         with mock.patch.object(
             lineage_navigation.time,
             "monotonic",
-            side_effect=[0.0, 0.1, 0.2],
+            side_effect=[0.0, 0.1, 0.2, 0.3],
         ):
             observed = executor._wait_for_expected_buyer(
                 navigator,
@@ -855,9 +874,52 @@ class LineageNavigationTest(unittest.TestCase):
             )
 
         self.assertEqual("Buyer27", observed)
-        self.assertEqual(2, vision.find.call_count)
-        self.assertEqual(2, vision.read_text_result.call_count)
-        vision.read_text_result.assert_called_with(TradeUi.CUSTOMER_NAME_REGION)
+        self.assertEqual(3, vision.find.call_count)
+        self.assertEqual(3, vision.read_player_name_result.call_count)
+        vision.read_player_name_result.assert_called_with(
+            TradeUi.CUSTOMER_NAME_REGION,
+            "Buyer27",
+        )
+        self.assertEqual(
+            [mock.call(0.35), mock.call(0.35)],
+            navigator.sleep.call_args_list,
+        )
+
+    def test_human_rejection_clicks_no_and_confirms_request_disappeared(self):
+        executor = LineageClassicExecutor(object())
+        vision = mock.Mock()
+        vision.find.return_value = None
+        navigator = mock.Mock()
+        navigator.vision = vision
+        navigator.wait_for_step.side_effect = (
+            lambda _name, predicate, **_kwargs: predicate()
+        )
+
+        with mock.patch("builtins.print"):
+            executor._reject_buyer_request(navigator)
+
+        navigator.click_region.assert_called_once_with(
+            TradeUi.REQUEST_REJECT_REGION
+        )
+        vision.find.assert_called_once_with(
+            TradeUi.REQUEST_TEMPLATE,
+            TradeUi.REQUEST_TEMPLATE_REGION,
+            threshold=0.86,
+        )
+        self.assertEqual(
+            30,
+            navigator.wait_for_step.call_args.kwargs["attempts"],
+        )
+
+    def test_human_rejection_retries_when_request_is_still_visible(self):
+        executor = LineageClassicExecutor(object())
+        navigator = mock.Mock()
+        navigator.wait_for_step.side_effect = [False, False, True]
+
+        with mock.patch("builtins.print"):
+            executor._reject_buyer_request(navigator)
+
+        self.assertEqual(3, navigator.click_region.call_count)
 
     def test_trade_fixed_action_regions_use_the_provided_centers(self):
         self.assertEqual((537, 551), region_center(TradeUi.REQUEST_ACCEPT_REGION))
@@ -1250,6 +1312,16 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual("아툰", text)
         self.assertAlmostEqual(97.4, confidence)
 
+    def test_paddle_ocr_reads_direct_text_recognition_result(self):
+        text, confidence = paddle_ocr_text([{
+            "res": {
+                "rec_text": "TT",
+                "rec_score": 0.981,
+            }
+        }])
+        self.assertEqual("TT", text)
+        self.assertAlmostEqual(98.1, confidence)
+
     def test_paddle_ocr_extracts_text_box_centers(self):
         boxes = paddle_ocr_boxes([{
             "res": {
@@ -1285,23 +1357,134 @@ class LineageNavigationTest(unittest.TestCase):
             calls[0]["text_recognition_model_name"],
         )
 
-    def test_same_region_still_reselects_region_before_opening_inventory(self):
+    def test_direct_text_recognition_uses_language_specific_cpu_model(self):
+        calls = []
+
+        class FakeTextRecognition:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+        with mock.patch.dict(
+            sys.modules,
+            {"paddleocr": type(
+                "Module",
+                (),
+                {"TextRecognition": FakeTextRecognition},
+            )},
+        ):
+            build_text_recognition_engine("english")
+            build_text_recognition_engine("korean")
+
+        self.assertEqual("en_PP-OCRv5_mobile_rec", calls[0]["model_name"])
+        self.assertEqual("korean_PP-OCRv5_mobile_rec", calls[1]["model_name"])
+        self.assertEqual("cpu", calls[0]["device"])
+        self.assertFalse(calls[0]["enable_mkldnn"])
+
+    def test_cached_same_region_skips_relogin_but_still_opens_inventory(self):
         vision = _Vision(current_text=ORDER["region_code"], inventory_open=False)
         window = _Window()
+        cache = RegionSessionCache()
+        hardware = _Hardware(vision)
         navigator = LineageSessionNavigator(
-            _Hardware(vision), window, vision, sleep=lambda _seconds: None
+            hardware,
+            window,
+            vision,
+            sleep=lambda _seconds: None,
+            region_session_cache=cache,
         )
 
-        target = navigator.ensure_target_region(ORDER)
+        first_target = navigator.ensure_target_region(ORDER)
 
-        self.assertEqual(ORDER["region_id"], target.region_id)
+        self.assertEqual(ORDER["region_id"], first_target.region_id)
+        self.assertEqual(ORDER["region_id"], cache.snapshot().region_id)
         self.assertTrue(vision.menu_open)
         self.assertTrue(vision.exit_panel_open)
         self.assertTrue(vision.character_selected)
+
+        vision.menu_open = False
+        vision.exit_panel_open = False
+        vision.server_selected = False
+        vision.character_selected = False
+        vision.inventory_open = False
+        hardware.moves.clear()
+
+        second_target = navigator.ensure_target_region(ORDER)
+
+        self.assertEqual(ORDER["region_id"], second_target.region_id)
+        self.assertFalse(vision.menu_open)
+        self.assertFalse(vision.exit_panel_open)
+        self.assertFalse(vision.server_selected)
+        self.assertFalse(vision.character_selected)
         self.assertTrue(vision.inventory_open)
         self.assertEqual("game", vision.state)
         self.assertTrue(window.focused)
         self.assertTrue(window.validated)
+        self.assertFalse(any(
+            abs(point[0] - ORDER["region_select_x"]) <= Ui.SERVER_SELECT_RADIUS_X
+            and abs(point[1] - ORDER["region_select_y"]) <= Ui.SERVER_SELECT_RADIUS_Y
+            for point in hardware.moves
+        ))
+
+    def test_changed_region_invalidates_cache_and_logs_in_again(self):
+        vision = _Vision(current_text=ORDER["region_code"], inventory_open=False)
+        cache = RegionSessionCache()
+        navigator = LineageSessionNavigator(
+            _Hardware(vision),
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+            region_session_cache=cache,
+        )
+        navigator.ensure_target_region(ORDER)
+
+        vision.menu_open = False
+        vision.exit_panel_open = False
+        vision.server_selected = False
+        vision.character_selected = False
+        vision.inventory_open = False
+        changed_order = {
+            **ORDER,
+            "region_id": 13,
+            "region_name": "另一个大区",
+            "region_code": "다른서버",
+        }
+
+        navigator.ensure_target_region(changed_order)
+
+        self.assertTrue(vision.menu_open)
+        self.assertTrue(vision.exit_panel_open)
+        self.assertTrue(vision.server_selected)
+        self.assertTrue(vision.character_selected)
+        self.assertEqual(13, cache.snapshot().region_id)
+
+    def test_region_cache_is_kept_when_inventory_recognition_fails_after_login(self):
+        order = {
+            **ORDER,
+            "details": [{
+                "item_id": 99,
+                "item_name": "不存在的测试物品",
+                "quantity": 1,
+                "recognition_image_unselected_url": "/images/missing.png",
+            }],
+        }
+        vision = _Vision(
+            current_text=ORDER["region_code"],
+            inventory_open=False,
+            item_points={"/images/other.png": (680, 200)},
+        )
+        cache = RegionSessionCache()
+        navigator = LineageSessionNavigator(
+            _Hardware(vision),
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+            region_session_cache=cache,
+        )
+
+        with self.assertRaisesRegex(NavigationError, "未识别到订单物品"):
+            navigator.ensure_target_region(order)
+
+        self.assertEqual(ORDER["region_id"], cache.snapshot().region_id)
 
     def test_single_recognition_state_continues_after_inventory_is_opened(self):
         order = {
