@@ -26,13 +26,21 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -109,7 +117,7 @@ class TradeQueueCoordinatorTest {
     }
 
     @Test
-    void manualCancellationStopsRunningWorkerBeforeCancellingOrder() {
+    void manualCancellationWaitsForWorkerTerminalAcknowledgement() throws Exception {
         GameItemOrder order = order("assigned");
         order.setAssignmentId("assignment-1");
         order.setAssignedMachineId(7);
@@ -122,17 +130,97 @@ class TradeQueueCoordinatorTest {
         assignment.setGameAccountId(9);
         assignment.setStatus("trading");
         when(assignmentService.getOne(any(), eq(false))).thenReturn(assignment);
-        when(registry.sendTradeCancel(7, "assignment-1", "manual_cancel")).thenReturn(true);
+        CountDownLatch stopSent = new CountDownLatch(1);
+        when(registry.sendTradeCancel(7, "assignment-1", "manual_cancel"))
+                .thenAnswer(invocation -> {
+                    stopSent.countDown();
+                    return true;
+                });
         GameItemOrder cancelled = order("cancelled");
         cancelled.setStatus("cancelled");
         when(manualOrderStatusService.cancelAfterAutomationStopped(42)).thenReturn(cancelled);
 
-        GameItemOrder result = coordinator.cancelOrderManually(42);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<GameItemOrder> resultFuture =
+                    executor.submit(() -> coordinator.cancelOrderManually(42));
+            assertTrue(stopSent.await(1, TimeUnit.SECONDS));
+            verify(manualOrderStatusService, never()).cancelAfterAutomationStopped(42);
 
-        assertEquals("cancelled", result.getStatus());
-        assertEquals("manually_cancelled", assignment.getStatus());
-        verify(registry).sendTradeCancel(7, "assignment-1", "manual_cancel");
-        verify(manualOrderStatusService).cancelAfterAutomationStopped(42);
+            coordinator.handleStatus(
+                    "assignment-1", 7, "cancelled",
+                    "trade execution stopped", "TRADE_CANCELLED");
+            GameItemOrder result = resultFuture.get(1, TimeUnit.SECONDS);
+
+            assertEquals("cancelled", result.getStatus());
+            assertEquals("manually_cancelled", assignment.getStatus());
+            verify(registry).sendTradeCancel(7, "assignment-1", "manual_cancel");
+            verify(manualOrderStatusService).cancelAfterAutomationStopped(42);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void manualCancellationKeepsOrderActiveWhenStopCannotBeDelivered() {
+        GameItemOrder order = order("assigned");
+        order.setAssignmentId("assignment-1");
+        order.setAssignedMachineId(7);
+        order.setGameAccountId(9);
+        when(orderService.getById(42)).thenReturn(order);
+
+        TradeAssignment assignment = new TradeAssignment();
+        assignment.setAssignmentId("assignment-1");
+        assignment.setMachineId(7);
+        assignment.setGameAccountId(9);
+        assignment.setStatus("trading");
+        when(assignmentService.getOne(any(), eq(false))).thenReturn(assignment);
+        when(registry.sendTradeCancel(7, "assignment-1", "manual_cancel"))
+                .thenReturn(false);
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> coordinator.cancelOrderManually(42));
+
+        assertEquals("停止指令未送达 Worker，订单状态保持不变", error.getMessage());
+        verify(manualOrderStatusService, never()).cancelAfterAutomationStopped(42);
+    }
+
+    @Test
+    void manualCancellationPreservesWorkerReportedCompletion() {
+        GameItemOrder order = order("assigned");
+        order.setAssignmentId("assignment-1");
+        order.setAssignedMachineId(7);
+        order.setGameAccountId(9);
+        when(orderService.getById(42)).thenReturn(order);
+
+        TradeAssignment assignment = new TradeAssignment();
+        assignment.setAssignmentId("assignment-1");
+        assignment.setOrderId(42);
+        assignment.setMachineId(7);
+        assignment.setGameAccountId(9);
+        assignment.setStatus("trading");
+        when(assignmentService.getOne(any(), eq(false))).thenReturn(assignment);
+        when(registry.sendTradeCancel(7, "assignment-1", "manual_cancel"))
+                .thenAnswer(invocation -> {
+                    coordinator.handleStatus(
+                            "assignment-1", 7, "completed",
+                            "game trade completed", "");
+                    return true;
+                });
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> coordinator.cancelOrderManually(42));
+
+        assertEquals(
+                "Worker 已确认游戏交易完成，不能取消订单，请标记为已完成",
+                error.getMessage());
+        verify(stateMachine).fire(
+                eq(order),
+                eq(DeliveryEvent.GAME_TRADE_COMPLETED),
+                any());
+        verify(manualOrderStatusService, never()).cancelAfterAutomationStopped(42);
     }
 
     private static GameItemOrder order(String deliveryStatus) {

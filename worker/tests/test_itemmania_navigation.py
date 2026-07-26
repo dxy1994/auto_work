@@ -99,14 +99,15 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
         )
         worker._page = page
 
-        await worker._ensure_order_page_ready(10000)
+        ready = await worker._ensure_order_page_ready(10000)
 
+        self.assertTrue(ready)
         session.relogin.assert_awaited_once_with(page)
         page.goto.assert_awaited_once()
         self.assertEqual(SELL_ING_URL, page.goto.await_args.args[0])
         page.wait_for_selector.assert_awaited_once()
 
-    async def test_order_worker_reports_relogin_failure(self):
+    async def test_order_worker_backs_off_after_relogin_failure(self):
         session = SimpleNamespace(
             account_id=4,
             is_login_page=MagicMock(return_value=True),
@@ -121,9 +122,47 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
             url="https://www.itemmania.com/portal/user/p_login_form.html",
         )
 
-        with self.assertRaisesRegex(
-                RuntimeError, "ItemMania 自动重新登录失败: 密码错误"):
-            await worker._ensure_order_page_ready(10000)
+        first_ready = await worker._ensure_order_page_ready(10000)
+        second_ready = await worker._ensure_order_page_ready(10000)
+
+        self.assertFalse(first_ready)
+        self.assertFalse(second_ready)
+        self.assertEqual(1, worker._relogin_failures)
+        self.assertGreater(worker._next_relogin_at, 0)
+        session.relogin.assert_awaited_once_with(worker.page)
+
+    async def test_order_worker_pauses_after_repeated_relogin_failures(self):
+        session = SimpleNamespace(
+            account_id=4,
+            is_login_page=MagicMock(return_value=True),
+            relogin=AsyncMock(return_value={
+                "status": "failed",
+                "message": "密码错误",
+            }),
+        )
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaOrderWorker(session, None, monitor)
+        worker._page = SimpleNamespace(
+            url="https://www.itemmania.com/portal/user/p_login_form.html",
+        )
+
+        with patch.object(
+                itemmania_module,
+                "play_alert_audio_async",
+                new=AsyncMock()) as alert:
+            for _ in range(itemmania_module.RELOGIN_MAX_ATTEMPTS):
+                worker._next_relogin_at = 0
+                self.assertFalse(
+                    await worker._ensure_order_page_ready(10000)
+                )
+            self.assertFalse(await worker._ensure_order_page_ready(10000))
+
+        self.assertTrue(worker._relogin_disabled)
+        self.assertEqual(
+            itemmania_module.RELOGIN_MAX_ATTEMPTS,
+            session.relogin.await_count,
+        )
+        alert.assert_awaited_once()
 
     async def test_refresh_commit_timeout_accepts_business_ready_page(self):
         monitor = SimpleNamespace(navigation_lock=asyncio.Lock())

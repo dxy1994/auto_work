@@ -574,13 +574,13 @@ function errorCodeLabel(code) {
     START_DISPATCH_FAILED: '交易启动失败',
     TRADE_EXECUTION_FAILED: '游戏交易失败',
     TRADE_REQUEST_TIMEOUT: '游戏交易超时',
-    FINAL_CONFIRMATION_NOT_FOUND: '最终确认界面无可操作按钮',
+    FINAL_CONFIRMATION_NOT_FOUND: '未识别到最终确认提示',
     TRADE_RESULT_UNCERTAIN: '交易结果待复核',
   }[code] || code || '未知异常'
 }
 function orderErrorMessage(order) {
   if (order?.last_error_code === 'FINAL_CONFIRMATION_NOT_FOUND') {
-    return '原因：最终确认界面没有可继续操作的按钮。解决方案：请人工核对游戏和交易平台的实际结果，然后选择“复核为已完成”或“复核为已取消”。'
+    return '原因：系统未能识别最终确认提示，无法据此判断当前界面。解决方案：请人工核对游戏和交易平台的实际结果，然后选择“复核为已完成”或“复核为已取消”。'
   }
   return order?.last_error_message || ''
 }

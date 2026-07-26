@@ -456,7 +456,13 @@ class BaseOrderMonitor:
                           "若持续失败，请检查当前页面是否仍处于登录状态。")
                     import traceback
                     traceback.print_exc()
-                    await worker.recover_page_after_failure(e)
+                    if worker.page_failure_requires_rebuild(e):
+                        await worker.recover_page_after_failure(e)
+                    else:
+                        print(
+                            f"[{worker._log_tag}] 页面仍可用，"
+                            "保留当前标签并重启 Worker"
+                        )
             if not self._stopped():
                 await asyncio.sleep(5)
         await worker.stop()

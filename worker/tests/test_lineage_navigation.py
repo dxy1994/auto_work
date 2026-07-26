@@ -1,3 +1,4 @@
+import inspect
 import os
 import sys
 import tempfile
@@ -1184,6 +1185,12 @@ class LineageNavigationTest(unittest.TestCase):
         )
         for template in templates:
             self.assertIsNotNone(vision._template(template))
+
+    def test_missing_final_confirmation_reports_recognition_uncertainty(self):
+        source = inspect.getsource(LineageClassicExecutor._execute_sync)
+
+        self.assertIn("未识别到最终交易确认提示", source)
+        self.assertNotIn("没有可继续操作的按钮", source)
 
     def test_dynamic_item_template_accepts_data_url_and_is_cached(self):
         try:

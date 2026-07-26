@@ -2,8 +2,10 @@ package com.auto.trade;
 
 import com.auto.entity.GameItemOrder;
 import com.auto.entity.GameItemOrderDetail;
+import com.auto.entity.TradeAssignment;
 import com.auto.service.GameItemOrderDetailService;
 import com.auto.service.GameItemOrderService;
+import com.auto.service.TradeAssignmentService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,14 +23,17 @@ public class ManualOrderStatusService {
 
     private final GameItemOrderService orderService;
     private final GameItemOrderDetailService detailService;
+    private final TradeAssignmentService assignmentService;
     private final TradeCompletionService completionService;
 
     public ManualOrderStatusService(
             GameItemOrderService orderService,
             GameItemOrderDetailService detailService,
+            TradeAssignmentService assignmentService,
             TradeCompletionService completionService) {
         this.orderService = orderService;
         this.detailService = detailService;
+        this.assignmentService = assignmentService;
         this.completionService = completionService;
     }
 
@@ -37,7 +42,7 @@ public class ManualOrderStatusService {
         return completeInternal(orderId, true);
     }
 
-    /** Worker 已收到停止指令后，由交易协调器完成终态落库。 */
+    /** 交易协调器确认没有活动执行，或已收到 Worker 停止回报后完成终态落库。 */
     @Transactional
     public GameItemOrder completeAfterAutomationStopped(Integer orderId) {
         return completeInternal(orderId, false);
@@ -51,6 +56,7 @@ public class ManualOrderStatusService {
         }
 
         completionService.complete(order);
+        resolveReviewAssignment(order, true);
         order.setDeliveryStatus("completed");
         order.setStatus("completed");
         if (order.getWebsiteConfirmedAt() == null) {
@@ -66,7 +72,7 @@ public class ManualOrderStatusService {
         return cancelInternal(orderId, true);
     }
 
-    /** Worker 已收到停止指令后，由交易协调器完成终态落库。 */
+    /** 交易协调器确认没有活动执行，或已收到 Worker 停止回报后完成终态落库。 */
     @Transactional
     public GameItemOrder cancelAfterAutomationStopped(Integer orderId) {
         return cancelInternal(orderId, false);
@@ -87,6 +93,7 @@ public class ManualOrderStatusService {
             detail.setStatus("cancelled");
             detailService.updateById(detail);
         }
+        resolveReviewAssignment(order, false);
         order.setDeliveryStatus("cancelled");
         order.setStatus("cancelled");
         clearAutomationFields(order);
@@ -94,6 +101,26 @@ public class ManualOrderStatusService {
         order.setLastErrorMessage(null);
         orderService.updateById(order);
         return order;
+    }
+
+    private void resolveReviewAssignment(GameItemOrder order, boolean completed) {
+        if (!"review_required".equals(order.getDeliveryStatus())
+                || order.getAssignmentId() == null) {
+            return;
+        }
+        TradeAssignment assignment = assignmentService.getOne(
+                new LambdaQueryWrapper<TradeAssignment>()
+                        .eq(TradeAssignment::getAssignmentId, order.getAssignmentId()),
+                false);
+        if (assignment == null) {
+            return;
+        }
+        assignment.setStatus(completed ? "manually_completed" : "manually_cancelled");
+        assignment.setRejectReason(completed ? "manual_complete" : "manual_cancel");
+        if (assignment.getFinishedAt() == null) {
+            assignment.setFinishedAt(LocalDateTime.now());
+        }
+        assignmentService.updateById(assignment);
     }
 
     private static void clearAutomationFields(GameItemOrder order) {

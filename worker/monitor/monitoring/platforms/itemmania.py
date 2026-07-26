@@ -32,6 +32,8 @@ MIN_READY_TIMEOUT_MS = 20000
 COMMIT_GRACE_SECONDS = 3.0
 REFRESH_RESULT_TIMEOUT_SECONDS = 15.0
 REFRESH_PAGE_MAX_ACTIONS = 30
+RELOGIN_MAX_ATTEMPTS = 3
+RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
 
 # ── 韩文状态 → 英文映射 ──
 STATUS_MAP = {
@@ -79,13 +81,15 @@ class ManiaOrderWorker(PageWorker):
     def __init__(self, session, stop_event, monitor: 'ItemmaniaMonitor'):
         super().__init__(session, stop_event, name="ManiaOrder")
         self._monitor = monitor
+        self._relogin_failures = 0
+        self._next_relogin_at = 0.0
+        self._relogin_disabled = False
+        self._last_relogin_wait_log_at = 0.0
 
     async def run(self):
         cfg = self._monitor.get_order_cfg()
         refresh_interval = cfg.get("refresh_interval", 3)
         wait_timeout = cfg.get("wait_timeout", 10000)
-
-        await self._ensure_order_page_ready(wait_timeout)
 
         print(f"[{self._log_tag}] 订单监控循环开始 (interval={refresh_interval}s)")
         check_round = 0
@@ -93,7 +97,9 @@ class ManiaOrderWorker(PageWorker):
         while not self.stopped:
             check_round += 1
             self._touch()
-            await self._ensure_order_page_ready(wait_timeout)
+            if not await self._ensure_order_page_ready(wait_timeout):
+                await asyncio.sleep(refresh_interval)
+                continue
             try:
                 reported = await self._monitor._collect_and_report_orders(
                     self.page)
@@ -108,12 +114,13 @@ class ManiaOrderWorker(PageWorker):
             await self._reload_order_page(wait_timeout)
             await asyncio.sleep(refresh_interval)
 
-    async def _ensure_order_page_ready(self, wait_timeout: int):
-        """进入订单页，并以业务表格而不是 networkidle 判断页面可用。"""
+    async def _ensure_order_page_ready(self, wait_timeout: int) -> bool:
+        """进入订单页；登录恢复等待期间返回 False，让调用方跳过本轮抓取。"""
         async with self._monitor.navigation_lock:
-            if await self._recover_login_if_needed(
-                    wait_timeout, reason="订单检测前"):
-                return
+            login_recovery = await self._recover_login_if_needed(
+                wait_timeout, reason="订单检测前")
+            if login_recovery is not None:
+                return login_recovery
 
             navigated = False
             if SELL_ING_URL not in self.page.url:
@@ -122,12 +129,13 @@ class ManiaOrderWorker(PageWorker):
                 navigated = True
                 if not committed:
                     raise RuntimeError("订单页初始化导航未提交")
-                if await self._recover_login_if_needed(
-                        wait_timeout, reason="进入订单页时"):
-                    return
+                login_recovery = await self._recover_login_if_needed(
+                    wait_timeout, reason="进入订单页时")
+                if login_recovery is not None:
+                    return login_recovery
 
             if await self._wait_order_table(wait_timeout):
-                return
+                return True
 
             if navigated:
                 raise RuntimeError("订单页导航后仍未出现订单表格")
@@ -137,7 +145,7 @@ class ManiaOrderWorker(PageWorker):
             committed = await self._goto_order_page(
                 wait_timeout, reason="恢复订单页")
             if committed and await self._wait_order_table(wait_timeout):
-                return
+                return True
 
         raise RuntimeError("订单页在受控导航后仍未出现订单表格")
 
@@ -146,7 +154,7 @@ class ManiaOrderWorker(PageWorker):
         navigation_error = None
         async with self._monitor.navigation_lock:
             if await self._recover_login_if_needed(
-                    wait_timeout, reason="刷新订单页前"):
+                    wait_timeout, reason="刷新订单页前") is not None:
                 return
 
             previous_origin = await _read_document_time_origin(self.page)
@@ -167,7 +175,7 @@ class ManiaOrderWorker(PageWorker):
                     self.page, previous_origin)
 
             if await self._recover_login_if_needed(
-                    wait_timeout, reason="刷新订单页后"):
+                    wait_timeout, reason="刷新订单页后") is not None:
                 return
 
             if committed and await self._wait_order_table(wait_timeout):
@@ -190,7 +198,7 @@ class ManiaOrderWorker(PageWorker):
                 committed = False
 
             if await self._recover_login_if_needed(
-                    wait_timeout, reason="恢复订单页时"):
+                    wait_timeout, reason="恢复订单页时") is not None:
                 return
 
             if committed and await self._wait_order_table(wait_timeout):
@@ -203,9 +211,33 @@ class ManiaOrderWorker(PageWorker):
         raise RuntimeError(message)
 
     async def _recover_login_if_needed(
-            self, wait_timeout: int, reason: str) -> bool:
-        """在持锁状态下恢复掉线登录，并返回订单页。"""
+            self, wait_timeout: int, reason: str) -> Optional[bool]:
+        """返回 None 表示无需恢复、True 表示已恢复、False 表示等待后续重试。"""
         if not self._session.is_login_page(self.page.url):
+            if self._relogin_failures or self._relogin_disabled:
+                print(f"[{self._log_tag}] 已观察到业务页面，清除重新登录退避状态")
+                self._relogin_failures = 0
+                self._next_relogin_at = 0.0
+                self._relogin_disabled = False
+            return None
+
+        now = time.monotonic()
+        if self._relogin_disabled:
+            if now - self._last_relogin_wait_log_at >= 60:
+                print(
+                    f"[{self._log_tag}] 自动重新登录已暂停，"
+                    "等待人工登录或重启监控"
+                )
+                self._last_relogin_wait_log_at = now
+            return False
+        if now < self._next_relogin_at:
+            if now - self._last_relogin_wait_log_at >= 15:
+                remaining = max(1, int(self._next_relogin_at - now))
+                print(
+                    f"[{self._log_tag}] 自动重新登录退避中，"
+                    f"{remaining} 秒后再试"
+                )
+                self._last_relogin_wait_log_at = now
             return False
 
         print(
@@ -214,10 +246,39 @@ class ManiaOrderWorker(PageWorker):
         )
         result = await self._session.relogin(self.page)
         if result.get("status") != "success":
-            raise RuntimeError(
-                f"ItemMania 自动重新登录失败: {result.get('message', '未知原因')}"
-            )
+            self._relogin_failures += 1
+            message = result.get("message", "未知原因")
+            if self._relogin_failures >= RELOGIN_MAX_ATTEMPTS:
+                self._relogin_disabled = True
+                print(
+                    f"[{self._log_tag}] ItemMania 自动重新登录连续失败 "
+                    f"{self._relogin_failures} 次，已暂停自动尝试: {message}"
+                )
+                await play_alert_audio_async(
+                    text=(
+                        f"mania账号{self._session.account_id}连续登录失败，"
+                        "已暂停自动登录，请检查凭证并手动登录"
+                    )
+                )
+                return False
 
+            backoff_index = min(
+                self._relogin_failures - 1,
+                len(RELOGIN_BACKOFF_SECONDS) - 1,
+            )
+            backoff_seconds = RELOGIN_BACKOFF_SECONDS[backoff_index]
+            self._next_relogin_at = time.monotonic() + backoff_seconds
+            self._last_relogin_wait_log_at = 0.0
+            print(
+                f"[{self._log_tag}] ItemMania 自动重新登录失败"
+                f"（第 {self._relogin_failures}/{RELOGIN_MAX_ATTEMPTS} 次）: "
+                f"{message}；{int(backoff_seconds)} 秒后再试"
+            )
+            return False
+
+        self._relogin_failures = 0
+        self._next_relogin_at = 0.0
+        self._relogin_disabled = False
         committed = await self._goto_order_page(
             wait_timeout, reason="重新登录后返回订单页")
         if not committed:
@@ -225,7 +286,7 @@ class ManiaOrderWorker(PageWorker):
         if not await self._wait_order_table(wait_timeout):
             raise RuntimeError("ItemMania 重新登录成功，但订单表格仍未出现")
 
-        print(f"[{self._log_tag}] ItemMania 自动重新登录并恢复订单播报成功")
+        print(f"[{self._log_tag}] ItemMania 自动重新登录并恢复订单页成功")
         return True
 
     async def _goto_order_page(self, wait_timeout: int, reason: str):
@@ -442,7 +503,7 @@ class ManiaRefreshWorker(PageWorker):
         if self._session.is_login_page(self.page.url):
             raise RuntimeError(
                 "上架页刷新后检测到 ItemMania 登录失效，"
-                "等待订单 Worker 自动重新登录"
+                "等待订单 Worker 处理登录恢复"
             )
 
         if committed and await self._wait_refresh_table(timeout):

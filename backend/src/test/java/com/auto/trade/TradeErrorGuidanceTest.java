@@ -27,9 +27,9 @@ class TradeErrorGuidanceTest {
     void finalConfirmationFailurePointsToManualResolutionButtons() {
         String result = TradeErrorGuidance.ensureGuidance(
                 "FINAL_CONFIRMATION_NOT_FOUND",
-                "当前界面没有可继续操作的按钮");
+                "未识别到最终交易确认提示");
 
-        assertTrue(result.contains("没有可继续操作的按钮"));
+        assertTrue(result.contains("无法据此判断当前界面"));
         assertTrue(result.contains("复核为已完成"));
         assertTrue(result.contains("复核为已取消"));
     }

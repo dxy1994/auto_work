@@ -278,15 +278,16 @@ class BrowserSession:
         non_blanks = [p for p in pages if p.url != "about:blank"]
 
         if non_blanks:
-            keep = None
-            for candidate in reversed(non_blanks):
+            healthy_non_blanks = []
+            for candidate in non_blanks:
                 if await self._page_is_usable(candidate):
-                    keep = candidate
-                    break
+                    healthy_non_blanks.append(candidate)
+                    continue
                 try:
                     await candidate.close()
                 except Exception:
                     pass
+            keep = healthy_non_blanks[-1] if healthy_non_blanks else None
             if keep is None:
                 keep = blanks[0] if blanks else await self._context.new_page()
             to_close = [p for p in blanks if p != keep]

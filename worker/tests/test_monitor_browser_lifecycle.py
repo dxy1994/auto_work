@@ -2,7 +2,8 @@ import ast
 import asyncio
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 WORKER_ROOT = Path(__file__).resolve().parent.parent
@@ -10,6 +11,12 @@ import sys
 sys.path.insert(0, str(WORKER_ROOT))
 
 from monitor.browser.session import BrowserSession  # noqa: E402
+from monitor.monitoring.worker import PageWorker  # noqa: E402
+
+
+class _NoopPageWorker(PageWorker):
+    async def run(self):
+        return None
 
 
 class MonitorBrowserLifecycleTest(unittest.TestCase):
@@ -54,15 +61,58 @@ class MonitorBrowserLifecycleTest(unittest.TestCase):
         self.assertIn("await self._session.reset_after_crash()", monitor_source)
 
     def test_restored_tabs_are_kept_but_unusable_pages_are_replaced(self):
-        session_source = (WORKER_ROOT / "monitor" / "browser" / "session.py").read_text(encoding="utf-8")
+        session = BrowserSession(account_id=4)
+        healthy_older = SimpleNamespace(
+            url="https://example.com/orders",
+            is_closed=MagicMock(return_value=False),
+            evaluate=AsyncMock(return_value=1),
+            close=AsyncMock(),
+        )
+        crashed = SimpleNamespace(
+            url="https://example.com/crashed",
+            is_closed=MagicMock(return_value=False),
+            evaluate=AsyncMock(side_effect=RuntimeError("Page crashed")),
+            close=AsyncMock(),
+        )
+        healthy_latest = SimpleNamespace(
+            url="https://example.com/listing",
+            is_closed=MagicMock(return_value=False),
+            evaluate=AsyncMock(return_value=1),
+            close=AsyncMock(),
+        )
+        blank = SimpleNamespace(
+            url="about:blank",
+            close=AsyncMock(),
+        )
+        session._context = SimpleNamespace(
+            pages=[healthy_older, crashed, healthy_latest, blank],
+            new_page=AsyncMock(),
+        )
+
+        main_page = asyncio.run(session._pick_main_page())
+
+        self.assertIs(healthy_latest, main_page)
+        crashed.close.assert_awaited_once()
+        blank.close.assert_awaited_once()
+        healthy_older.close.assert_not_awaited()
+
+    def test_worker_runner_only_rebuilds_failed_pages(self):
         worker_source = (WORKER_ROOT / "monitor" / "monitoring" / "worker.py").read_text(encoding="utf-8")
         monitor_source = (WORKER_ROOT / "monitor" / "monitoring" / "base.py").read_text(encoding="utf-8")
+        worker = _NoopPageWorker(SimpleNamespace(account_id=4), None)
+        worker._page = SimpleNamespace(
+            is_closed=MagicMock(return_value=False),
+        )
 
-        self.assertIn('"--restore-last-session"', session_source)
-        self.assertIn("await self._page_is_usable(p)", session_source)
-        self.assertIn("async def replace_claimed_page", session_source)
         self.assertIn('page.on("crash"', worker_source)
-        self.assertIn("recover_page_after_failure", monitor_source)
+        self.assertIn("if worker.page_failure_requires_rebuild(e):", monitor_source)
+        self.assertIn("await worker.recover_page_after_failure(e)", monitor_source)
+        self.assertFalse(worker.page_failure_requires_rebuild(
+            RuntimeError("backend request failed")
+        ))
+        self.assertTrue(worker.page_failure_requires_rebuild(
+            RuntimeError("Page crashed: renderer unavailable")
+        ))
 
     def test_cancelled_status_is_reported_before_browser_shutdown(self):
         source = (WORKER_ROOT / "monitor" / "monitoring" / "base.py").read_text(encoding="utf-8")

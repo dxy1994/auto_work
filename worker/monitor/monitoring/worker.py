@@ -179,7 +179,7 @@ class PageWorker(ABC):
         ))
 
     async def recover_page_after_failure(self, error: Exception) -> bool:
-        """Worker 已退出时强制更换页面，避免继续复用半崩溃标签。"""
+        """确认页面故障后强制更换标签，避免继续复用半崩溃 renderer。"""
         await self.recycle_page(f"Worker 异常: {error}")
         return True
 
