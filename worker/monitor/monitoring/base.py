@@ -456,7 +456,7 @@ class BaseOrderMonitor:
                           "若持续失败，请检查当前页面是否仍处于登录状态。")
                     import traceback
                     traceback.print_exc()
-                    await worker.recover_closed_page()
+                    await worker.recover_page_after_failure(e)
             if not self._stopped():
                 await asyncio.sleep(5)
         await worker.stop()

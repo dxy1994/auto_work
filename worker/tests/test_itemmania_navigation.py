@@ -14,6 +14,7 @@ from monitor.monitoring.platforms.itemmania import (  # noqa: E402
     COUPON_ADD_PATH,
     ManiaOrderWorker,
     ManiaRefreshWorker,
+    SELL_ING_URL,
     SELL_REGIST_URL,
 )
 from monitor.monitoring.platforms import itemmania as itemmania_module  # noqa: E402
@@ -21,6 +22,10 @@ from monitor.monitoring.platforms import itemmania as itemmania_module  # noqa: 
 
 class _FakeSession:
     account_id = 4
+
+    @staticmethod
+    def is_login_page(_url):
+        return False
 
 
 class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
@@ -74,6 +79,52 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, page.goto.await_count)
         self.assertEqual("commit", page.goto.await_args.kwargs["wait_until"])
 
+    async def test_order_worker_relogs_in_after_itemmania_redirect(self):
+        session = SimpleNamespace(
+            account_id=4,
+            is_login_page=MagicMock(return_value=True),
+            relogin=AsyncMock(return_value={
+                "status": "success",
+                "message": "登录成功",
+            }),
+        )
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaOrderWorker(session, None, monitor)
+        page = SimpleNamespace(
+            url="https://www.itemmania.com/portal/user/p_login_form.html",
+            goto=AsyncMock(),
+            wait_for_selector=AsyncMock(),
+            evaluate=AsyncMock(return_value=100.0),
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._page = page
+
+        await worker._ensure_order_page_ready(10000)
+
+        session.relogin.assert_awaited_once_with(page)
+        page.goto.assert_awaited_once()
+        self.assertEqual(SELL_ING_URL, page.goto.await_args.args[0])
+        page.wait_for_selector.assert_awaited_once()
+
+    async def test_order_worker_reports_relogin_failure(self):
+        session = SimpleNamespace(
+            account_id=4,
+            is_login_page=MagicMock(return_value=True),
+            relogin=AsyncMock(return_value={
+                "status": "failed",
+                "message": "密码错误",
+            }),
+        )
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaOrderWorker(session, None, monitor)
+        worker._page = SimpleNamespace(
+            url="https://www.itemmania.com/portal/user/p_login_form.html",
+        )
+
+        with self.assertRaisesRegex(
+                RuntimeError, "ItemMania 自动重新登录失败: 密码错误"):
+            await worker._ensure_order_page_ready(10000)
+
     async def test_refresh_commit_timeout_accepts_business_ready_page(self):
         monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
         worker = ManiaRefreshWorker(_FakeSession(), None, monitor)
@@ -91,6 +142,82 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
 
         page.wait_for_selector.assert_awaited_once()
         self.assertEqual("commit", page.goto.await_args.kwargs["wait_until"])
+
+    async def test_refresh_action_reloads_healthy_listing_document(self):
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaRefreshWorker(_FakeSession(), None, monitor)
+        worker._page = SimpleNamespace(
+            url=SELL_REGIST_URL,
+            reload=AsyncMock(),
+            evaluate=AsyncMock(return_value=100.0),
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._wait_refresh_table = AsyncMock(return_value=True)
+        worker._goto_refresh_page = AsyncMock()
+
+        await worker._prepare_refresh_action_page(10000)
+
+        worker.page.reload.assert_awaited_once_with(
+            wait_until="commit",
+            timeout=15000,
+        )
+        worker._wait_refresh_table.assert_awaited_once_with(10000)
+        worker._goto_refresh_page.assert_not_awaited()
+
+    async def test_refresh_action_recovers_when_listing_document_is_missing(self):
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaRefreshWorker(_FakeSession(), None, monitor)
+        worker._page = SimpleNamespace(url="about:blank")
+        worker._wait_refresh_table = AsyncMock()
+        worker._goto_refresh_page = AsyncMock()
+
+        await worker._prepare_refresh_action_page(10000)
+
+        worker._wait_refresh_table.assert_not_awaited()
+        worker._goto_refresh_page.assert_awaited_once_with(
+            SELL_REGIST_URL,
+            10000,
+            reason="刷新-恢复上架页",
+        )
+
+    async def test_refresh_reload_timeout_accepts_new_ready_document(self):
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaRefreshWorker(_FakeSession(), None, monitor)
+        worker._page = SimpleNamespace(
+            url=SELL_REGIST_URL,
+            reload=AsyncMock(side_effect=TimeoutError("commit timeout")),
+            evaluate=AsyncMock(side_effect=[100.0, 200.0]),
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._wait_refresh_table = AsyncMock(return_value=True)
+        worker._goto_refresh_page = AsyncMock()
+
+        await worker._prepare_refresh_action_page(10000)
+
+        worker._wait_refresh_table.assert_awaited_once_with(10000)
+        worker._goto_refresh_page.assert_not_awaited()
+
+    async def test_refresh_without_new_document_performs_controlled_goto(self):
+        monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
+        worker = ManiaRefreshWorker(_FakeSession(), None, monitor)
+        worker._page = SimpleNamespace(
+            url=SELL_REGIST_URL,
+            reload=AsyncMock(side_effect=TimeoutError("commit timeout")),
+            evaluate=AsyncMock(return_value=100.0),
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._wait_refresh_table = AsyncMock()
+        worker._goto_refresh_page = AsyncMock()
+
+        with patch.object(itemmania_module, "COMMIT_GRACE_SECONDS", 0.0):
+            await worker._prepare_refresh_action_page(10000)
+
+        worker._wait_refresh_table.assert_not_awaited()
+        worker._goto_refresh_page.assert_awaited_once_with(
+            SELL_REGIST_URL,
+            10000,
+            reason="刷新-受控恢复上架页",
+        )
 
     async def test_coupon_redirect_is_not_treated_as_refresh_success(self):
         monitor = SimpleNamespace(navigation_lock=asyncio.Lock())
@@ -141,6 +268,35 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(".locator(", source)
         self.assertNotIn("query_selector", source)
         self.assertNotIn("networkidle", source)
+
+    def test_only_refresh_worker_periodically_recycles_its_long_running_page(self):
+        refresh_source = inspect.getsource(ManiaRefreshWorker.run)
+        order_source = inspect.getsource(ManiaOrderWorker.run)
+
+        self.assertIn("REFRESH_PAGE_MAX_ACTIONS", refresh_source)
+        self.assertIn("recycle_page", refresh_source)
+        self.assertNotIn("recycle_page", order_source)
+
+    async def test_refresh_worker_escalates_renderer_crash_for_page_rebuild(self):
+        monitor = SimpleNamespace(
+            navigation_lock=asyncio.Lock(),
+            get_order_cfg=lambda: {"wait_timeout": 10000},
+        )
+        worker = ManiaRefreshWorker(_FakeSession(), None, monitor)
+        worker._page = SimpleNamespace(
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._ensure_refresh_page_ready = AsyncMock()
+        worker._do_refresh = AsyncMock(
+            side_effect=RuntimeError("Page crashed: Out of Memory")
+        )
+        worker._last_refresh = (
+            itemmania_module.datetime.datetime.now()
+            - itemmania_module.datetime.timedelta(seconds=41)
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "上架页已不可用"):
+            await worker.run()
 
     def test_detail_extraction_does_not_fabricate_buyer_name(self):
         source = inspect.getsource(

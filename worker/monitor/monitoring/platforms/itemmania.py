@@ -31,6 +31,7 @@ MIN_COMMIT_TIMEOUT_MS = 15000
 MIN_READY_TIMEOUT_MS = 20000
 COMMIT_GRACE_SECONDS = 3.0
 REFRESH_RESULT_TIMEOUT_SECONDS = 15.0
+REFRESH_PAGE_MAX_ACTIONS = 30
 
 # ── 韩文状态 → 英文映射 ──
 STATUS_MAP = {
@@ -92,6 +93,7 @@ class ManiaOrderWorker(PageWorker):
         while not self.stopped:
             check_round += 1
             self._touch()
+            await self._ensure_order_page_ready(wait_timeout)
             try:
                 reported = await self._monitor._collect_and_report_orders(
                     self.page)
@@ -109,6 +111,10 @@ class ManiaOrderWorker(PageWorker):
     async def _ensure_order_page_ready(self, wait_timeout: int):
         """进入订单页，并以业务表格而不是 networkidle 判断页面可用。"""
         async with self._monitor.navigation_lock:
+            if await self._recover_login_if_needed(
+                    wait_timeout, reason="订单检测前"):
+                return
+
             navigated = False
             if SELL_ING_URL not in self.page.url:
                 committed = await self._goto_order_page(
@@ -116,6 +122,9 @@ class ManiaOrderWorker(PageWorker):
                 navigated = True
                 if not committed:
                     raise RuntimeError("订单页初始化导航未提交")
+                if await self._recover_login_if_needed(
+                        wait_timeout, reason="进入订单页时"):
+                    return
 
             if await self._wait_order_table(wait_timeout):
                 return
@@ -136,6 +145,10 @@ class ManiaOrderWorker(PageWorker):
         """刷新订单页；提交超时后先复核页面，避免连续 reload + goto。"""
         navigation_error = None
         async with self._monitor.navigation_lock:
+            if await self._recover_login_if_needed(
+                    wait_timeout, reason="刷新订单页前"):
+                return
+
             previous_origin = await _read_document_time_origin(self.page)
             committed = False
             try:
@@ -152,6 +165,10 @@ class ManiaOrderWorker(PageWorker):
                       f"{e}；先确认新文档是否已经提交")
                 committed = await _wait_for_document_change(
                     self.page, previous_origin)
+
+            if await self._recover_login_if_needed(
+                    wait_timeout, reason="刷新订单页后"):
+                return
 
             if committed and await self._wait_order_table(wait_timeout):
                 if navigation_error is not None:
@@ -172,6 +189,10 @@ class ManiaOrderWorker(PageWorker):
                 navigation_error = e
                 committed = False
 
+            if await self._recover_login_if_needed(
+                    wait_timeout, reason="恢复订单页时"):
+                return
+
             if committed and await self._wait_order_table(wait_timeout):
                 print(f"[{self._log_tag}] [订单页恢复] 受控 goto 后页面已恢复")
                 return
@@ -180,6 +201,32 @@ class ManiaOrderWorker(PageWorker):
         if navigation_error is not None:
             raise RuntimeError(message) from navigation_error
         raise RuntimeError(message)
+
+    async def _recover_login_if_needed(
+            self, wait_timeout: int, reason: str) -> bool:
+        """在持锁状态下恢复掉线登录，并返回订单页。"""
+        if not self._session.is_login_page(self.page.url):
+            return False
+
+        print(
+            f"[{self._log_tag}] 检测到 ItemMania 登录失效"
+            f"（{reason}），当前页面={self.page.url}"
+        )
+        result = await self._session.relogin(self.page)
+        if result.get("status") != "success":
+            raise RuntimeError(
+                f"ItemMania 自动重新登录失败: {result.get('message', '未知原因')}"
+            )
+
+        committed = await self._goto_order_page(
+            wait_timeout, reason="重新登录后返回订单页")
+        if not committed:
+            raise RuntimeError("ItemMania 重新登录成功，但返回订单页未提交")
+        if not await self._wait_order_table(wait_timeout):
+            raise RuntimeError("ItemMania 重新登录成功，但订单表格仍未出现")
+
+        print(f"[{self._log_tag}] ItemMania 自动重新登录并恢复订单播报成功")
+        return True
 
     async def _goto_order_page(self, wait_timeout: int, reason: str):
         """只等待导航提交，页面是否可用由订单表格单独判断。"""
@@ -232,15 +279,19 @@ class ManiaRefreshWorker(PageWorker):
 
         await self._ensure_refresh_page_ready(wait_timeout)
         print(f"[{self._log_tag}] 刷新就绪 (间隔={interval}s)")
+        actions_on_page = 0
 
         while not self.stopped:
             self._touch()
+            if self._page_crashed:
+                raise RuntimeError("上架页渲染进程已崩溃")
             elapsed = (datetime.datetime.now() -
                        self._last_refresh).total_seconds()
             if elapsed >= interval:
                 try:
                     result = await self._do_refresh(wait_timeout)
                     self._last_refresh = datetime.datetime.now()
+                    actions_on_page += 1
                     if result == "coupon_required":
                         message = (
                             f"mania账号{self._session.account_id}"
@@ -251,25 +302,37 @@ class ManiaRefreshWorker(PageWorker):
                             "已用完，已恢复到上架页并发出语音提醒"
                         )
                         await play_alert_audio_async(text=message)
+                    if actions_on_page >= REFRESH_PAGE_MAX_ACTIONS:
+                        await self.recycle_page(
+                            f"上架页已执行 {actions_on_page} 次刷新，"
+                            "主动释放页面内存"
+                        )
+                        await self._ensure_refresh_page_ready(wait_timeout)
+                        actions_on_page = 0
                 except Exception as e:
                     print(f"[{self._log_tag}] 刷新异常: {e}")
+                    if self.page_failure_requires_rebuild(e):
+                        raise RuntimeError(
+                            "上架页已不可用，需要重建标签"
+                        ) from e
             await asyncio.sleep(5)
 
     async def _do_refresh(self, timeout: int):
         """翻到最后一页 → 点击「재등록」。"""
         async with self._monitor.navigation_lock:
-            # 每轮强制重新进入上架页，清理页面长期运行积累的脚本和 DOM 状态。
-            await self._goto_refresh_page(
-                SELL_REGIST_URL, timeout, reason="刷新-回到上架页")
+            # reload 当前列表以取得服务端最新数据，但不强制跳回首页，
+            # 避免重复产生“首页 → 末页”的多段导航历史。
+            await self._prepare_refresh_action_page(timeout)
 
             last_link = self.page.locator(".cpnt.last a").first
             if await last_link.count() > 0:
                 href = await last_link.get_attribute("href")
                 if href:
                     full_url = SELL_REGIST_URL + href
-                    print(f"[{self._log_tag}] 跳转末页: {full_url}")
-                    await self._goto_refresh_page(
-                        full_url, timeout, reason="刷新-进入末页")
+                    if full_url != self.page.url:
+                        print(f"[{self._log_tag}] 跳转末页: {full_url}")
+                        await self._goto_refresh_page(
+                            full_url, timeout, reason="刷新-进入末页")
             else:
                 print(f"[{self._log_tag}] 无分页元素")
 
@@ -350,6 +413,47 @@ class ManiaRefreshWorker(PageWorker):
         raise RuntimeError(
             f"重新上架提交后未进入有效结果页，当前地址={self.page.url}"
         )
+
+    async def _prepare_refresh_action_page(self, timeout: int):
+        """刷新当前上架列表；无法确认新文档时再执行一次受控导航。"""
+        if SELL_REGIST_URL not in self.page.url:
+            await self._goto_refresh_page(
+                SELL_REGIST_URL, timeout, reason="刷新-恢复上架页")
+            return
+
+        previous_origin = await _read_document_time_origin(self.page)
+        committed = False
+        try:
+            await self.page.reload(
+                wait_until="commit",
+                timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS),
+            )
+            committed = True
+        except Exception as e:
+            if self.page.is_closed():
+                raise
+            print(
+                f"[{self._log_tag}] [上架页刷新] reload 提交阶段异常: "
+                f"{e}；短暂复核新文档是否已经提交"
+            )
+            committed = await _wait_for_document_change(
+                self.page, previous_origin)
+
+        if self._session.is_login_page(self.page.url):
+            raise RuntimeError(
+                "上架页刷新后检测到 ItemMania 登录失效，"
+                "等待订单 Worker 自动重新登录"
+            )
+
+        if committed and await self._wait_refresh_table(timeout):
+            return
+
+        print(
+            f"[{self._log_tag}] [上架页刷新] 无法确认最新列表，"
+            "执行一次受控导航"
+        )
+        await self._goto_refresh_page(
+            SELL_REGIST_URL, timeout, reason="刷新-受控恢复上架页")
 
     async def _ensure_refresh_page_ready(self, timeout: int):
         async with self._monitor.navigation_lock:

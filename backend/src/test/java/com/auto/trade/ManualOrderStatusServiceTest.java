@@ -86,6 +86,41 @@ class ManualOrderStatusServiceTest {
     }
 
     @Test
+    void reviewRequiredOrderCanBeResolvedAsCompleted() {
+        GameItemOrder order = order("review_required", "pending");
+        order.setAssignmentId("assignment-1");
+        order.setAssignedMachineId(7);
+        order.setGameAccountId(9);
+        when(orderService.getOne(any(), eq(false))).thenReturn(order);
+
+        statusService.complete(42);
+
+        verify(completionService).complete(order);
+        assertEquals("completed", order.getStatus());
+        assertEquals("completed", order.getDeliveryStatus());
+        assertNull(order.getAssignmentId());
+        assertNull(order.getAssignedMachineId());
+        assertNull(order.getGameAccountId());
+    }
+
+    @Test
+    void reviewRequiredOrderCanBeResolvedAsCancelled() {
+        GameItemOrder order = order("review_required", "pending");
+        order.setAssignmentId("assignment-1");
+        order.setLastErrorCode("FINAL_CONFIRMATION_NOT_FOUND");
+        when(orderService.getOne(any(), eq(false))).thenReturn(order);
+        when(detailService.findByOrderId(42)).thenReturn(List.of());
+
+        statusService.cancel(42);
+
+        assertEquals("cancelled", order.getStatus());
+        assertEquals("cancelled", order.getDeliveryStatus());
+        assertNull(order.getAssignmentId());
+        assertNull(order.getLastErrorCode());
+        verify(orderService).updateById(order);
+    }
+
+    @Test
     void coordinatorCanCompleteQueuedOrderAndClearQueueBinding() {
         GameItemOrder order = order("queued", "pending");
         order.setAssignedMachineId(7);

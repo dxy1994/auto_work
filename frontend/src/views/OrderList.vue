@@ -80,8 +80,8 @@
       <el-table-column label="当前步骤" width="140" align="center">
         <template #default="{ row }">
           <el-tooltip
-            :content="row.last_error_message || retryActionLabel(row)"
-            :disabled="!row.last_error_message && !row.retryable"
+            :content="orderErrorMessage(row) || retryActionLabel(row)"
+            :disabled="!orderErrorMessage(row) && !row.retryable"
             placement="top"
           >
             <el-tag :type="deliveryStatusType(row)" size="small">{{ deliveryStatusLabel(row) }}</el-tag>
@@ -111,25 +111,25 @@
           <el-popconfirm
             v-if="canCompleteOrder(row)"
             width="320"
-            title="确认设为已完成？系统会将子订单标记完成，并按已交付处理库存。"
+            :title="completeConfirmTitle(row)"
             confirm-button-text="确认完成"
             cancel-button-text="返回"
             @confirm="handleTerminalOrder(row, 'complete')"
           >
             <template #reference>
-              <el-button size="small" link type="success" :loading="terminalActionKey === `complete:${row.id}`">已完成</el-button>
+              <el-button size="small" link type="success" :loading="terminalActionKey === `complete:${row.id}`">{{ completeActionLabel(row) }}</el-button>
             </template>
           </el-popconfirm>
           <el-popconfirm
             v-if="canCancelOrder(row)"
             width="300"
-            title="确认设为已取消？取消后该订单不能重新尝试。"
+            :title="cancelConfirmTitle(row)"
             confirm-button-text="确认取消"
             cancel-button-text="返回"
             @confirm="handleTerminalOrder(row, 'cancel')"
           >
             <template #reference>
-              <el-button size="small" link type="warning" :loading="terminalActionKey === `cancel:${row.id}`">已取消</el-button>
+              <el-button size="small" link type="warning" :loading="terminalActionKey === `cancel:${row.id}`">{{ cancelActionLabel(row) }}</el-button>
             </template>
           </el-popconfirm>
           <el-popconfirm
@@ -323,7 +323,7 @@
         :closable="false"
         show-icon
         :title="deliveryStatusLabel(currentOrder)"
-        :description="currentOrder.last_error_message || errorCodeLabel(currentOrder.last_error_code)"
+        :description="orderErrorMessage(currentOrder) || errorCodeLabel(currentOrder.last_error_code)"
       />
       <div class="retry-resume-info detail-section" v-if="currentOrder?.last_error_code && canRetryOrder(currentOrder)">
         <strong>重新尝试将执行：</strong>{{ retryActionLabel(currentOrder) }}
@@ -400,22 +400,22 @@
         <el-popconfirm
           v-if="canCompleteOrder(currentOrder)"
           width="320"
-          title="确认设为已完成？系统会将子订单标记完成，并按已交付处理库存。"
+          :title="completeConfirmTitle(currentOrder)"
           confirm-button-text="确认完成"
           cancel-button-text="返回"
           @confirm="handleTerminalOrder(currentOrder, 'complete', true)"
         >
-          <template #reference><el-button type="success" size="small">设为已完成</el-button></template>
+          <template #reference><el-button type="success" size="small">{{ completeActionLabel(currentOrder, true) }}</el-button></template>
         </el-popconfirm>
         <el-popconfirm
           v-if="canCancelOrder(currentOrder)"
           width="300"
-          title="确认设为已取消？取消后该订单不能重新尝试。"
+          :title="cancelConfirmTitle(currentOrder)"
           confirm-button-text="确认取消"
           cancel-button-text="返回"
           @confirm="handleTerminalOrder(currentOrder, 'cancel', true)"
         >
-          <template #reference><el-button type="warning" plain size="small">设为已取消</el-button></template>
+          <template #reference><el-button type="warning" plain size="small">{{ cancelActionLabel(currentOrder, true) }}</el-button></template>
         </el-popconfirm>
       </div>
       <div v-if="currentOrder?.status === 'pending'" class="detail-toolbar">
@@ -574,8 +574,15 @@ function errorCodeLabel(code) {
     START_DISPATCH_FAILED: '交易启动失败',
     TRADE_EXECUTION_FAILED: '游戏交易失败',
     TRADE_REQUEST_TIMEOUT: '游戏交易超时',
+    FINAL_CONFIRMATION_NOT_FOUND: '最终确认界面无可操作按钮',
     TRADE_RESULT_UNCERTAIN: '交易结果待复核',
   }[code] || code || '未知异常'
+}
+function orderErrorMessage(order) {
+  if (order?.last_error_code === 'FINAL_CONFIRMATION_NOT_FOUND') {
+    return '原因：最终确认界面没有可继续操作的按钮。解决方案：请人工核对游戏和交易平台的实际结果，然后选择“复核为已完成”或“复核为已取消”。'
+  }
+  return order?.last_error_message || ''
 }
 function deliveryStatusLabel(order) {
   if (!order) return '待分配'
@@ -590,13 +597,33 @@ function deliveryStatusType(order) {
 }
 function canRetryOrder(order) { return Boolean(order?.retryable) }
 function isTerminalOrder(order) { return ['completed', 'cancelled'].includes(order?.status) }
-function canCompleteOrder(order) { return Boolean(order) && !isTerminalOrder(order) && order?.delivery_status !== 'review_required' }
+function canCompleteOrder(order) { return Boolean(order) && !isTerminalOrder(order) }
 function canCancelOrder(order) {
   return Boolean(order)
     && !isTerminalOrder(order)
-    && order?.delivery_status !== 'review_required'
     && order?.delivery_status !== 'wait_web_confirm'
     && !order?.game_delivered_at
+}
+function isReviewRequired(order) { return order?.delivery_status === 'review_required' }
+function completeActionLabel(order, detail = false) {
+  if (isReviewRequired(order)) return '复核为已完成'
+  return detail ? '设为已完成' : '已完成'
+}
+function cancelActionLabel(order, detail = false) {
+  if (isReviewRequired(order)) return '复核为已取消'
+  return detail ? '设为已取消' : '已取消'
+}
+function completeConfirmTitle(order) {
+  if (isReviewRequired(order)) {
+    return '请先在游戏和交易平台核对结果。确认实际交易已完成？确认后将完成子订单并按已交付处理库存。'
+  }
+  return '确认设为已完成？系统会将子订单标记完成，并按已交付处理库存。'
+}
+function cancelConfirmTitle(order) {
+  if (isReviewRequired(order)) {
+    return '请先在游戏和交易平台核对结果。确认实际交易未完成？确认后订单将取消且不能重新尝试。'
+  }
+  return '确认设为已取消？取消后该订单不能重新尝试。'
 }
 function canDeleteOrder(order) {
   if (!order) return false

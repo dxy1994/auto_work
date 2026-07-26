@@ -407,7 +407,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                 False,
                 "verification_failed",
                 "FINAL_CONFIRMATION_NOT_FOUND",
-                "未识别到最终交易确认提示",
+                "未出现最终交易确认提示，当前界面没有可继续操作的按钮",
             )
         if self._trade_screenshot_callback is None:
             navigator.click_region(TradeUi.FINAL_REJECT_REGION)

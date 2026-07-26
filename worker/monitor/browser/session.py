@@ -4,7 +4,7 @@ BrowserSession — 按账户共享浏览器上下文，支持多页面并行（A
 职责：
   - 同一 account_id 全局共享一个浏览器上下文（单例注册表）
   - 提供 new_page() 创建独立标签页
-  - 登录只执行一次，后续页面复用 Cookie / Storage
+  - 启动时登录，运行中掉线后可重新登录，页面共享 Cookie / Storage
   - 生命周期管理：引用计数 → 最后关闭时上传配置到 RustFS
 """
 
@@ -74,6 +74,7 @@ class BrowserSession:
         self._refcount = 0
         self._login_done = False
         self._login_result = None
+        self._relogin_lock = asyncio.Lock()
 
         # 延迟初始化（在 async _init() 中完成）
         self._playwright = None
@@ -268,7 +269,7 @@ class BrowserSession:
         return True
 
     async def _pick_main_page(self) -> Page:
-        """从恢复的标签页中选一个作为主页面，只关多余的 about:blank。"""
+        """从恢复的标签页中选健康页面作为主页面，保留其余健康旧标签。"""
         pages = self._context.pages
         if not pages:
             return await self._context.new_page()
@@ -277,8 +278,18 @@ class BrowserSession:
         non_blanks = [p for p in pages if p.url != "about:blank"]
 
         if non_blanks:
-            keep = non_blanks[-1]
-            to_close = blanks
+            keep = None
+            for candidate in reversed(non_blanks):
+                if await self._page_is_usable(candidate):
+                    keep = candidate
+                    break
+                try:
+                    await candidate.close()
+                except Exception:
+                    pass
+            if keep is None:
+                keep = blanks[0] if blanks else await self._context.new_page()
+            to_close = [p for p in blanks if p != keep]
         elif blanks:
             keep = blanks[0]
             to_close = blanks[1:]
@@ -293,13 +304,28 @@ class BrowserSession:
         return keep
 
     async def claim_page(self) -> Page:
-        """为 Worker 分配一个页面：优先复用 context 中未被认领的已有页面。"""
+        """为 Worker 分配页面：复用健康旧标签，跳过临时页和崩溃页。"""
         context = self._context
-        for p in context.pages:
-            if p != self._main_page and id(p) not in self._claimed_pages:
-                self._claimed_pages.add(id(p))
-                print(f"[BrowserSession:{self._account_id}] 复用已有页面 url={p.url}")
-                return p
+        for p in list(context.pages):
+            if (
+                p == self._main_page
+                or id(p) in self._claimed_pages
+                or id(p) in self._transient_page_ids
+            ):
+                continue
+            if not await self._page_is_usable(p):
+                print(
+                    f"[BrowserSession:{self._account_id}] "
+                    f"关闭不可用的恢复页面 url={p.url}"
+                )
+                try:
+                    await p.close()
+                except Exception:
+                    pass
+                continue
+            self._claimed_pages.add(id(p))
+            print(f"[BrowserSession:{self._account_id}] 复用已有页面 url={p.url}")
+            return p
         page = await self.new_page()
         self._claimed_pages.add(id(page))
         print(f"[BrowserSession:{self._account_id}] 新建页面")
@@ -308,6 +334,25 @@ class BrowserSession:
     def release_page(self, page: Page):
         """释放已认领的页面。"""
         self._claimed_pages.discard(id(page))
+
+    async def replace_claimed_page(self, page: Page) -> Page:
+        """关闭崩溃或长期运行的 Worker 页，并返回已认领的新标签。"""
+        was_main_page = page == self._main_page
+        self.release_page(page)
+        try:
+            if not page.is_closed():
+                await page.close()
+        except Exception:
+            pass
+        replacement = await self.new_page()
+        self._claimed_pages.add(id(replacement))
+        if was_main_page:
+            self._main_page = replacement
+        print(
+            f"[BrowserSession:{self._account_id}] "
+            "已用新标签替换 Worker 页面"
+        )
+        return replacement
 
     async def close_unclaimed_pages(self):
         """关闭未被认领的页面（主页面和已认领的保留）。"""
@@ -330,6 +375,17 @@ class BrowserSession:
                 pass
         page.on("dialog", _safe_accept)
         return page
+
+    @staticmethod
+    async def _page_is_usable(page: Page) -> bool:
+        """崩溃标签通常仍未 closed；用一次轻量脚本调用确认渲染进程可用。"""
+        try:
+            if page.is_closed():
+                return False
+            await page.evaluate("1")
+            return True
+        except Exception:
+            return False
 
     def track_transient_page(self, page: Page):
         """登记聊天等短生命周期页面，避免健康检查误关闭。"""
@@ -389,6 +445,60 @@ class BrowserSession:
         self._login_result = await self._do_login()
         self._login_done = True
         return self._login_result
+
+    def is_login_page(self, url: str) -> bool:
+        """判断业务页面是否被重定向回当前账号配置的登录地址。"""
+        login_url = (self._login_url or "").strip()
+        current_url = (url or "").strip()
+        return bool(login_url and current_url.startswith(login_url))
+
+    async def relogin(self, page: Optional[Page] = None) -> dict:
+        """运行中登录失效时重新登录，并刷新启动阶段的登录缓存。"""
+        if self._skip_login:
+            return {
+                "status": "failed",
+                "message": "skip_login=True，无法执行自动重新登录",
+            }
+        has_credentials = bool(
+            self._login_url and self._username and self._password
+            and self._login_config
+        )
+        if not has_credentials:
+            self._login_done = False
+            self._login_result = None
+            return {
+                "status": "failed",
+                "message": "检测到登录失效，但未配置完整登录凭证",
+            }
+
+        async with self._relogin_lock:
+            target_page = page or self._main_page
+            if target_page is None:
+                return {
+                    "status": "failed",
+                    "message": "检测到登录失效，但没有可用的登录页面",
+                }
+
+            print(
+                f"[BrowserSession:{self._account_id}] "
+                "检测到运行中登录失效，开始重新登录"
+            )
+            from monitor.browser.login import do_login_async
+            result = await do_login_async(
+                page=target_page,
+                login_url=self._login_url,
+                username=self._username,
+                password=self._password,
+                login_config=self._login_config,
+                account_id=self._account_id,
+                login_type=self._login_type,
+                my_page_url=self._my_page_url,
+                force_login=True,
+                stop_event=self._stop_event,
+            )
+            self._login_result = result
+            self._login_done = result.get("status") == "success"
+            return result
 
     async def _check_logged_in(self) -> bool:
         """检测是否已登录（委托公共方法）。"""

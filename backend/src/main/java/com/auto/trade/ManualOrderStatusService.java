@@ -16,8 +16,8 @@ import java.util.Set;
 @Service
 public class ManualOrderStatusService {
 
-    private static final Set<String> ACTIVE_OR_UNCERTAIN = Set.of(
-            "offered", "assigned", "review_required");
+    private static final Set<String> ACTIVE_AUTOMATION = Set.of(
+            "offered", "assigned");
 
     private final GameItemOrderService orderService;
     private final GameItemOrderDetailService detailService;
@@ -46,8 +46,8 @@ public class ManualOrderStatusService {
     private GameItemOrder completeInternal(Integer orderId, boolean rejectActiveTrade) {
         GameItemOrder order = lockOrder(orderId);
         requireNotTerminal(order);
-        if (rejectActiveTrade && ACTIVE_OR_UNCERTAIN.contains(order.getDeliveryStatus())) {
-            throw new IllegalStateException("订单正在交易或等待人工复核，不能直接标记完成");
+        if (rejectActiveTrade && ACTIVE_AUTOMATION.contains(order.getDeliveryStatus())) {
+            throw new IllegalStateException("订单正在自动交易，不能直接标记完成");
         }
 
         completionService.complete(order);
@@ -75,8 +75,8 @@ public class ManualOrderStatusService {
     private GameItemOrder cancelInternal(Integer orderId, boolean rejectActiveTrade) {
         GameItemOrder order = lockOrder(orderId);
         requireNotTerminal(order);
-        if (rejectActiveTrade && ACTIVE_OR_UNCERTAIN.contains(order.getDeliveryStatus())) {
-            throw new IllegalStateException("订单正在交易或等待人工复核，请先停止并确认交易结果");
+        if (rejectActiveTrade && ACTIVE_AUTOMATION.contains(order.getDeliveryStatus())) {
+            throw new IllegalStateException("订单正在自动交易，请先停止并确认交易结果");
         }
         if (order.getGameDeliveredAt() != null || "wait_web_confirm".equals(order.getDeliveryStatus())) {
             throw new IllegalStateException("游戏内交易已经完成，不能取消订单，请标记为已完成");

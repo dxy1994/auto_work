@@ -24,6 +24,8 @@ public final class TradeErrorGuidance {
                     "确认游戏执行端在线且未被其他订单占用，然后重新发起交易";
             case "TRADE_REQUEST_TIMEOUT", "EXECUTION_WATCHDOG_TIMEOUT" ->
                     "检查执行端网络和游戏状态，并人工确认本次交易结果后决定重试或完成";
+            case "FINAL_CONFIRMATION_NOT_FOUND" ->
+                    "当前游戏界面已没有可继续操作的按钮；请人工核对实际交易结果，并在订单中选择“复核为已完成”或“复核为已取消”";
             case "TRADE_RESULT_UNCERTAIN" ->
                     "在游戏和平台核对实际交易结果，完成人工复核后再更新订单状态";
             case "TRADE_RETRYABLE_FAILURE" ->

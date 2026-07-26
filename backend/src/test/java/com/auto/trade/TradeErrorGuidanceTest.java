@@ -22,4 +22,15 @@ class TradeErrorGuidanceTest {
         String message = "原因：标题格式错误。解决方案：改为 %物品名%。";
         assertEquals(message, TradeErrorGuidance.ensureGuidance("ITEM_NAME_PARSE_FAILED", message));
     }
+
+    @Test
+    void finalConfirmationFailurePointsToManualResolutionButtons() {
+        String result = TradeErrorGuidance.ensureGuidance(
+                "FINAL_CONFIRMATION_NOT_FOUND",
+                "当前界面没有可继续操作的按钮");
+
+        assertTrue(result.contains("没有可继续操作的按钮"));
+        assertTrue(result.contains("复核为已完成"));
+        assertTrue(result.contains("复核为已取消"));
+    }
 }
