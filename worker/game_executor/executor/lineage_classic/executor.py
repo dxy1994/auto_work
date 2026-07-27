@@ -45,6 +45,9 @@ class TradeUi:
     REQUEST_REJECT_REGION = (561, 547, 575, 556)
     TRADE_WINDOW_REGION = (0, 0, 235, 360)
     MY_TRADE_REGION = (22, 38, 190, 166)
+    # 我方交易栏第一格中心；最终截图前悬停此处，使游戏显示物品数量。
+    MY_TRADE_FIRST_ITEM = (45, 59)
+    MY_TRADE_FIRST_ITEM_HOVER_RADIUS = 8
     MY_TRADE_DROP_REGION = (50, 65, 162, 140)
     BUYER_TRADE_REGION = (22, 203, 190, 330)
     TRADE_ACTION_REGION = (120, 330, 225, 360)
@@ -327,11 +330,9 @@ class LineageClassicExecutor(BaseGameExecutor):
                 "等待买家交易申请超时",
             )
 
-        transfers = self._build_transfers(order, navigator)
-
         self._emit(
             "trading",
-            f"已核验买家 {observed_buyer}，正在放入 {len(transfers)} 项交易资产",
+            f"已核验买家 {observed_buyer}，正在接受交易申请",
         )
         navigator.click_region(TradeUi.REQUEST_ACCEPT_REGION)
         trade_cancel = navigator.wait_for_step(
@@ -347,6 +348,11 @@ class LineageClassicExecutor(BaseGameExecutor):
         if trade_cancel is None:
             raise NavigationError("接受申请后未识别到交易界面")
 
+        transfers = self._build_transfers(order, navigator)
+        self._emit(
+            "trading",
+            f"已进入交易界面，正在放入 {len(transfers)} 项交易资产",
+        )
         print(
             "[Lineage][交易界面] 已确认交易窗口；"
             f"我方物品区=X[{TradeUi.MY_TRADE_REGION[0]},{TradeUi.MY_TRADE_REGION[2] - 1}] "
@@ -418,7 +424,7 @@ class LineageClassicExecutor(BaseGameExecutor):
                 "TRADE_SCREENSHOT_CHANNEL_MISSING",
                 "最终确认前未配置交易截图保存通道，已拒绝最终交易",
             )
-        trade_screenshot = navigator.vision.capture_data_url(Ui.FULL_CLIENT)
+        trade_screenshot = self._capture_final_trade_screenshot(navigator)
         if not self._trade_screenshot_callback(trade_screenshot):
             navigator.click_region(TradeUi.FINAL_REJECT_REGION)
             navigator.wait_after_step("拒绝截图保存失败的最终交易", profile="panel")
@@ -439,6 +445,30 @@ class LineageClassicExecutor(BaseGameExecutor):
                 "未获得高置信的交易完成证据",
             )
         return self._result(True, "wait_web_confirm", "", "游戏交易已完成，等待网站确认")
+
+    @staticmethod
+    def _capture_final_trade_screenshot(navigator) -> str:
+        hover_x, hover_y = TradeUi.MY_TRADE_FIRST_ITEM
+        hover_radius = TradeUi.MY_TRADE_FIRST_ITEM_HOVER_RADIUS
+        print(
+            "[Lineage][交易截图] 移动鼠标到我方交易区第一个物品，"
+            f"center=({hover_x},{hover_y})，"
+            f"随机范围=X[{hover_x - hover_radius},{hover_x + hover_radius}] "
+            f"Y[{hover_y - hover_radius},{hover_y + hover_radius}]，"
+            "等待数量提示后截图",
+            flush=True,
+        )
+        navigator.move(
+            TradeUi.MY_TRADE_FIRST_ITEM,
+            radius_x=TradeUi.MY_TRADE_FIRST_ITEM_HOVER_RADIUS,
+            radius_y=TradeUi.MY_TRADE_FIRST_ITEM_HOVER_RADIUS,
+        )
+        navigator.wait_after_step(
+            "悬停我方交易区第一个物品并等待数量显示",
+            profile="recognition",
+            fixed_wait=0.5,
+        )
+        return navigator.vision.capture_data_url(Ui.FULL_CLIENT)
 
     def _wait_for_expected_buyer(
         self,
@@ -658,16 +688,12 @@ class LineageClassicExecutor(BaseGameExecutor):
             item_id = detail.get("item_id")
             label = str(detail.get("item_name") or item_id or "未知物品")
             images = item_recognition_images(detail)
+
             def locate_source():
-                for image in images:
-                    source_point = navigator.vision.find_image(
-                        image,
-                        Ui.INVENTORY_CONTENT_REGION,
-                        threshold=0.90,
-                    )
-                    if source_point is not None:
-                        return source_point
-                return None
+                return navigator.find_inventory_item(
+                    images,
+                    label=label,
+                )
 
             source = navigator.wait_for_step(
                 f"在物品栏识别 {label}",
@@ -724,7 +750,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             trade_closed_sample,
             profile="final_verify",
             fixed_wait=1.0,
-            attempts=3,
+            attempts=30,
             probe_interval=0.5,
         )
         return bool(result)

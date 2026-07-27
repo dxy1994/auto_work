@@ -124,9 +124,21 @@ class ActionVisualizationTest(unittest.TestCase):
 
 
 def _instant_navigator(vision):
+    def find_inventory_item(images, *, label):
+        for image in images:
+            point = vision.find_image(
+                image,
+                Ui.INVENTORY_CONTENT_REGION,
+                threshold=0.90,
+            )
+            if point is not None:
+                return point
+        return None
+
     return SimpleNamespace(
         vision=vision,
         wait_for_step=lambda _name, predicate, **_kwargs: predicate(),
+        find_inventory_item=find_inventory_item,
     )
 
 
@@ -387,6 +399,7 @@ class _Vision:
         }
         self.page_number_calls = []
         self.current_page = None
+        self.inventory_refreshes = 0
         self.item_points = item_points or {
             "/uploads/images/adena.png": (680, 200),
             "/uploads/images/adena-selected.png": (680, 200),
@@ -496,7 +509,9 @@ class _Vision:
             self.state = "game"
             self.current_text = ORDER["region_code"]
         elif point == self.CENTERS[Ui.INVENTORY_BUTTON]:
-            self.inventory_open = True
+            self.inventory_open = not self.inventory_open
+            if self.inventory_open:
+                self.inventory_refreshes += 1
 
 
 class LineageNavigationTest(unittest.TestCase):
@@ -536,7 +551,7 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertTrue(vision.inventory_open)
         lines = [str(call.args[0]) for call in output.call_args_list]
         self.assertTrue(any(
-            "角色登录完成，开始检查物品栏" in line
+            "开始检查物品栏打开状态" in line
             for line in lines
         ))
         self.assertTrue(any(
@@ -577,6 +592,64 @@ class LineageNavigationTest(unittest.TestCase):
             "已检测到打开状态" in str(call.args[0])
             for call in output.call_args_list
         ))
+
+    def test_inventory_refresh_closes_and_reopens_an_already_open_panel(self):
+        vision = _Vision(inventory_open=True)
+        hardware = _Hardware(vision)
+        navigator = LineageSessionNavigator(
+            hardware,
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        navigator.ensure_inventory_open(refresh=True)
+
+        self.assertTrue(vision.inventory_open)
+        self.assertEqual(1, vision.inventory_refreshes)
+        self.assertEqual(2, len(hardware.moves))
+
+    def test_inventory_recognition_tries_selected_image_when_unselected_image_errors(self):
+        class FirstImageFailsVision(_Vision):
+            def find_image(self, image_source, region, threshold=0.90):
+                if image_source.endswith("/adena.png"):
+                    self.find_image_calls.append((image_source, region, threshold))
+                    raise NavigationError("未选中图片临时加载失败")
+                return super().find_image(image_source, region, threshold)
+
+        vision = FirstImageFailsVision(
+            inventory_open=True,
+            item_points={
+                "/uploads/images/adena-selected.png": (680, 200),
+            },
+        )
+        navigator = LineageSessionNavigator(
+            _Hardware(vision),
+            _Window(),
+            vision,
+            sleep=lambda _seconds: None,
+        )
+
+        navigator.ensure_inventory_items([
+            "/uploads/images/adena.png",
+            "/uploads/images/adena-selected.png",
+        ])
+
+        self.assertEqual(
+            [
+                (
+                    "/uploads/images/adena.png",
+                    Ui.INVENTORY_CONTENT_REGION,
+                    0.90,
+                ),
+                (
+                    "/uploads/images/adena-selected.png",
+                    Ui.INVENTORY_CONTENT_REGION,
+                    0.90,
+                ),
+            ],
+            vision.find_image_calls,
+        )
 
     def test_inventory_uses_fixed_toggle_coordinate_when_template_is_missing(self):
         vision = _Vision(
@@ -991,6 +1064,8 @@ class LineageNavigationTest(unittest.TestCase):
     def test_trade_window_regions_separate_my_items_from_buyer_items(self):
         self.assertEqual((0, 0, 235, 360), TradeUi.TRADE_WINDOW_REGION)
         self.assertEqual((22, 38, 190, 166), TradeUi.MY_TRADE_REGION)
+        self.assertEqual((45, 59), TradeUi.MY_TRADE_FIRST_ITEM)
+        self.assertEqual(8, TradeUi.MY_TRADE_FIRST_ITEM_HOVER_RADIUS)
         self.assertEqual((50, 65, 162, 140), TradeUi.MY_TRADE_DROP_REGION)
         self.assertEqual((22, 203, 190, 330), TradeUi.BUYER_TRADE_REGION)
         self.assertEqual((120, 330, 225, 360), TradeUi.TRADE_ACTION_REGION)
@@ -1023,6 +1098,85 @@ class LineageNavigationTest(unittest.TestCase):
 
         self.assertTrue(all(530 <= x <= 544 for x, _y in hardware.moves))
         self.assertTrue(all(549 <= y <= 553 for _x, y in hardware.moves))
+
+    def test_final_trade_screenshot_hovers_first_item_before_capture(self):
+        executor = LineageClassicExecutor(object())
+        navigator = mock.Mock()
+        events = []
+        navigator.move.side_effect = lambda *_args, **_kwargs: events.append("move")
+        navigator.wait_after_step.side_effect = (
+            lambda *_args, **_kwargs: events.append("wait")
+        )
+        navigator.vision.capture_data_url.side_effect = (
+            lambda _region: events.append("capture") or "data:image/png;base64,test"
+        )
+
+        screenshot = executor._capture_final_trade_screenshot(navigator)
+
+        self.assertEqual("data:image/png;base64,test", screenshot)
+        self.assertEqual(["move", "wait", "capture"], events)
+        navigator.move.assert_called_once_with(
+            TradeUi.MY_TRADE_FIRST_ITEM,
+            radius_x=8,
+            radius_y=8,
+        )
+        navigator.wait_after_step.assert_called_once_with(
+            "悬停我方交易区第一个物品并等待数量显示",
+            profile="recognition",
+            fixed_wait=0.5,
+        )
+        navigator.vision.capture_data_url.assert_called_once_with(Ui.FULL_CLIENT)
+
+    def test_accepts_buyer_before_locating_inventory_items(self):
+        executor = LineageClassicExecutor(object())
+        navigator = mock.Mock()
+        navigator.wait_for_step.return_value = (150, 340)
+        events = []
+        navigator.click_region.side_effect = lambda region: events.append(
+            ("click", region)
+        )
+        executor._wait_for_expected_buyer = mock.Mock(return_value="Buyer")
+
+        def stop_after_item_lookup(_order, _navigator):
+            events.append(("locate_items", None))
+            raise NavigationError("停止测试")
+
+        executor._build_transfers = mock.Mock(side_effect=stop_after_item_lookup)
+        order = {**ORDER, "buyer_character": "Buyer"}
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.build_navigator",
+            return_value=navigator,
+        ):
+            with self.assertRaisesRegex(NavigationError, "停止测试"):
+                executor._execute_sync(order)
+
+        self.assertEqual(
+            [
+                ("click", TradeUi.REQUEST_ACCEPT_REGION),
+                ("locate_items", None),
+            ],
+            events,
+        )
+
+    def test_trade_close_verification_allows_30_attempts_and_requires_3_stable_frames(self):
+        executor = LineageClassicExecutor(object())
+        navigator = mock.Mock()
+        navigator.vision.find.return_value = None
+        navigator._is_in_game.return_value = True
+        wait_options = {}
+
+        def verify_three_frames(_name, predicate, **options):
+            wait_options.update(options)
+            self.assertFalse(predicate())
+            self.assertFalse(predicate())
+            return predicate()
+
+        navigator.wait_for_step.side_effect = verify_three_frames
+
+        self.assertTrue(executor._wait_for_trade_closed(navigator, timeout=12))
+        self.assertEqual(30, wait_options["attempts"])
+        self.assertEqual(0.5, wait_options["probe_interval"])
 
     def test_customer_name_uses_expected_prefix_and_allows_korean_particles(self):
         self.assertTrue(customer_name_prefix_matches("홍길동이", "홍길동"))
@@ -1472,7 +1626,11 @@ class LineageNavigationTest(unittest.TestCase):
         vision.exit_panel_open = False
         vision.server_selected = False
         vision.character_selected = False
-        vision.inventory_open = False
+        vision.inventory_open = True
+        # 上一单拖拽物品后，第二单进入时同一商品仍可能保持选中高亮。
+        vision.item_points = {
+            "/uploads/images/adena-selected.png": (680, 200),
+        }
         hardware.moves.clear()
 
         second_target = navigator.ensure_target_region(ORDER)
@@ -1486,6 +1644,15 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual("game", vision.state)
         self.assertTrue(window.focused)
         self.assertTrue(window.validated)
+        self.assertEqual(2, len(hardware.moves))
+        self.assertIn(
+            (
+                "/uploads/images/adena-selected.png",
+                Ui.INVENTORY_CONTENT_REGION,
+                0.90,
+            ),
+            vision.find_image_calls,
+        )
         self.assertFalse(any(
             abs(point[0] - ORDER["region_select_x"]) <= Ui.SERVER_SELECT_RADIUS_X
             and abs(point[1] - ORDER["region_select_y"]) <= Ui.SERVER_SELECT_RADIUS_Y

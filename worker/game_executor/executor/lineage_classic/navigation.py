@@ -168,6 +168,14 @@ class NavigationCancelled(NavigationError):
     pass
 
 
+class InventoryStateError(NavigationError):
+    """物品栏面板未能切换到可可靠识别的状态。"""
+
+
+class InventoryItemNotFoundError(NavigationError):
+    """物品栏已就绪，但订单物品图像仍未识别到。"""
+
+
 @dataclass(frozen=True)
 class TargetRegion:
     region_id: int
@@ -1272,6 +1280,28 @@ class LineageSessionNavigator:
         radius_y = max(0, (bottom - top) // 2 - 2)
         self._click(center, radius_x=radius_x, radius_y=radius_y)
 
+    def move(
+        self,
+        point: tuple[int, int],
+        *,
+        radius_x: Optional[int] = None,
+        radius_y: Optional[int] = None,
+    ) -> None:
+        """将鼠标移动到游戏客户区目标点，不执行点击。"""
+        self._raise_if_cancelled()
+        ox, oy = self.window.client_origin()
+        x, y = point
+        if self.input.move_to(
+            ox + x,
+            oy + y,
+            radius_x=radius_x,
+            radius_y=radius_y,
+            bounds=self._screen_bounds(),
+            coordinate_origin=(ox, oy),
+        ) is False:
+            self._raise_if_cancelled()
+            raise NavigationError(f"硬件移动鼠标失败: ({x}, {y})")
+
     def _click_menu_button(self) -> None:
         """只在实机确认的切换按钮范围内变化落点。"""
         left, top, right, bottom = Ui.MENU_BUTTON_CLICK_REGION
@@ -1872,9 +1902,10 @@ class LineageSessionNavigator:
         )
         return selected
 
-    def ensure_inventory_open(self) -> None:
+    def ensure_inventory_open(self, *, refresh: bool = False) -> None:
         print(
-            "[Lineage][物品栏] 角色登录完成，开始检查物品栏打开状态",
+            "[Lineage][物品栏] 开始检查物品栏打开状态"
+            + ("；同区会话复用将先关闭再重开，以刷新上一单残留状态" if refresh else ""),
             flush=True,
         )
 
@@ -1891,7 +1922,46 @@ class LineageSessionNavigator:
                 f"anchor=({inventory_open[0]},{inventory_open[1]})",
                 flush=True,
             )
-        else:
+            if refresh:
+                inventory_button = self._find(
+                    Ui.INVENTORY_BUTTON,
+                    Ui.INVENTORY_BUTTON_REGION,
+                )
+                if inventory_button is None:
+                    inventory_button = Ui.INVENTORY_BUTTON_FALLBACK
+                    source = "800x600 固定按钮坐标"
+                else:
+                    source = "模板定位"
+                print(
+                    "[Lineage][物品栏] 同区会话命中，先关闭上一单保留的物品栏，"
+                    f"source={source}，"
+                    f"coordinate=({inventory_button[0]},{inventory_button[1]})",
+                    flush=True,
+                )
+                self._click(inventory_button)
+                closed = self.wait_for_step(
+                    "同区复用前关闭旧物品栏",
+                    lambda: self._find_for_decision(
+                        "物品栏右侧滚动条与底框",
+                        Ui.INVENTORY_OPEN,
+                        Ui.INVENTORY_OPEN_REGION,
+                        threshold=0.82,
+                        log_category="物品栏刷新",
+                    ) is None,
+                    profile="panel",
+                )
+                if not closed:
+                    raise InventoryStateError(
+                        f"同区会话复用时连续 {STEP_VERIFY_ATTEMPTS} 次"
+                        "仍无法关闭上一单保留的物品栏"
+                    )
+                inventory_open = None
+                print(
+                    "[Lineage][物品栏] 旧物品栏已关闭，准备重新打开并刷新内容",
+                    flush=True,
+                )
+
+        if inventory_open is None:
             inventory_button = self._find(
                 Ui.INVENTORY_BUTTON,
                 Ui.INVENTORY_BUTTON_REGION,
@@ -1920,7 +1990,7 @@ class LineageSessionNavigator:
                 profile="panel",
             )
             if inventory_open is None:
-                raise NavigationError(
+                raise InventoryStateError(
                     f"主动点击物品栏按钮后连续 {STEP_VERIFY_ATTEMPTS} 次"
                     "仍未检测到物品栏打开状态"
                 )
@@ -1939,19 +2009,63 @@ class LineageSessionNavigator:
         )
         found = self.wait_for_step(
             "物品栏已打开，识别订单物品",
-            lambda: any(
-                self.vision.find_image(
-                    image,
-                    Ui.INVENTORY_CONTENT_REGION,
-                    threshold=0.90,
-                )
-                for image in recognition_images
+            lambda: self.find_inventory_item(
+                recognition_images,
+                label="订单物品预检",
             ),
             profile="recognition",
         )
         if not found:
-            raise NavigationError("物品栏已打开，但未识别到订单物品")
+            raise InventoryItemNotFoundError("物品栏已打开，但未识别到订单物品")
         print("[Lineage][物品栏] 已识别到订单物品", flush=True)
+
+    def find_inventory_item(
+        self,
+        recognition_images,
+        *,
+        label: str,
+    ) -> Optional[tuple[int, int]]:
+        """逐张独立识别；任意一张命中即可，单张异常不阻断其余状态图。"""
+        images = tuple(dict.fromkeys(
+            str(image).strip()
+            for image in recognition_images
+            if str(image).strip()
+        ))
+        errors: list[str] = []
+        for index, image in enumerate(images, start=1):
+            try:
+                point = self.vision.find_image(
+                    image,
+                    Ui.INVENTORY_CONTENT_REGION,
+                    threshold=0.90,
+                )
+            except Exception as exc:
+                errors.append(f"{_printable(image)}: {exc}")
+                print(
+                    f"[Lineage][物品识别] {label} 第 {index}/{len(images)} 张"
+                    f"识别异常，继续尝试下一张: image={_printable(image)}，"
+                    f"error={exc}",
+                    flush=True,
+                )
+                continue
+            print(
+                f"[Lineage][物品识别] {label} 第 {index}/{len(images)} 张"
+                f"{'命中' if point is not None else '未命中'}: "
+                f"image={_printable(image)}"
+                + (
+                    f"，coordinate=({point[0]},{point[1]})"
+                    if point is not None else ""
+                ),
+                flush=True,
+            )
+            if point is not None:
+                return point
+        if images and len(errors) == len(images):
+            raise NavigationError(
+                f"{label}的全部 {len(images)} 张识别图均加载或识别失败："
+                + "；".join(errors)
+            )
+        return None
 
     def ensure_target_region(self, order: dict) -> TargetRegion:
         target = TargetRegion.from_order(order)
@@ -2023,7 +2137,7 @@ class LineageSessionNavigator:
                 flush=True,
             )
 
-        if not reuse_region:
+        def login_target_region() -> None:
             print(
                 "[Lineage] 准备选择订单大区: "
                 f"{_printable(target.name or target.code)}，"
@@ -2047,21 +2161,42 @@ class LineageSessionNavigator:
                     flush=True,
                 )
 
-        print(
-            "[Lineage][流程衔接] 已进入游戏主界面，先检查并打开物品栏",
-            flush=True,
-        )
-        self.ensure_inventory_open()
-        print(
-            "[Lineage][流程衔接] 物品栏已打开，开始整理订单物品识别信息",
-            flush=True,
-        )
+        if not reuse_region:
+            login_target_region()
+
         recognition_images = list(dict.fromkeys(
             image
             for detail in (order.get("details") or [])
             for image in item_recognition_images(detail)
         ))
-        self.ensure_inventory_items(recognition_images)
+
+        def prepare_inventory(*, refresh: bool) -> None:
+            print(
+                "[Lineage][流程衔接] 已进入游戏主界面，先检查并打开物品栏",
+                flush=True,
+            )
+            self.ensure_inventory_open(refresh=refresh)
+            print(
+                "[Lineage][流程衔接] 物品栏已打开，开始整理订单物品识别信息",
+                flush=True,
+            )
+            self.ensure_inventory_items(recognition_images)
+
+        try:
+            prepare_inventory(refresh=reuse_region)
+        except (InventoryStateError, InventoryItemNotFoundError) as exc:
+            if not reuse_region:
+                raise
+            if self.region_session_cache is not None:
+                self.region_session_cache.invalidate()
+            print(
+                "[Lineage][大区缓存] 同区会话刷新后仍无法可靠识别物品，"
+                f"自动执行一次完整登录恢复: {exc}",
+                flush=True,
+            )
+            login_target_region()
+            prepare_inventory(refresh=False)
+
         if self.runtime_status is not None:
             self.runtime_status.update(
                 game_id=order.get("game_id"),

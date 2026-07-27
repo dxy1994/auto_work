@@ -206,7 +206,10 @@ public class OrderController {
                                 .eq(GameItemOrder::getDeliveryStatus, "greeting")
                                 .eq(GameItemOrder::getStatus, "abnormal"))
                         .or().in(GameItemOrder::getDeliveryStatus,
-                                "suspended", "review_required"));
+                                "suspended", "review_required")
+                        .or().and(retryableFailure -> retryableFailure
+                                .eq(GameItemOrder::getDeliveryStatus, "waiting_assignment")
+                                .isNotNull(GameItemOrder::getLastErrorCode)));
     }
 
     private Map<String, Object> toManualAlert(GameItemOrder order) {
@@ -219,6 +222,9 @@ public class OrderController {
         } else if ("suspended".equals(deliveryStatus)) {
             title = "订单交付已挂起";
             severity = "danger";
+        } else if ("waiting_assignment".equals(deliveryStatus)) {
+            title = "订单交易准备失败";
+            severity = "danger";
         } else {
             title = "订单招呼异常";
             severity = "warning";
@@ -228,6 +234,7 @@ public class OrderController {
             message = switch (deliveryStatus) {
                 case "review_required" -> "交易结果不确定，请核对游戏和平台订单";
                 case "suspended" -> "自动交付无法继续，请人工处理";
+                case "waiting_assignment" -> "自动交易准备失败，订单正在等待重新尝试";
                 default -> "请检查招呼话术、订单明细或 Worker 状态";
             };
         }
