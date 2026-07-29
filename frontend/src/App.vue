@@ -89,6 +89,17 @@
             <span>视频流设备</span>
           </el-menu-item>
         </el-sub-menu>
+
+        <el-sub-menu index="system">
+          <template #title>
+            <el-icon><Files /></el-icon>
+            <span>系统工具</span>
+          </template>
+          <el-menu-item index="/software-distribution">
+            <el-icon><Download /></el-icon>
+            <span>软件分发</span>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
 
@@ -346,7 +357,7 @@ html, body, #app { height: 100%; margin: 0; padding: 0; }
   font-weight: 600;
   border-bottom: 1px solid #ffffff1a;
 }
-.sidebar-menu { border-right: none; flex: 1; }
+.sidebar-menu { border-right: none; flex: 1; overflow-y: auto; }
 
 .main-content {
   background: #f0f2f5;

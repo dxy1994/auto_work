@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 from collections.abc import Mapping
 
 # ── 让 worker 目录内模块可平铺导入 ──
@@ -30,6 +31,62 @@ from game_executor.hardware_binding import WirelessHidBinding
 
 # 安装时间戳 print
 clock.install()
+
+
+def run_self_check() -> int:
+    """Validate packaged game dependencies and recognition assets without hardware."""
+    import importlib
+    import platform
+
+    required_modules = (
+        "websockets",
+        "dotenv",
+        "cv2",
+        "numpy",
+        "PIL",
+        "paddle",
+        "paddleocr",
+        "paddlex",
+        "pythoncom",
+        "win32api",
+        "win32gui",
+        "win32com.client",
+        "game_executor.executor.hardware.whid_sdk",
+        "game_executor.executor.lineage_classic.navigation",
+    )
+    failures = []
+    for module_name in required_modules:
+        try:
+            importlib.import_module(module_name)
+            print(f"[SelfCheck][OK] {module_name}")
+        except Exception as exc:
+            failures.append(f"{module_name}: {exc}")
+            print(f"[SelfCheck][FAILED] {module_name}: {exc}")
+
+    try:
+        from game_executor.executor.lineage_classic import navigation
+
+        image_directory = Path(navigation.__file__).with_name("images")
+        recognition_images = tuple(image_directory.glob("*.png"))
+        if not image_directory.is_dir() or not recognition_images:
+            raise RuntimeError(f"recognition images missing: {image_directory}")
+        print(
+            f"[SelfCheck][OK] recognition assets: "
+            f"{len(recognition_images)} file(s) in {image_directory}"
+        )
+    except Exception as exc:
+        failures.append(f"recognition assets: {exc}")
+        print(f"[SelfCheck][FAILED] recognition assets: {exc}")
+
+    print(
+        f"[SelfCheck] Python={platform.python_version()} "
+        f"architecture={platform.architecture()[0]} frozen={getattr(sys, 'frozen', False)}"
+    )
+    if failures:
+        print(f"[SelfCheck] Game Executor package failed with {len(failures)} problem(s).")
+        return 1
+    print("[SelfCheck] Game Executor package is ready.")
+    return 0
 
 
 # ═══════════════════════════════════════════════════════════
@@ -624,6 +681,8 @@ def start():
 
 
 if __name__ == "__main__":
+    if "--self-check" in sys.argv:
+        sys.exit(run_self_check())
     autostart_result = handle_autostart_args("auto-game-executor")
     if autostart_result is not None:
         sys.exit(autostart_result)

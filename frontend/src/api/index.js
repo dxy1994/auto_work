@@ -9,6 +9,27 @@ export const uploadFile = (file) => {
   })
 }
 
+// ── 内网软件分发 ──────────────────────────────────────────
+export const getSoftwarePackages = () => request.get('/software-packages')
+export const uploadSoftwarePackage = (file, metadata = {}, onProgress) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('version', metadata.version || '')
+  formData.append('notes', metadata.notes || '')
+  return request.post('/software-packages', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 0,
+    onUploadProgress: (event) => {
+      if (event.total && onProgress) {
+        onProgress(Math.min(99, Math.round((event.loaded * 100) / event.total)))
+      }
+    },
+  })
+}
+export const deleteSoftwarePackage = (id) => request.delete(`/software-packages/${id}`)
+export const softwarePackageDownloadUrl = (id) =>
+  `/api/software-packages/${encodeURIComponent(id)}/download`
+
 // ── 网站管理 ──────────────────────────────────────────────
 export const getWebsites = (params) => request.get('/platforms', { params })
 export const getAllWebsites = () => request.get('/platforms/all')

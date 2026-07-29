@@ -66,6 +66,12 @@ const routes = [
     component: () => import('../views/VideoStreamDeviceList.vue'),
     meta: { title: '视频流设备管理' },
   },
+  {
+    path: '/software-distribution',
+    name: 'SoftwareDistribution',
+    component: () => import('../views/SoftwareDistribution.vue'),
+    meta: { title: '内网软件分发' },
+  },
 ]
 
 const router = createRouter({

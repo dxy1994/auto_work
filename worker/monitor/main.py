@@ -27,6 +27,57 @@ from monitor.task_manager import TaskManager
 clock.install()
 
 
+def run_self_check() -> int:
+    """Validate imports required by the packaged monitor without starting it."""
+    import importlib
+    import platform
+
+    required_modules = (
+        "websockets",
+        "dotenv",
+        "patchright.async_api",
+        "requests",
+        "boto3",
+        "bs4",
+        "pygame",
+        "pythoncom",
+        "win32com.client",
+        "monitor.browser.session",
+        "monitor.chat.sender",
+    )
+    failures = []
+    for module_name in required_modules:
+        try:
+            importlib.import_module(module_name)
+            print(f"[SelfCheck][OK] {module_name}")
+        except Exception as exc:
+            failures.append(f"{module_name}: {exc}")
+            print(f"[SelfCheck][FAILED] {module_name}: {exc}")
+
+    try:
+        from monitor.monitoring.registry import MONITOR_REGISTRY
+        missing_platforms = {1, 2, 3} - set(MONITOR_REGISTRY)
+        if missing_platforms:
+            raise RuntimeError(f"missing platform adapters: {sorted(missing_platforms)}")
+        print(
+            "[SelfCheck][OK] platform adapters: "
+            + ", ".join(str(value) for value in sorted(MONITOR_REGISTRY))
+        )
+    except Exception as exc:
+        failures.append(f"platform adapters: {exc}")
+        print(f"[SelfCheck][FAILED] platform adapters: {exc}")
+
+    print(
+        f"[SelfCheck] Python={platform.python_version()} "
+        f"architecture={platform.architecture()[0]} frozen={getattr(sys, 'frozen', False)}"
+    )
+    if failures:
+        print(f"[SelfCheck] Monitor package failed with {len(failures)} problem(s).")
+        return 1
+    print("[SelfCheck] Monitor package is ready.")
+    return 0
+
+
 # ═══════════════════════════════════════════════════════════
 # 任务处理
 # ═══════════════════════════════════════════════════════════
@@ -224,6 +275,8 @@ def start():
 
 
 if __name__ == "__main__":
+    if "--self-check" in sys.argv:
+        sys.exit(run_self_check())
     autostart_result = handle_autostart_args("auto-monitor")
     if autostart_result is not None:
         sys.exit(autostart_result)
