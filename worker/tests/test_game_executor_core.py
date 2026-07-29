@@ -2,22 +2,24 @@ import os
 import sys
 import unittest
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game_executor.executor.registry import ExecutorRegistry
 from game_executor.gate import TradeTaskGate
-from game_executor.executor.hardware.manual import ManualActionHardwareController
 from game_executor.main import (
     _create_hardware_controller,
     _dispatch_message,
     _heartbeat,
+    _poll_hardware_binding,
     _probe_connected_games,
     _retry_pending_game_recovery,
     _run_trade_assignment,
     _send_runtime_heartbeat,
 )
+from game_executor.hardware_binding import WirelessHidBinding
 from game_executor.status import RuntimeStatus
 from game_executor.audio import speak_text
 from common.context import AppContext
@@ -81,17 +83,23 @@ class GameExecutorCoreTest(unittest.TestCase):
         self.assertTrue(success)
         sapi.assert_called_once_with("天堂经典版游戏状态异常")
 
-    def test_manual_mode_uses_log_only_hardware_with_action_coordinates(self):
-        with patch("game_executor.main.executor_config.MANUAL_ACTIONS", True), patch(
-            "game_executor.main.executor_config.MANUAL_ACTION_WAIT_SECONDS", 0
-        ):
-            hardware = _create_hardware_controller()
+    def test_factory_always_uses_real_wireless_hid_hardware(self):
+        binding = WirelessHidBinding(
+            record_id=2,
+            device_id="AABBCCDDEEFF",
+            name="WHID-2",
+            host="192.168.1.32",
+            port=39667,
+        )
+        with patch("game_executor.main.HardwareController") as controller_type:
+            hardware = _create_hardware_controller(binding)
 
-        self.assertIsInstance(hardware, ManualActionHardwareController)
-        self.assertTrue(hardware.mouse_move(100, 200))
-        self.assertTrue(hardware.mouse_click())
-        self.assertEqual(1, hardware.planned_actions)
-        self.assertEqual(0, hardware.health_check()["hid_commands_sent"])
+        self.assertIs(hardware, controller_type.return_value)
+        controller_type.assert_called_once_with(
+            "192.168.1.32",
+            39667,
+            expected_device_id="AABBCCDDEEFF",
+        )
 
     def test_registry_resolves_game_code_case_insensitively(self):
         registry = ExecutorRegistry()
@@ -101,6 +109,18 @@ class GameExecutorCoreTest(unittest.TestCase):
         self.assertIs(executor, registry.get("LINEAGE_CLASSIC"))
         self.assertIs(executor, registry.get("리니지클래식"))
         self.assertEqual((executor,), registry.executors())
+
+    def test_registry_can_replace_all_aliases_for_rebound_hardware(self):
+        registry = ExecutorRegistry()
+        first = _Executor()
+        second = _Executor()
+        registry.register(first)
+
+        registry.replace(second)
+
+        self.assertIs(second, registry.get("lineage_classic"))
+        self.assertIs(second, registry.get("리니지클래식"))
+        self.assertEqual((second,), registry.executors())
 
     def test_gate_keeps_order_between_offer_and_start(self):
         gate = TradeTaskGate()
@@ -162,6 +182,31 @@ class _BuyerReviewExecutor(_Executor):
 
 
 class GameExecutorDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_hardware_binding_poll_waits_until_hardware_is_installed(self):
+        ctx = AppContext(asyncio.get_running_loop())
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+            if len(sent) == 2:
+                ctx.install_hardware(
+                    object(),
+                    SimpleNamespace(connected=True),
+                    object(),
+                )
+
+        client = SimpleNamespace(send=send)
+        with patch("game_executor.main.HARDWARE_BINDING_POLL_SECONDS", 0):
+            await _poll_hardware_binding(client, ctx)
+
+        self.assertEqual(
+            [
+                {"type": "hardware_binding_request"},
+                {"type": "hardware_binding_request"},
+            ],
+            sent,
+        )
+
     async def test_rejected_buyer_review_is_delivered_to_active_executor(self):
         ctx = AppContext(asyncio.get_running_loop())
         ctx.reporter = _Reporter()
@@ -179,23 +224,21 @@ class GameExecutorDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([("review-1", False)], executor.decisions)
 
-    async def test_manual_mode_reports_the_real_success_terminal_status(self):
+    async def test_trade_reports_the_real_success_terminal_status(self):
         ctx = AppContext(asyncio.get_running_loop())
         ctx.reporter = _Reporter()
         ctx.runtime_status = RuntimeStatus()
         ctx.trade_task_gate = TradeTaskGate()
 
-        with patch("game_executor.main.executor_config.MANUAL_ACTIONS", True):
-            await _run_trade_assignment(
-                "assignment-manual",
-                {"trade_timeout_seconds": 30},
-                _Executor(),
-                ctx,
-            )
+        await _run_trade_assignment(
+            "assignment-live",
+            {"trade_timeout_seconds": 30},
+            _Executor(),
+            ctx,
+        )
 
         terminal = ctx.reporter.statuses[-1]
         self.assertEqual("completed", terminal[1])
-        self.assertNotIn("DRY_RUN_NO_HID", terminal)
 
     async def test_connected_probe_names_unhealthy_game_and_reports_immediately(self):
         registry = ExecutorRegistry()
@@ -314,6 +357,11 @@ class GameExecutorDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
         ctx.reporter = _Reporter()
         ctx.runtime_status = RuntimeStatus()
         ctx.trade_task_gate = TradeTaskGate()
+        ctx.install_hardware(
+            object(),
+            SimpleNamespace(connected=True),
+            executor,
+        )
         order = {"order_id": 42, "game_code": "lineage_classic", "trade_timeout_seconds": 30}
 
         with patch("game_executor.main.EXECUTOR_REGISTRY", registry):

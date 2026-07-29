@@ -89,10 +89,11 @@
         </template>
       </el-table-column>
       <el-table-column prop="created_at" label="创建时间" width="150" />
-      <el-table-column label="操作" width="360" fixed="right">
+      <el-table-column label="操作" width="400" fixed="right">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click="openDetailDrawer(row)">明细</el-button>
           <el-button size="small" link type="primary" @click="openOrderLogs(row)">日志</el-button>
+          <el-button size="small" link type="primary" @click="openChatDialog(row)">聊天</el-button>
           <el-button
             size="small"
             link
@@ -394,6 +395,7 @@
       <div class="order-action-bar">
         <el-button type="primary" plain size="small" :loading="copyLoadingOrderId === currentOrder?.id" @click="openCopyDialog(currentOrder)">复制订单</el-button>
         <el-button type="primary" plain size="small" @click="openOrderLogs(currentOrder)">查看订单日志</el-button>
+        <el-button type="primary" size="small" @click="openChatDialog(currentOrder)">发送聊天消息</el-button>
         <el-button v-if="canRetryOrder(currentOrder)" type="warning" size="small" :loading="retryingOrderId === currentOrder?.id" @click="handleRetryOrder(currentOrder, true)">
           <el-icon><RefreshRight /></el-icon> 重新尝试
         </el-button>
@@ -466,6 +468,106 @@
       </el-table>
     </el-drawer>
 
+    <!-- 订单客户聊天 -->
+    <el-dialog
+      v-model="chatDialogVisible"
+      title="发送订单聊天消息"
+      width="760px"
+      append-to-body
+      destroy-on-close
+      top="4vh"
+    >
+      <div class="chat-target">
+        <div>
+          <span class="chat-target-label">发送给</span>
+          <strong>{{ chatOrder?.customer_name || chatOrder?.buyer_character || '订单客户' }}</strong>
+        </div>
+        <div class="chat-target-meta">
+          <span>{{ websiteNameMap[chatOrder?.website_id] || `平台 ${chatOrder?.website_id || '-'}` }}</span>
+          <span>平台订单号 {{ chatOrder?.source_order_no || '-' }}</span>
+        </div>
+      </div>
+
+      <el-alert
+        type="info"
+        :closable="false"
+        class="chat-order-tip"
+        title="消息会按下方顺序逐条发送；同一条中的图片先发送，随后发送文字。"
+      />
+
+      <div class="chat-message-list">
+        <article v-for="(message, index) in chatMessages" :key="message._key" class="chat-message-card">
+          <header class="chat-message-header">
+            <div class="chat-message-index">
+              <span>{{ String(index + 1).padStart(2, '0') }}</span>
+              <div>
+                <strong>消息 {{ index + 1 }}</strong>
+                <small>{{ chatMessageTypeLabel(message) }}</small>
+              </div>
+            </div>
+            <div class="chat-message-actions">
+              <el-button size="small" text :disabled="index === 0" @click="moveChatMessage(index, -1)">上移</el-button>
+              <el-button size="small" text :disabled="index === chatMessages.length - 1" @click="moveChatMessage(index, 1)">下移</el-button>
+              <el-button size="small" text type="danger" :disabled="chatMessages.length === 1" @click="removeChatMessage(index)">删除</el-button>
+            </div>
+          </header>
+
+          <el-input
+            v-model="message.content"
+            type="textarea"
+            :rows="3"
+            maxlength="5000"
+            show-word-limit
+            resize="vertical"
+            placeholder="输入要发送给该订单客户的文字（可只发图片）"
+          />
+
+          <div class="chat-image-row">
+            <div v-for="(imageUrl, imageIndex) in message.image_urls" :key="imageUrl" class="chat-image-tile">
+              <el-image :src="imageUrl" :preview-src-list="message.image_urls" fit="cover" />
+              <button type="button" aria-label="移除图片" @click="removeChatImage(message, imageIndex)">×</button>
+            </div>
+            <el-upload
+              class="chat-image-upload"
+              accept="image/jpeg,image/png,image/gif,image/webp,image/bmp"
+              multiple
+              :auto-upload="false"
+              :show-file-list="false"
+              :disabled="message._uploading > 0 || message.image_urls.length >= 30"
+              :on-change="file => handleChatImageChange(message, file)"
+            >
+              <div class="chat-image-add" :class="{ 'is-loading': message._uploading > 0 }">
+                <span>{{ message._uploading > 0 ? '上传中…' : '+' }}</span>
+                <small>{{ message._uploading > 0 ? '请稍候' : '添加图片' }}</small>
+              </div>
+            </el-upload>
+          </div>
+        </article>
+      </div>
+
+      <el-button
+        class="chat-add-message"
+        plain
+        :disabled="chatMessages.length >= 30"
+        @click="addChatMessage"
+      >+ 添加下一条消息</el-button>
+
+      <template #footer>
+        <div class="chat-dialog-footer">
+          <span>共 {{ chatMessages.length }} 条，{{ chatImageCount }} 张图片</span>
+          <div>
+            <el-button @click="chatDialogVisible = false">取消</el-button>
+            <el-button
+              type="primary"
+              :loading="chatSending"
+              :disabled="chatUploadCount > 0"
+              @click="handleSendChat"
+            >发送给客户</el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
     <!-- 订单自动交付日志 -->
     <el-dialog
       v-model="orderLogsDialogVisible"
@@ -529,6 +631,7 @@ import {
   getAllAccounts, getAllGameAccounts,
   getOrders, getOrder, getOrderLogs, copyOrder, deleteOrder,
   addOrderDetail, deleteOrderDetail, retryOrder, completeOrder, cancelOrder,
+  sendOrderChat, uploadFile,
   decideBuyerReview as submitBuyerReview,
 } from '../api'
 
@@ -652,6 +755,114 @@ async function fetchList() {
 }
 function handleSearch() { page.value = 1; fetchList() }
 
+// ── 订单客户聊天 ──
+const chatDialogVisible = ref(false)
+const chatOrder = ref(null)
+const chatMessages = ref([])
+const chatSending = ref(false)
+let chatMessageKey = 0
+
+function createChatMessage() {
+  chatMessageKey += 1
+  return {
+    _key: `chat-message-${chatMessageKey}`,
+    _uploading: 0,
+    content: '',
+    image_urls: [],
+  }
+}
+
+const chatImageCount = computed(() =>
+  chatMessages.value.reduce((total, message) => total + message.image_urls.length, 0),
+)
+const chatUploadCount = computed(() =>
+  chatMessages.value.reduce((total, message) => total + message._uploading, 0),
+)
+
+function openChatDialog(order) {
+  if (!order?.id) return
+  chatOrder.value = order
+  chatMessages.value = [createChatMessage()]
+  chatDialogVisible.value = true
+}
+
+function chatMessageTypeLabel(message) {
+  const hasText = Boolean(message.content?.trim())
+  const hasImage = message.image_urls.length > 0
+  if (hasText && hasImage) return '图片 + 文字'
+  if (hasImage) return '图片消息'
+  return '文字消息'
+}
+
+function addChatMessage() {
+  if (chatMessages.value.length < 30) chatMessages.value.push(createChatMessage())
+}
+
+function removeChatMessage(index) {
+  if (chatMessages.value.length > 1) chatMessages.value.splice(index, 1)
+}
+
+function moveChatMessage(index, offset) {
+  const nextIndex = index + offset
+  if (nextIndex < 0 || nextIndex >= chatMessages.value.length) return
+  const [message] = chatMessages.value.splice(index, 1)
+  chatMessages.value.splice(nextIndex, 0, message)
+}
+
+function removeChatImage(message, imageIndex) {
+  message.image_urls.splice(imageIndex, 1)
+}
+
+async function handleChatImageChange(message, file) {
+  if (!file?.raw) return
+  if (chatImageCount.value + chatUploadCount.value >= 30) {
+    ElMessage.warning('一次最多发送 30 张图片')
+    return
+  }
+  message._uploading += 1
+  try {
+    const result = await uploadFile(file.raw)
+    if (result?.url && !message.image_urls.includes(result.url)) {
+      message.image_urls.push(result.url)
+    }
+  } catch (error) {
+    ElMessage.error(error.message || '图片上传失败')
+  } finally {
+    message._uploading -= 1
+  }
+}
+
+async function handleSendChat() {
+  if (!chatOrder.value?.id || chatSending.value || chatUploadCount.value > 0) return
+  const messages = chatMessages.value
+    .map(message => ({
+      content: message.content.trim(),
+      image_urls: [...message.image_urls],
+    }))
+    .filter(message => message.content || message.image_urls.length)
+    .map(message => ({
+      type: message.content && message.image_urls.length
+        ? 'mixed'
+        : message.content ? 'text' : 'image',
+      ...(message.content ? { content: message.content } : {}),
+      ...(message.image_urls.length ? { image_urls: message.image_urls } : {}),
+    }))
+  if (!messages.length) {
+    ElMessage.warning('请至少输入一段文字或添加一张图片')
+    return
+  }
+  chatSending.value = true
+  try {
+    const result = await sendOrderChat(chatOrder.value.id, { messages })
+    ElMessage.success(result.message || '聊天指令已下发')
+    chatDialogVisible.value = false
+  } catch (error) {
+    ElMessage.error(error.message || '聊天指令发送失败')
+  } finally {
+    chatSending.value = false
+  }
+}
+
 // ── 订单关联日志 ──
 const orderLogsDialogVisible = ref(false)
 const orderLogTarget = ref(null)
@@ -668,6 +879,9 @@ function orderLogLabel(type) {
     greeting_send_failed: '招呼指令发送失败',
     greeting_failed: '招呼执行失败',
     greeting_success: '招呼执行成功',
+    chat_command_sent: '聊天指令已下发',
+    chat_message_sent: '聊天消息已发送',
+    chat_message_failed: '聊天消息发送失败',
     queue_assignment: '订单进入机器队列',
     dequeue_assignment: '队首订单开始指派',
     offer_accepted: '交易指派已接受',
@@ -694,8 +908,8 @@ function orderLogLabel(type) {
   }[type] || type || '未知事件'
 }
 function orderLogType(type) {
-  if (['greeting_success', 'dequeue_assignment', 'offer_accepted', 'trade_completed', 'game_trade_completed'].includes(type)) return 'success'
-  if (['queue_assignment', 'queued_offer_rejected', 'queued_offer_expired', 'queued_start_failed', 'queued_worker_disconnected', 'retry_greeting', 'retry_assignment', 'reset_to_greeting', 'manual_dispatch'].includes(type)) return 'warning'
+  if (['greeting_success', 'chat_message_sent', 'dequeue_assignment', 'offer_accepted', 'trade_completed', 'game_trade_completed'].includes(type)) return 'success'
+  if (['chat_command_sent', 'queue_assignment', 'queued_offer_rejected', 'queued_offer_expired', 'queued_start_failed', 'queued_worker_disconnected', 'retry_greeting', 'retry_assignment', 'reset_to_greeting', 'manual_dispatch'].includes(type)) return 'warning'
   if (type?.includes('failed') || ['no_greeting_script', 'no_sub_order', 'offer_rejected', 'offer_expired', 'worker_disconnected', 'trade_timed_out', 'trade_cancelled', 'buyer_review_rejected'].includes(type)) return 'danger'
   return 'primary'
 }
@@ -1157,6 +1371,32 @@ onBeforeUnmount(clearAutoRefreshTimer)
 .game-trade-proof-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .game-trade-proof-title span { color: #606266; font-size: 12px; }
 .game-trade-proof-image { width: 100%; min-height: 220px; max-height: 480px; border: 1px solid #dcdfe6; border-radius: 6px; background: #111827; }
+.chat-target { display: flex; justify-content: space-between; gap: 20px; padding: 14px 16px; border: 1px solid #d9ecff; border-radius: 8px; background: #f4f9ff; }
+.chat-target-label { margin-right: 8px; color: #909399; font-size: 12px; }
+.chat-target-meta { display: flex; gap: 16px; align-items: center; color: #606266; font-size: 12px; }
+.chat-order-tip { margin: 14px 0; }
+.chat-message-list { position: relative; display: grid; gap: 12px; max-height: 52vh; padding: 0 5px 0 18px; overflow-y: auto; }
+.chat-message-list::before { position: absolute; top: 22px; bottom: 22px; left: 6px; width: 2px; content: ""; background: #d9ecff; }
+.chat-message-card { position: relative; padding: 14px; border: 1px solid #e4e7ed; border-radius: 8px; background: #fff; box-shadow: 0 4px 14px rgba(31, 45, 61, .05); }
+.chat-message-card::before { position: absolute; top: 24px; left: -17px; width: 8px; height: 8px; border: 3px solid #fff; border-radius: 50%; content: ""; background: #409eff; box-shadow: 0 0 0 1px #b3d8ff; }
+.chat-message-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 11px; }
+.chat-message-index { display: flex; align-items: center; gap: 10px; }
+.chat-message-index > span { color: #409eff; font: 600 12px/1 Consolas, "SFMono-Regular", monospace; }
+.chat-message-index div { display: grid; gap: 2px; }
+.chat-message-index small { color: #909399; font-size: 11px; }
+.chat-message-actions { display: flex; }
+.chat-image-row { display: flex; gap: 9px; margin-top: 11px; overflow-x: auto; }
+.chat-image-tile { position: relative; flex: 0 0 72px; width: 72px; height: 72px; overflow: hidden; border: 1px solid #dcdfe6; border-radius: 7px; background: #f5f7fa; }
+.chat-image-tile .el-image { width: 100%; height: 100%; }
+.chat-image-tile button { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; padding: 0; color: #fff; border: 0; border-radius: 50%; background: rgba(17, 24, 39, .72); cursor: pointer; }
+.chat-image-add { display: grid; place-content: center; flex: 0 0 72px; width: 72px; height: 72px; color: #409eff; border: 1px dashed #a0cfff; border-radius: 7px; background: #f4f9ff; cursor: pointer; }
+.chat-image-add:hover { border-color: #409eff; background: #ecf5ff; }
+.chat-image-add.is-loading { color: #909399; cursor: wait; }
+.chat-image-add span { text-align: center; font-size: 22px; line-height: 1; }
+.chat-image-add small { margin-top: 6px; font-size: 11px; }
+.chat-add-message { width: 100%; margin-top: 14px; border-style: dashed; }
+.chat-dialog-footer { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+.chat-dialog-footer > span { color: #909399; font-size: 12px; }
 .order-log-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; color: #606266; font-size: 13px; }
 .order-log-toolbar strong { color: #303133; font-size: 18px; }
 .order-log-body { min-height: 180px; max-height: 62vh; padding: 4px 10px 0 2px; overflow-y: auto; }
@@ -1170,4 +1410,8 @@ onBeforeUnmount(clearAutoRefreshTimer)
 .order-log-meta span { color: #606266; font-family: Consolas, "SFMono-Regular", monospace; }
 .order-log-payload { margin-top: 8px; }
 .order-log-payload pre { max-height: 220px; margin: 0; padding: 10px; overflow: auto; color: #d6deeb; border-radius: 5px; background: #17212b; font: 12px/1.55 Consolas, "SFMono-Regular", monospace; }
+@media (max-width: 760px) {
+  .chat-target, .chat-dialog-footer { align-items: flex-start; flex-direction: column; }
+  .chat-target-meta { align-items: flex-start; flex-direction: column; gap: 4px; }
+}
 </style>

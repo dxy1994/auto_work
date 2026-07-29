@@ -127,25 +127,25 @@ async def _dispatch_message(msg, ctx: AppContext):
         reporter.deliver_orders_check_result(
             msg.get("request_id"), msg.get("existing_ids", []))
 
-    elif mtype == "greeting":
-        # 招呼指令：优先路由到活跃 Monitor（复用其 session，避免 CDP 争抢）
+    elif mtype in {"chat", "greeting"}:
+        # 聊天指令：优先路由到持有订单来源账号会话的活跃 Monitor。
         account_id = msg.get("account_id")
         from monitor.monitoring.base import get_active_monitor
         monitor = get_active_monitor(account_id) if account_id else None
         if monitor:
             threading.Thread(
-                target=lambda: monitor.do_greeting(msg),
+                target=lambda: monitor.do_chat(msg),
                 daemon=True,
-                name=f"greeting-{msg.get('order_id', 'unknown')}",
+                name=f"chat-{msg.get('order_id', 'unknown')}",
             ).start()
         else:
-            from monitor.monitoring.greeting import handle_greeting
+            from monitor.monitoring.chat import handle_chat
             threading.Thread(
-                target=handle_greeting,
+                target=handle_chat,
                 args=(msg, reporter),
                 kwargs={"main_loop": ctx.loop},
                 daemon=True,
-                name=f"greeting-{msg.get('order_id', 'unknown')}",
+                name=f"chat-{msg.get('order_id', 'unknown')}",
             ).start()
 
     else:

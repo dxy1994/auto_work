@@ -10,7 +10,6 @@ import com.auto.service.GameScriptService;
 import com.auto.service.RegionScriptService;
 import com.auto.trade.statemachine.DeliveryEvent;
 import com.auto.trade.statemachine.OrderDeliveryStateMachine;
-import com.auto.ws.AgentRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -25,12 +24,11 @@ import java.util.Map;
 public class GreetingDispatchService {
 
     private static final Logger log = LoggerFactory.getLogger(GreetingDispatchService.class);
-    private static final String ITEMMANIA_CHAT_URL = "https://www.itemmania.com/myroom/chat/new_chat.html";
     private static final int MAX_ERROR_MESSAGE_LENGTH = 500;
 
     private final RegionScriptService regionScriptService;
     private final GameScriptService gameScriptService;
-    private final AgentRegistry agentRegistry;
+    private final ChatDispatchService chatDispatchService;
     private final GameItemOrderService orderService;
     private final GameItemOrderDetailService orderDetailService;
     private final TradeDispatchCoordinator tradeDispatchCoordinator;
@@ -39,14 +37,14 @@ public class GreetingDispatchService {
     public GreetingDispatchService(
             RegionScriptService regionScriptService,
             GameScriptService gameScriptService,
-            AgentRegistry agentRegistry,
+            ChatDispatchService chatDispatchService,
             GameItemOrderService orderService,
             GameItemOrderDetailService orderDetailService,
             TradeDispatchCoordinator tradeDispatchCoordinator,
             OrderDeliveryStateMachine stateMachine) {
         this.regionScriptService = regionScriptService;
         this.gameScriptService = gameScriptService;
-        this.agentRegistry = agentRegistry;
+        this.chatDispatchService = chatDispatchService;
         this.orderService = orderService;
         this.orderDetailService = orderDetailService;
         this.tradeDispatchCoordinator = tradeDispatchCoordinator;
@@ -107,20 +105,26 @@ public class GreetingDispatchService {
             return;
         }
 
-        // 构造聊天页面 URL（仅 itemmania 使用 Web 聊天）
-        String chatUrl = null;
-        if ("itemmania".equals(platform)) {
-            chatUrl = ITEMMANIA_CHAT_URL + "?tid=" + sourceOrderNo + "&type=sell&c_type=apl";
-        }
-
-        boolean sent = agentRegistry.sendGreeting(machineId, orderId, websiteId, accountId, scripts, chatUrl);
-        if (!sent) {
-            log.warn("[Greeting] 招呼指令下发失败 machine_id={} order_id={}; 原因：监控机器离线或连接不可用；"
-                            + "解决方案：启动监控端并确认其已连接总控后重试",
-                    machineId, orderId);
+        try {
+            ChatDispatchService.DispatchReceipt receipt =
+                    chatDispatchService.dispatchGreeting(
+                            machineId,
+                            orderId,
+                            websiteId,
+                            accountId,
+                            sourceOrderNo,
+                            platform,
+                            scripts);
+            log.info(
+                    "[Greeting] 已通过聊天指令下发 machine_id={} order_id={} request_id={}",
+                    machineId,
+                    orderId,
+                    receipt.requestId());
+        } catch (RuntimeException e) {
+            log.warn("[Greeting] 聊天指令下发失败 machine_id={} order_id={}; 原因：{}；"
+                            + "解决方案：检查平台聊天配置、来源账号和监控机器连接后重试",
+                    machineId, orderId, e.getMessage());
             stateMachine.fire(order, DeliveryEvent.GREETING_SEND_FAILED, null);
-        } else {
-            log.info("[Greeting] 招呼指令已下发 machine_id={} order_id={} chat_url={}", machineId, orderId, chatUrl);
         }
     }
 

@@ -205,6 +205,35 @@
                     >发送文本</el-button>
                   </div>
 
+                  <div class="keyboard-receiver">
+                    <div class="receiver-heading">
+                      <label class="field-label" for="whid-keyboard-receiver">输入接收区</label>
+                      <span :class="{ active: keyboardReceiverFocused }">
+                        <i />{{ keyboardReceiverFocused ? '正在接收键盘输入' : '发送时自动聚焦' }}
+                      </span>
+                    </div>
+                    <el-input
+                      id="whid-keyboard-receiver"
+                      ref="keyboardReceiverRef"
+                      v-model="keyboardReceiverText"
+                      type="textarea"
+                      :rows="2"
+                      resize="none"
+                      placeholder="USB HID 接在当前电脑时，发送结果会显示在这里"
+                      @focus="keyboardReceiverFocused = true"
+                      @blur="keyboardReceiverFocused = false"
+                    />
+                    <div class="receiver-footer">
+                      <span>若 USB 接在另一台电脑，请在目标电脑的当前输入位置观察。</span>
+                      <el-button
+                        link
+                        type="primary"
+                        @mousedown.prevent
+                        @click="keyboardReceiverText = ''"
+                      >清空</el-button>
+                    </div>
+                  </div>
+
                   <div class="quick-key-row">
                     <span>快捷键</span>
                     <el-button
@@ -264,6 +293,25 @@
                       <el-button :disabled="!isConnected" circle @click="moveMouse(0, mouseStep)">
                         <el-icon><ArrowDown /></el-icon>
                       </el-button>
+                    </div>
+                    <div class="mouse-click-row">
+                      <span>按键测试</span>
+                      <el-button-group>
+                        <el-button
+                          :disabled="!isConnected || mouseClickInProgress"
+                          :loading="actionLoading === 'mouse-click-left'"
+                          @click="clickMouse(1, 'left')"
+                        >
+                          <el-icon><Mouse /></el-icon>左键单击
+                        </el-button>
+                        <el-button
+                          :disabled="!isConnected || mouseClickInProgress"
+                          :loading="actionLoading === 'mouse-click-right'"
+                          @click="clickMouse(2, 'right')"
+                        >
+                          <el-icon><Mouse /></el-icon>右键单击
+                        </el-button>
+                      </el-button-group>
                     </div>
                     <div class="mouse-options">
                       <label>步长 <el-input-number v-model="mouseStep" :min="1" :max="127" size="small" /></label>
@@ -531,6 +579,7 @@ const activeTab = ref('control')
 const actionLoading = ref('')
 const controlStatus = ref(null)
 let refreshTimer = null
+let liveRefreshInFlight = false
 
 const selectedDevice = computed(() => devices.value.find((item) => item.id === selectedId.value) || null)
 const isConnected = computed(() => selectedDevice.value?.connection_state === 'connected')
@@ -563,6 +612,23 @@ async function refreshDevices(silent = false) {
     if (!silent) ElMessage.error(error.message)
   } finally {
     if (!silent) loading.value = false
+  }
+}
+
+async function refreshLiveDevices() {
+  if (liveRefreshInFlight || discovering.value) return
+  liveRefreshInFlight = true
+  try {
+    devices.value = await discoverWirelessHidDevices({ timeout_millis: 800 })
+    if (selectedId.value && !devices.value.some((item) => item.id === selectedId.value)) {
+      selectedId.value = null
+    }
+    if (!selectedId.value && devices.value.length) selectedId.value = devices.value[0].id
+    await loadControlStatus()
+  } catch {
+    await refreshDevices(true)
+  } finally {
+    liveRefreshInFlight = false
   }
 }
 
@@ -628,6 +694,9 @@ async function loadControlStatus() {
 
 const keyboardText = ref('')
 const keyDelay = ref(20)
+const keyboardReceiverRef = ref(null)
+const keyboardReceiverText = ref('')
+const keyboardReceiverFocused = ref(false)
 const usageIds = ref('')
 const modifiers = reactive({ ctrl: false, shift: false, alt: false, gui: false })
 const quickKeys = [
@@ -640,12 +709,13 @@ const quickKeys = [
 ]
 
 async function sendText() {
+  keyboardReceiverRef.value?.focus()
   await runAction('keyboard', async () => {
     await sendWirelessHidKeyboard(selectedId.value, {
       text: keyboardText.value,
       delay_millis: keyDelay.value,
     })
-    ElMessage.success('文本已发送')
+    ElMessage.success('设备已确认接收；请查看输入接收区或目标电脑')
   })
 }
 
@@ -678,9 +748,33 @@ async function sendRawKeyboard() {
 
 const mouseStep = ref(20)
 const absoluteMouse = reactive({ x: 2048, y: 2048 })
+const mouseClickInProgress = computed(() => actionLoading.value.startsWith('mouse-click-'))
 async function moveMouse(x, y) {
   await runAction('mouse', () =>
     sendWirelessHidRelativeMouse(selectedId.value, { buttons: 0, x, y, wheel: 0 }))
+}
+async function clickMouse(buttons, side) {
+  await runAction(`mouse-click-${side}`, async () => {
+    let failure = null
+    try {
+      await sendWirelessHidRelativeMouse(
+        selectedId.value,
+        { buttons, x: 0, y: 0, wheel: 0 },
+      )
+      await new Promise((resolve) => window.setTimeout(resolve, 30))
+    } catch (error) {
+      failure = error
+    }
+    try {
+      await sendWirelessHidRelativeMouse(
+        selectedId.value,
+        { buttons: 0, x: 0, y: 0, wheel: 0 },
+      )
+    } catch (error) {
+      if (!failure) failure = error
+    }
+    if (failure) throw failure
+  })
 }
 async function scrollMouse(wheel) {
   await runAction('mouse', () =>
@@ -903,9 +997,9 @@ function formatBytes(value) {
 
 onMounted(async () => {
   await refreshDevices()
+  await refreshLiveDevices()
   refreshTimer = window.setInterval(async () => {
-    await refreshDevices(true)
-    await loadControlStatus()
+    await refreshLiveDevices()
   }, 5000)
 })
 onBeforeUnmount(() => {
@@ -923,7 +1017,11 @@ onBeforeUnmount(() => {
   --signal-dark: #0b7180;
   --live: #1f9d68;
   --warn: #d88a18;
-  min-height: calc(100vh - 40px);
+  display: flex;
+  height: calc(100vh - 40px);
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
   color: var(--ink);
   font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
 }
@@ -932,6 +1030,7 @@ onBeforeUnmount(() => {
   position: relative;
   display: grid;
   grid-template-columns: minmax(240px, .8fr) minmax(460px, 1.35fr);
+  flex: 0 0 auto;
   gap: 30px 44px;
   padding: 28px 32px 24px;
   overflow: hidden;
@@ -1003,15 +1102,23 @@ onBeforeUnmount(() => {
 
 .console-layout {
   display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
   grid-template-columns: 300px minmax(0, 1fr);
-  min-height: 660px;
+  overflow: hidden;
   border: 1px solid #dce6ed;
   border-top: 0;
   border-radius: 0 0 18px 18px;
   background: white;
   box-shadow: 0 18px 42px rgba(28, 60, 82, .08);
 }
-.device-rail { padding: 24px 18px; border-right: 1px solid var(--line); background: #f2f7fa; }
+.device-rail {
+  min-height: 0;
+  padding: 24px 18px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: #f2f7fa;
+}
 .rail-heading { display: flex; align-items: flex-end; justify-content: space-between; margin: 0 4px 16px; }
 .rail-heading h2 { margin: 4px 0 0; font-size: 20px; letter-spacing: -.03em; }
 .rail-heading .section-kicker { color: var(--signal-dark); }
@@ -1069,7 +1176,14 @@ onBeforeUnmount(() => {
 .rail-empty strong { color: #49677c; font-size: 14px; }
 .rail-empty span { font-size: 12px; line-height: 1.6; }
 
-.device-workspace { min-width: 0; padding: 26px 28px 32px; background: white; border-radius: 0 0 18px; }
+.device-workspace {
+  min-width: 0;
+  min-height: 0;
+  padding: 26px 28px 32px;
+  overflow-y: auto;
+  background: white;
+  border-radius: 0 0 18px;
+}
 .workspace-empty { display: grid; height: 100%; min-height: 520px; place-content: center; justify-items: center; text-align: center; }
 .workspace-empty h2 { margin: 22px 0 8px; font-size: 22px; }
 .workspace-empty p { margin: 0; color: var(--muted); }
@@ -1132,6 +1246,47 @@ onBeforeUnmount(() => {
 .inline-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 12px; }
 .inline-actions :deep(.el-input-number) { width: 112px; }
 .unit-label { margin-right: auto; color: var(--muted); font-size: 12px; }
+.keyboard-receiver {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid #cde3e5;
+  border-radius: 11px;
+  background: #f3fafb;
+}
+.receiver-heading,
+.receiver-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.receiver-heading { margin-bottom: 9px; }
+.receiver-heading .field-label { margin: 0; }
+.receiver-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #78909f;
+  font-size: 11px;
+}
+.receiver-heading > span i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #aab8c3;
+  box-shadow: 0 0 0 3px rgba(170, 184, 195, .14);
+}
+.receiver-heading > span.active { color: var(--live); }
+.receiver-heading > span.active i {
+  background: var(--live);
+  box-shadow: 0 0 0 3px rgba(31, 157, 104, .14);
+}
+.keyboard-receiver :deep(.el-textarea__inner:focus) {
+  box-shadow: 0 0 0 1px var(--live) inset;
+}
+.receiver-footer { margin-top: 7px; }
+.receiver-footer > span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.receiver-footer :deep(.el-button) { flex: 0 0 auto; }
 .quick-key-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 22px; }
 .quick-key-row > span { margin-right: 4px; color: var(--muted); font-size: 12px; }
 .advanced-keys { margin-top: 14px; border-top: 1px solid #edf1f4; border-bottom: 0; }
@@ -1146,6 +1301,35 @@ onBeforeUnmount(() => {
 .mouse-pad { display: grid; gap: 6px; justify-items: center; margin: 0 auto 15px; }
 .mouse-pad-middle { display: flex; align-items: center; gap: 8px; }
 .mouse-origin { display: grid; width: 45px; height: 35px; place-items: center; border: 1px dashed #b8cbd6; border-radius: 9px; color: #7c91a0; font: 11px Consolas, monospace; }
+.mouse-click-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 11px;
+  border: 1px solid #dce9ee;
+  border-radius: 10px;
+  background: #f7fafc;
+}
+.mouse-click-row > span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.mouse-click-row :deep(.el-button-group) {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+}
+.mouse-click-row :deep(.el-button) {
+  min-width: 0;
+  flex: 1;
+  padding-right: 9px;
+  padding-left: 9px;
+}
+.mouse-click-row :deep(.el-button .el-icon) { margin-right: 5px; }
 .mouse-options { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .mouse-options label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
 .mouse-options :deep(.el-input-number) { width: 90px; }

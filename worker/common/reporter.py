@@ -13,6 +13,7 @@ from common.protocol import (
     trade_offer_decision_msg, trade_status_msg, trade_buyer_review_msg,
     trade_game_screenshot_msg,
     greeting_result_msg,
+    chat_result_msg,
 )
 
 
@@ -93,6 +94,11 @@ class Reporter:
     def report_greeting_result(self, order_id, success, message=""):
         self._client.send_threadsafe(
             greeting_result_msg(order_id, success, message))
+
+    def report_chat_result(
+            self, request_id, order_id, success, message=""):
+        self._client.send_threadsafe(
+            chat_result_msg(request_id, order_id, success, message))
 
     # ── 订单查重（跨线程请求-响应）──
 

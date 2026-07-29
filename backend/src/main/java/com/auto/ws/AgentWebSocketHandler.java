@@ -1,5 +1,8 @@
 package com.auto.ws;
 
+import com.auto.service.WirelessHidDeviceManager;
+import com.auto.service.WirelessHidDeviceManager.WorkerBinding;
+import com.auto.trade.ChatDispatchService;
 import com.auto.trade.TradeDispatchCoordinator;
 import com.auto.trade.MarketplaceOrderIngestionService;
 import com.auto.trade.GreetingDispatchService;
@@ -13,6 +16,7 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,18 +39,24 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
     private final TradeDispatchCoordinator tradeCoordinator;
     private final MarketplaceOrderIngestionService orderIngestionService;
     private final GreetingDispatchService greetingDispatchService;
+    private final ChatDispatchService chatDispatchService;
+    private final WirelessHidDeviceManager wirelessHidDeviceManager;
 
     public AgentWebSocketHandler(
             AgentRegistry registry,
             ObjectMapper objectMapper,
             TradeDispatchCoordinator tradeCoordinator,
             MarketplaceOrderIngestionService orderIngestionService,
-            GreetingDispatchService greetingDispatchService) {
+            GreetingDispatchService greetingDispatchService,
+            ChatDispatchService chatDispatchService,
+            WirelessHidDeviceManager wirelessHidDeviceManager) {
         this.registry = registry;
         this.objectMapper = objectMapper;
         this.tradeCoordinator = tradeCoordinator;
         this.orderIngestionService = orderIngestionService;
         this.greetingDispatchService = greetingDispatchService;
+        this.chatDispatchService = chatDispatchService;
+        this.wirelessHidDeviceManager = wirelessHidDeviceManager;
     }
 
     @Override
@@ -73,10 +83,16 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                     Integer machineId = registry.handleRegister(raw);
                     session.getAttributes().put(ATTR_MACHINE_ID, machineId);
                     registry.bindAgent(machineId, session);
-                    Map<String, Object> ack = Map.of("type", "registered", "machine_id", machineId);
+                    Map<String, Object> ack = new LinkedHashMap<>();
+                    ack.put("type", "registered");
+                    ack.put("machine_id", machineId);
+                    if ("game_executor".equals(str(raw.get("role")))) {
+                        appendHardwareBinding(ack, machineId, null);
+                    }
                     session.sendMessage(new TextMessage(objectMapper.writeValueAsString(ack)));
                     log.info("[Agent] 机器已注册并上线 machine_id={} mac={}", machineId, raw.get("mac"));
                 }
+                case "hardware_binding_request" -> handleHardwareBindingRequest(session, raw);
                 case "heartbeat" -> {
                     Integer machineId = machineId(session);
                     if (machineId != null) {
@@ -92,6 +108,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                 case "order_detected" -> handleOrderDetected(session, raw);
                 case "check_orders" -> handleCheckOrders(session, raw);
                 case "greeting_result" -> handleGreetingResult(raw);
+                case "chat_result" -> handleChatResult(session, raw);
                 default -> log.info("[Agent] 未知上行消息类型: {}", type);
             }
         } catch (Exception e) {
@@ -151,6 +168,53 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         } catch (IllegalStateException e) {
             log.warn("[Trade] 忽略无效交易状态 machine_id={}: {}", machineId, e.getMessage());
         }
+    }
+
+    private void handleHardwareBindingRequest(
+            WebSocketSession session,
+            Map<String, Object> raw) throws Exception {
+        Integer machineId = machineId(session);
+        String macAddress = machineId == null ? str(raw.get("mac")) : null;
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("type", "hardware_binding");
+        response.put("machine_id", machineId);
+        appendHardwareBinding(response, machineId, macAddress);
+        synchronized (session) {
+            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
+        }
+    }
+
+    private void appendHardwareBinding(
+            Map<String, Object> target,
+            Integer machineId,
+            String macAddress) {
+        try {
+            WorkerBinding binding;
+            if (machineId != null) {
+                binding = wirelessHidDeviceManager.prepareWorkerBinding(machineId);
+            } else if (macAddress != null && !macAddress.isBlank()) {
+                binding = wirelessHidDeviceManager.prepareWorkerBindingByMac(macAddress);
+            } else {
+                throw new IllegalArgumentException("缺少 machine_id 或 mac");
+            }
+            target.put("wireless_hid", binding == null ? null : bindingPayload(binding));
+            target.put(
+                    "hardware_error",
+                    binding == null ? "当前机器尚未绑定键鼠设备" : null);
+        } catch (Exception e) {
+            target.put("wireless_hid", null);
+            target.put("hardware_error", e.getMessage());
+        }
+    }
+
+    private Map<String, Object> bindingPayload(WorkerBinding binding) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("record_id", binding.recordId());
+        payload.put("device_id", binding.deviceId());
+        payload.put("name", binding.name());
+        payload.put("ip", binding.ip());
+        payload.put("control_port", binding.controlPort());
+        return payload;
     }
 
     private void handleTradeBuyerReview(WebSocketSession session, Map<String, Object> raw) {
@@ -270,6 +334,26 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         } catch (Exception e) {
             log.error("[Greeting] 处理招呼回馈异常 order_id={}: {}", orderId, e.getMessage(), e);
         }
+    }
+
+    private void handleChatResult(WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+            log.warn("[Chat] 忽略非当前机器会话的聊天回执 machine_id={}", machineId);
+            return;
+        }
+        Integer orderId = asInt(raw.get("order_id"));
+        String requestId = str(raw.get("request_id"));
+        if (orderId == null || requestId == null || requestId.isBlank()) {
+            log.warn("[Chat] chat_result 缺少 order_id 或 request_id");
+            return;
+        }
+        chatDispatchService.handleResult(
+                machineId,
+                requestId,
+                orderId,
+                Boolean.TRUE.equals(raw.get("success")),
+                str(raw.get("message")));
     }
 
     private static Integer asInt(Object value) {

@@ -1,7 +1,7 @@
 """游戏脚本统一使用的拟人化键鼠输入层。
 
 业务执行器只依赖 :class:`HumanizedInputController`，底层设备只需要实现
-``mouse_move/mouse_click/mouse_drag/key_press/key_combo`` 这组稳定接口。
+``mouse_move/mouse_click/mouse_drag/mouse_scroll/key_press/key_combo`` 这组稳定接口。
 以后接入新的硬件安装包时，应新增或替换底层适配器，而不是修改游戏流程。
 """
 
@@ -34,6 +34,8 @@ class InputDeviceAdapter(Protocol):
 
     def mouse_drag(self, x1: int, y1: int, x2: int, y2: int) -> bool: ...
 
+    def mouse_scroll(self, steps: int) -> bool: ...
+
     def key_press(self, key: str, duration_ms: int = 100) -> bool: ...
 
     def key_combo(self, keys: list[str], duration_ms: int = 100) -> bool: ...
@@ -47,12 +49,12 @@ class HumanizationPolicy:
     click_radius_y: int = 3
     drag_start_radius: int = 2
     drag_end_radius: int = 6
-    before_action_seconds: tuple[float, float] = (0.04, 0.14)
-    pointer_settle_seconds: tuple[float, float] = (0.06, 0.18)
-    after_action_seconds: tuple[float, float] = (0.03, 0.12)
+    before_action_seconds: tuple[float, float] = (0.08, 0.22)
+    pointer_settle_seconds: tuple[float, float] = (0.10, 0.24)
+    after_action_seconds: tuple[float, float] = (0.08, 0.20)
     double_click_interval_seconds: tuple[float, float] = (0.09, 0.16)
-    key_hold_ms: tuple[int, int] = (55, 125)
-    key_gap_seconds: tuple[float, float] = (0.035, 0.13)
+    key_hold_ms: tuple[int, int] = (75, 145)
+    key_gap_seconds: tuple[float, float] = (0.08, 0.22)
 
     def __post_init__(self) -> None:
         for name in (
@@ -94,6 +96,7 @@ class HumanizedInputController:
         random_source: Optional[random.Random] = None,
         sleep: Callable[[float], None] = time.sleep,
         cancelled: Optional[Callable[[], bool]] = None,
+        action_debug: bool = False,
     ) -> None:
         self.device = device
         self.policy = policy
@@ -103,6 +106,7 @@ class HumanizedInputController:
         self._lock = threading.RLock()
         self._last_points: dict[tuple[object, ...], tuple[int, int]] = {}
         self._action_visualizer: Optional[Callable[[dict[str, object]], object]] = None
+        self._action_debug = bool(action_debug)
 
     def set_action_visualizer(
         self,
@@ -334,6 +338,28 @@ class HumanizedInputController:
             self._random_sleep(self.policy.after_action_seconds)
             return True
 
+    def scroll(self, steps: int) -> bool:
+        """分段滚动滚轮；负数向下，正数向上。"""
+        resolved_steps = int(steps)
+        if resolved_steps == 0:
+            return True
+        with self._lock:
+            if self._is_cancelled():
+                return False
+            self._random_sleep(self.policy.before_action_seconds)
+            if self._is_cancelled():
+                return False
+            self._log_action(
+                "mouse_scroll",
+                f"滚轮{'向下' if resolved_steps < 0 else '向上'} "
+                f"{abs(resolved_steps)} 格",
+                steps=resolved_steps,
+            )
+            if self.device.mouse_scroll(resolved_steps) is False:
+                return False
+            self._random_sleep(self.policy.after_action_seconds)
+            return True
+
     def type_text(self, text: object) -> bool:
         """按逐字符变化的按压时长和字符间隔输入文本。"""
         value = str(text)
@@ -412,13 +438,13 @@ class HumanizedInputController:
 
     def _log_action(self, action: str, instruction: str, **details: object) -> None:
         """在动作发送到硬件前输出完整、可直接人工执行的信息。"""
+        if not self._action_debug:
+            return
         payload: dict[str, object] = {
             "action": action,
             "phase": "planned",
             "instruction": instruction,
-            "execution_mode": (
-                "manual" if getattr(self.device, "manual_mode", False) else "hardware"
-            ),
+            "execution_mode": "hardware",
             **details,
         }
         visualized_actions = {

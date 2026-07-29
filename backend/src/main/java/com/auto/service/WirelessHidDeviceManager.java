@@ -56,13 +56,28 @@ public class WirelessHidDeviceManager {
         Duration timeout = Duration.ofMillis(timeoutMillis);
         List<WirelessHidDiscoveredDevice> discovered =
                 unicastIp == null || unicastIp.isBlank()
-                        ? discoveryClient.discover(timeout)
+                        ? discoveryClient.discover(timeout, knownDeviceIps())
                         : discoveryClient.discoverUnicast(unicastIp.strip(), timeout);
         Instant now = Instant.now();
         for (WirelessHidDiscoveredDevice device : discovered) {
             upsert(device, now);
         }
         return listDevices();
+    }
+
+    private List<String> knownDeviceIps() {
+        List<String> ips = new ArrayList<>();
+        for (MouseKeyboardDevice device : deviceService.findAllActive()) {
+            if (!DEVICE_TYPE.equalsIgnoreCase(device.getDeviceType())) {
+                continue;
+            }
+            try {
+                ips.add(readInfo(device).ip());
+            } catch (IOException ignored) {
+                // Malformed legacy rows cannot be probed.
+            }
+        }
+        return ips.stream().distinct().toList();
     }
 
     public List<DeviceView> listDevices() {
@@ -152,6 +167,51 @@ public class WirelessHidDeviceManager {
             }
         }
         return toView(device, info);
+    }
+
+    /**
+     * Resolve the Wireless HID assigned to a worker machine.
+     *
+     * <p>The backend test page and the worker must never hold the same WHID/1
+     * control lease. If the backend currently owns the lease, release it before
+     * returning the binding to the worker.</p>
+     */
+    public synchronized WorkerBinding prepareWorkerBinding(int machineId) throws IOException {
+        Machine machine = machineService.getById(machineId);
+        if (machine == null || !Integer.valueOf(1).equals(machine.getIsActive())) {
+            throw ApiException.notFound("机器不存在或已停用");
+        }
+        return prepareWorkerBinding(machine);
+    }
+
+    public synchronized WorkerBinding prepareWorkerBindingByMac(String macAddress)
+            throws IOException {
+        Machine machine = machineService.findByMacAddress(macAddress);
+        if (machine == null || !Integer.valueOf(1).equals(machine.getIsActive())) {
+            throw ApiException.notFound("机器不存在或已停用");
+        }
+        return prepareWorkerBinding(machine);
+    }
+
+    private WorkerBinding prepareWorkerBinding(Machine machine) throws IOException {
+        Integer recordId = machine.getMkDeviceId();
+        if (recordId == null) {
+            return null;
+        }
+        MouseKeyboardDevice device = requireDevice(recordId);
+        if (!Integer.valueOf(1).equals(device.getIsActive())) {
+            throw new IOException("机器关联的 Wireless HID 已停用");
+        }
+        if (controlClients.containsKey(recordId)) {
+            disconnect(recordId);
+        }
+        StoredInfo info = readInfo(device);
+        return new WorkerBinding(
+                recordId,
+                info.deviceId(),
+                device.getName(),
+                info.ip(),
+                info.controlPort());
     }
 
     public WirelessHidControlClient.Status controlStatus(int id) throws IOException {
@@ -549,6 +609,14 @@ public class WirelessHidDeviceManager {
                     lastError,
                     null);
         }
+    }
+
+    public record WorkerBinding(
+            Integer recordId,
+            String deviceId,
+            String name,
+            String ip,
+            int controlPort) {
     }
 
     public record StoredInfo(

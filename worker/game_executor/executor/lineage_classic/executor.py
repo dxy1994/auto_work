@@ -578,12 +578,6 @@ class LineageClassicExecutor(BaseGameExecutor):
     def _reject_buyer_request(self, navigator) -> None:
         """点击 No，并以 Yes/No 模板消失作为拒绝真正生效的依据。"""
         max_attempts = 3
-        if getattr(self._hw, "manual_mode", False):
-            print(
-                "[Lineage][人工拒绝] 当前为 manual_actions 模式，不会发送 HID；"
-                "请根据紧随其后的 MANUAL-ACTION 坐标手动点击 No",
-                flush=True,
-            )
         for attempt in range(1, max_attempts + 1):
             print(
                 f"[Lineage][人工拒绝] 点击交易请求 No，"
@@ -609,7 +603,6 @@ class LineageClassicExecutor(BaseGameExecutor):
                 ) is None,
                 profile="panel",
                 fixed_wait=0.5,
-                attempts=30,
                 probe_interval=0.5,
             )
             if closed:
@@ -750,7 +743,6 @@ class LineageClassicExecutor(BaseGameExecutor):
             trade_closed_sample,
             profile="final_verify",
             fixed_wait=1.0,
-            attempts=30,
             probe_interval=0.5,
         )
         return bool(result)

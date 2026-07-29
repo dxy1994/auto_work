@@ -61,4 +61,50 @@ class WirelessHidDiscoveryClientTest {
             responder.get(1, TimeUnit.SECONDS);
         }
     }
+
+    @Test
+    void probesKnownAddressAlongsideBroadcastTargets() throws Exception {
+        try (DatagramSocket deviceSocket =
+                     new DatagramSocket(0, InetAddress.getByName("127.0.0.1"))) {
+            CompletableFuture<Void> responder = CompletableFuture.runAsync(() -> {
+                try {
+                    DatagramPacket request = new DatagramPacket(new byte[128], 128);
+                    deviceSocket.receive(request);
+                    String json = """
+                            {
+                              "protocol": 1,
+                              "id": "F8814D1B5BF8",
+                              "name": "WirelessHID-5BF8",
+                              "ip": "192.168.1.31",
+                              "controlPort": 39667,
+                              "managementPort": 39668,
+                              "firmware": "0.1.1",
+                              "claimed": false,
+                              "ch9329": true,
+                              "rssi": -44
+                            }
+                            """;
+                    byte[] response = json.getBytes(StandardCharsets.UTF_8);
+                    deviceSocket.send(new DatagramPacket(
+                            response,
+                            response.length,
+                            request.getAddress(),
+                            request.getPort()));
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+
+            WirelessHidDiscoveryClient client =
+                    new WirelessHidDiscoveryClient(new ObjectMapper(), deviceSocket.getLocalPort());
+            List<WirelessHidDiscoveredDevice> devices = client.discover(
+                    Duration.ofMillis(400),
+                    List.of("127.0.0.1"));
+
+            assertEquals(1, devices.size());
+            assertEquals("F8814D1B5BF8", devices.get(0).id());
+            assertEquals("127.0.0.1", devices.get(0).ip());
+            responder.get(1, TimeUnit.SECONDS);
+        }
+    }
 }

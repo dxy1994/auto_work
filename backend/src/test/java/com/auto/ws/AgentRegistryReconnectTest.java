@@ -2,7 +2,10 @@ package com.auto.ws;
 
 import com.auto.entity.Machine;
 import com.auto.service.MachineService;
+import com.auto.service.WirelessHidDeviceManager;
+import com.auto.service.WirelessHidDeviceManager.WorkerBinding;
 import com.auto.trade.MachineSessionRestored;
+import com.auto.trade.TradeOffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
@@ -10,6 +13,7 @@ import org.springframework.web.socket.WebSocketSession;
 import tools.jackson.databind.ObjectMapper;
 
 import java.net.InetSocketAddress;
+import java.time.Instant;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -24,13 +28,21 @@ class AgentRegistryReconnectTest {
 
     private MachineService machineService;
     private ApplicationEventPublisher eventPublisher;
+    private WirelessHidDeviceManager wirelessHidDeviceManager;
+    private ObjectMapper objectMapper;
     private AgentRegistry registry;
 
     @BeforeEach
     void setUp() {
         machineService = mock(MachineService.class);
         eventPublisher = mock(ApplicationEventPublisher.class);
-        registry = new AgentRegistry(mock(ObjectMapper.class), machineService, eventPublisher);
+        wirelessHidDeviceManager = mock(WirelessHidDeviceManager.class);
+        objectMapper = mock(ObjectMapper.class);
+        registry = new AgentRegistry(
+                objectMapper,
+                machineService,
+                eventPublisher,
+                wirelessHidDeviceManager);
     }
 
     @Test
@@ -126,6 +138,59 @@ class AgentRegistryReconnectTest {
         assertNull(snapshot.get("session_id"));
         assertNull(snapshot.get("connected_at"));
         assertNull(snapshot.get("runtime"));
+    }
+
+    @Test
+    void tradeOfferCarriesTheMachinesCurrentWirelessHidBinding() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        registry.bindAgent(7, session);
+        when(wirelessHidDeviceManager.prepareWorkerBinding(7)).thenReturn(
+                new WorkerBinding(
+                        2,
+                        "AABBCCDDEEFF",
+                        "二号键鼠",
+                        "192.168.1.32",
+                        39667));
+        when(objectMapper.writeValueAsString(argThat((Object value) -> {
+            if (!(value instanceof Map<?, ?> payload)) {
+                return false;
+            }
+            Object rawBinding = payload.get("wireless_hid");
+            return rawBinding instanceof Map<?, ?> binding
+                    && Integer.valueOf(2).equals(binding.get("record_id"))
+                    && "AABBCCDDEEFF".equals(binding.get("device_id"));
+        }))).thenReturn("{}");
+        TradeOffer offer = new TradeOffer(
+                "assignment-1",
+                10,
+                7,
+                11,
+                "token",
+                Instant.now().plusSeconds(30),
+                Map.of("game_code", "lineage_classic"));
+
+        assertTrue(registry.sendTradeOffer(7, offer));
+        verify(session).sendMessage(argThat(message -> "{}".equals(message.getPayload())));
+    }
+
+    @Test
+    void tradeOfferIsNotSentBeforeMachineHasAKeyboardBinding() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        registry.bindAgent(7, session);
+        when(wirelessHidDeviceManager.prepareWorkerBinding(7)).thenReturn(null);
+        TradeOffer offer = new TradeOffer(
+                "assignment-1",
+                10,
+                7,
+                11,
+                "token",
+                Instant.now().plusSeconds(30),
+                Map.of("game_code", "lineage_classic"));
+
+        assertFalse(registry.sendTradeOffer(7, offer));
+        verify(session, never()).sendMessage(any());
     }
 
     private Machine machine(int id, String status) {

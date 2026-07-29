@@ -15,6 +15,7 @@ import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -45,12 +46,35 @@ public final class WirelessHidDiscoveryClient {
     }
 
     public List<WirelessHidDiscoveredDevice> discover(Duration timeout) throws IOException {
+        return discover(timeout, List.of());
+    }
+
+    /**
+     * Broadcasts for new devices and probes known addresses in the same timeout window.
+     *
+     * <p>The unicast probes are important on networks that allow direct UDP traffic but
+     * suppress Wi-Fi broadcast responses.</p>
+     */
+    public List<WirelessHidDiscoveredDevice> discover(
+            Duration timeout,
+            Collection<String> knownIps) throws IOException {
         Duration checkedTimeout = checkedTimeout(timeout);
         List<DiscoveryTarget> targets = interfaceTargets();
         if (targets.isEmpty()) {
             targets.add(new DiscoveryTarget(null, InetAddress.getByName("255.255.255.255")));
         }
+        if (knownIps != null) {
+            for (String ip : knownIps.stream().filter(value -> value != null && !value.isBlank())
+                    .distinct().toList()) {
+                targets.add(new DiscoveryTarget(null, requireIpv4(ip)));
+            }
+        }
+        return discoverTargets(targets, checkedTimeout);
+    }
 
+    private List<WirelessHidDiscoveredDevice> discoverTargets(
+            List<DiscoveryTarget> targets,
+            Duration timeout) throws IOException {
         ExecutorService executor = Executors.newFixedThreadPool(
                 Math.min(targets.size(), 16),
                 runnable -> {
@@ -61,7 +85,7 @@ public final class WirelessHidDiscoveryClient {
         try {
             List<Callable<List<WirelessHidDiscoveredDevice>>> tasks = targets.stream()
                     .<Callable<List<WirelessHidDiscoveredDevice>>>map(target ->
-                            () -> discoverFrom(target.localAddress(), target.targetAddress(), checkedTimeout))
+                            () -> discoverFrom(target.localAddress(), target.targetAddress(), timeout))
                     .toList();
             Map<String, WirelessHidDiscoveredDevice> byId = new LinkedHashMap<>();
             for (Future<List<WirelessHidDiscoveredDevice>> future : executor.invokeAll(tasks)) {

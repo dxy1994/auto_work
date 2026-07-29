@@ -23,6 +23,7 @@ TYPE_TRADE_STATUS = "trade_status"
 TYPE_TRADE_BUYER_REVIEW = "trade_buyer_review"
 TYPE_TRADE_GAME_SCREENSHOT = "trade_game_screenshot"
 TYPE_GREETING_RESULT = "greeting_result"
+TYPE_CHAT_RESULT = "chat_result"
 
 # 中控 → Worker
 TYPE_REGISTERED = "registered"
@@ -30,6 +31,7 @@ TYPE_ORDER_CHECK = "order_check"
 TYPE_CANCEL = "cancel"
 TYPE_ORDERS_CHECK_RESULT = "orders_check_result"
 TYPE_GREETING = "greeting"
+TYPE_CHAT = "chat"
 TYPE_TRADE_OFFER = "trade_offer"
 TYPE_TRADE_START = "trade_start"
 TYPE_TRADE_CANCEL = "trade_cancel"
@@ -142,6 +144,17 @@ def greeting_result_msg(order_id: int, success: bool,
                         message: str = "") -> dict:
     return {
         "type": TYPE_GREETING_RESULT,
+        "order_id": order_id,
+        "success": success,
+        "message": message,
+    }
+
+
+def chat_result_msg(request_id: str, order_id: int, success: bool,
+                    message: str = "") -> dict:
+    return {
+        "type": TYPE_CHAT_RESULT,
+        "request_id": request_id,
         "order_id": order_id,
         "success": success,
         "message": message,

@@ -105,42 +105,56 @@ class BaseOrderMonitor:
         self._active_temp_pages: set = set()
         self._session: Optional[BrowserSession] = None
 
-    # ── 招呼子任务（复用 Monitor 已有 session，如同开详情页）──
+    # ── 聊天子任务（复用 Monitor 已有 session，如同开详情页）──
 
-    def do_greeting(self, msg: dict) -> dict:
-        """在 Monitor 事件循环中执行招呼，复用已有 session。
+    def do_chat(self, msg: dict) -> dict:
+        """在 Monitor 事件循环中执行订单聊天，复用已有 session。
 
         与 Itemmania 详情页同理：直接在 session owner loop 上调度
-        _do_send_web_chat，不需要 queue/processor/pause。
+        _do_send_chat，不需要 queue/processor/pause。
         """
-        from monitor.chat.sender import _do_send_web_chat
+        from monitor.chat.sender import _do_send_chat
+        from monitor.monitoring.chat import normalize_chat_command, report_chat_result
+
+        try:
+            command = normalize_chat_command(msg)
+        except Exception as exc:
+            command = {
+                "request_id": str(msg.get("request_id") or "invalid-chat"),
+                "order_id": msg.get("order_id"),
+                "purpose": str(msg.get("purpose") or "manual"),
+            }
+            result = {"success": False, "message": str(exc)}
+            report_chat_result(self.reporter, command, result, log_tag=self._log_tag)
+            return result
 
         session = self._session
         if session is None or session._context is None or session._owner_loop is None:
-            return {"success": False, "message": "浏览器会话未就绪"}
+            result = {"success": False, "message": "浏览器会话未就绪"}
+            report_chat_result(self.reporter, command, result)
+            return result
 
-        coro = _do_send_web_chat(
-            session, msg.get("chat_url", ""), msg.get("scripts", []),
+        coro = _do_send_chat(
+            session,
+            command["target"],
+            command["messages"],
             keep_open=True)
         try:
             future = asyncio.run_coroutine_threadsafe(coro, session._owner_loop)
             result = future.result(timeout=120)
         except TimeoutError:
             future.cancel()
-            result = {"success": False, "message": "招呼发送超时（120s）"}
+            result = {"success": False, "message": "聊天发送超时（120s）"}
         except Exception as e:
             result = {"success": False, "message": str(e)}
 
-        order_id = msg.get("order_id")
-        if order_id is not None:
-            try:
-                self.reporter.report_greeting_result(
-                    order_id, result.get("success", False),
-                    result.get("message", ""))
-            except Exception as e:
-                print(f"[{self._log_tag}] 回馈招呼结果失败 order_id={order_id}: {e}")
+        report_chat_result(self.reporter, command, result, log_tag=self._log_tag)
 
         return result
+
+    def do_greeting(self, msg: dict) -> dict:
+        """Compatibility alias for an older controller during rolling upgrades."""
+        return self.do_chat(msg)
 
     # ── 子类必须覆写 ──
 

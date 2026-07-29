@@ -10,7 +10,6 @@ from game_executor.executor.hardware.humanized import (
     HumanizationPolicy,
     HumanizedInputController,
 )
-from game_executor.executor.hardware.manual import ManualActionHardwareController
 
 
 class _ConstantRandom:
@@ -26,6 +25,7 @@ class _Device:
         self.moves = []
         self.clicks = []
         self.drags = []
+        self.scrolls = []
         self.keys = []
         self.combos = []
         self.move_result = True
@@ -40,6 +40,10 @@ class _Device:
 
     def mouse_drag(self, x1, y1, x2, y2):
         self.drags.append((x1, y1, x2, y2))
+        return True
+
+    def mouse_scroll(self, steps):
+        self.scrolls.append(steps)
         return True
 
     def key_press(self, key, duration_ms=100):
@@ -116,6 +120,18 @@ class HumanizedInputControllerTest(unittest.TestCase):
         self.assertTrue(98 <= x1 <= 102 and 98 <= y1 <= 102)
         self.assertTrue(294 <= x2 <= 306 and 294 <= y2 <= 306)
 
+    def test_scroll_delegates_one_complete_segment_to_device(self):
+        device = _Device()
+        controller = HumanizedInputController(
+            device,
+            policy=ZERO_DELAY_POLICY,
+            random_source=_ConstantRandom(),
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertTrue(controller.scroll(-8))
+        self.assertEqual([-8], device.scrolls)
+
     def test_typing_uses_per_character_hold_and_gap_ranges(self):
         device = _Device()
         sleeps = []
@@ -140,20 +156,6 @@ class HumanizedInputControllerTest(unittest.TestCase):
         self.assertTrue(all(60 <= hold <= 90 for _key, hold in device.keys))
         self.assertTrue(all(0.04 <= delay <= 0.08 for delay in sleeps))
 
-    def test_manual_mode_logs_a_whole_typing_plan_as_one_action(self):
-        device = ManualActionHardwareController(action_wait_seconds=0)
-        controller = HumanizedInputController(
-            device,
-            policy=ZERO_DELAY_POLICY,
-            random_source=_ConstantRandom(),
-            sleep=lambda _seconds: None,
-        )
-
-        with mock.patch("builtins.print"):
-            self.assertTrue(controller.type_text("123"))
-
-        self.assertEqual(1, device.planned_actions)
-
     def test_action_log_contains_actual_coordinate_and_complete_input_text(self):
         device = _Device()
         controller = HumanizedInputController(
@@ -161,6 +163,7 @@ class HumanizedInputControllerTest(unittest.TestCase):
             policy=ZERO_DELAY_POLICY,
             random_source=_ConstantRandom(),
             sleep=lambda _seconds: None,
+            action_debug=True,
         )
 
         with mock.patch("builtins.print") as output:
@@ -178,13 +181,14 @@ class HumanizedInputControllerTest(unittest.TestCase):
         self.assertEqual("250000", actions[1]["text"])
         self.assertEqual("planned", actions[1]["phase"])
 
-    def test_manual_click_logs_client_and_screen_coordinate_conversion(self):
-        device = ManualActionHardwareController(action_wait_seconds=0)
+    def test_click_log_contains_client_and_screen_coordinate_conversion(self):
+        device = _Device()
         controller = HumanizedInputController(
             device,
             policy=ZERO_DELAY_POLICY,
             random_source=_ConstantRandom(),
             sleep=lambda _seconds: None,
+            action_debug=True,
         )
 
         with mock.patch("builtins.print") as output:
@@ -203,30 +207,25 @@ class HumanizedInputControllerTest(unittest.TestCase):
                 logged["game"] = json.loads(
                     line.removeprefix("[GAME-ACTION] ")
                 )
-            elif line.startswith("[MANUAL-ACTION] "):
-                logged["manual"] = json.loads(
-                    line.removeprefix("[MANUAL-ACTION] ")
-                )
-
-        for action in logged.values():
-            self.assertEqual([190, 213], action["client_origin"])
-            self.assertEqual([794, 584], action["client_target"])
-            self.assertEqual([794, 584], action["client_actual"])
-            self.assertEqual([984, 797], action["screen_target"])
-            self.assertEqual([984, 797], action["screen_actual"])
-            self.assertEqual(
-                [794, 584, 794, 584],
-                action["client_action_bounds"],
-            )
-            self.assertEqual(
-                [984, 797, 984, 797],
-                action["screen_action_bounds"],
-            )
-        self.assertIn("游戏客户区坐标 (794,584)", logged["manual"]["instruction"])
-        self.assertIn("客户区原点 (190,213)", logged["manual"]["instruction"])
+        action = logged["game"]
+        self.assertEqual([190, 213], action["client_origin"])
+        self.assertEqual([794, 584], action["client_target"])
+        self.assertEqual([794, 584], action["client_actual"])
+        self.assertEqual([984, 797], action["screen_target"])
+        self.assertEqual([984, 797], action["screen_actual"])
+        self.assertEqual(
+            [794, 584, 794, 584],
+            action["client_action_bounds"],
+        )
+        self.assertEqual(
+            [984, 797, 984, 797],
+            action["screen_action_bounds"],
+        )
+        self.assertIn("游戏客户区坐标 (794,584)", action["instruction"])
+        self.assertIn("客户区原点 (190,213)", action["instruction"])
         self.assertIn(
             "允许操作范围 X[794,794] Y[584,584]",
-            logged["manual"]["instruction"],
+            action["instruction"],
         )
 
     def test_click_logs_effective_action_region_after_bounds_intersection(self):
@@ -236,6 +235,7 @@ class HumanizedInputControllerTest(unittest.TestCase):
             policy=ZERO_DELAY_POLICY,
             random_source=_ConstantRandom(),
             sleep=lambda _seconds: None,
+            action_debug=True,
         )
 
         with mock.patch("builtins.print") as output:
@@ -264,6 +264,7 @@ class HumanizedInputControllerTest(unittest.TestCase):
             policy=ZERO_DELAY_POLICY,
             random_source=_ConstantRandom(),
             sleep=lambda _seconds: None,
+            action_debug=True,
         )
         visualized = []
         controller.set_action_visualizer(
@@ -290,6 +291,7 @@ class HumanizedInputControllerTest(unittest.TestCase):
             policy=ZERO_DELAY_POLICY,
             random_source=_ConstantRandom(),
             sleep=lambda _seconds: None,
+            action_debug=True,
         )
         visualized = []
         controller.set_action_visualizer(
@@ -320,7 +322,7 @@ class HumanizedInputControllerTest(unittest.TestCase):
         self.assertTrue(all("visual_debug_image" in action for action in logged_actions))
         self.assertEqual(1, len(device.drags))
         self.assertEqual(["2", "7", "enter"], [key for key, _hold in device.keys])
-        self.assertEqual([(["ctrl", "a"], 55)], device.combos)
+        self.assertEqual([(["ctrl", "a"], 75)], device.combos)
 
     def test_drag_logs_effective_start_and_end_regions(self):
         device = _Device()
@@ -329,6 +331,7 @@ class HumanizedInputControllerTest(unittest.TestCase):
             policy=ZERO_DELAY_POLICY,
             random_source=_ConstantRandom(),
             sleep=lambda _seconds: None,
+            action_debug=True,
         )
 
         with mock.patch("builtins.print") as output:

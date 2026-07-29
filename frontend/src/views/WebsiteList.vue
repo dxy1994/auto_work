@@ -54,7 +54,7 @@
     </div>
 
     <!-- 新增/编辑弹窗 -->
-    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑网站' : '新增网站'" width="560px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑网站' : '新增网站'" width="760px" destroy-on-close top="4vh">
       <el-form :model="form" label-width="100px" ref="formRef" :rules="rules">
         <el-form-item label="网站名称" prop="name">
           <el-input v-model="form.name" placeholder="如：GitHub" />
@@ -102,6 +102,48 @@
             <el-input v-model="loginCfg.captcha_input_selector" placeholder="#captcha-input" />
           </el-form-item>
         </template>
+
+        <el-divider>订单聊天配置</el-divider>
+        <el-alert
+          type="info"
+          :closable="false"
+          class="chat-config-tip"
+          title="聊天地址必须包含 {order_no}；ItemMania 可留空使用内置配置，其他平台需按实际页面填写。"
+        />
+        <el-form-item label="聊天地址模板">
+          <el-input
+            v-model="chatCfg.url_template"
+            placeholder="https://example.com/chat?order={order_no}"
+          />
+        </el-form-item>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="输入框选择器">
+              <el-input v-model="chatCfg.input_selector" placeholder="#chat-input" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="发送按钮选择器">
+              <el-input v-model="chatCfg.send_selector" placeholder="#send-button" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="图片控件选择器">
+          <el-input v-model="chatCfg.file_selector" placeholder="input[type='file']" />
+        </el-form-item>
+        <el-form-item label="上传即发送">
+          <el-switch
+            v-model="chatCfg.upload_auto_send"
+            active-text="是"
+            inactive-text="否，需点击发送"
+          />
+        </el-form-item>
+        <el-form-item v-if="!chatCfg.upload_auto_send" label="图片发送选择器">
+          <el-input v-model="chatCfg.upload_send_selector" placeholder=".upload-confirm" />
+        </el-form-item>
+        <el-form-item label="上传层关闭选择器">
+          <el-input v-model="chatCfg.upload_close_selector" placeholder="可选，如 .upload-dialog .close" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -138,9 +180,19 @@ const defaultLoginCfg = () => ({
   username_selector: '', password_selector: '', submit_selector: '',
   success_url: '', captcha_selector: '', captcha_input_selector: '',
 })
+const defaultChatCfg = () => ({
+  url_template: '',
+  input_selector: '',
+  send_selector: '',
+  file_selector: '',
+  upload_auto_send: true,
+  upload_send_selector: '',
+  upload_close_selector: '',
+})
 
 const form = reactive(defaultForm())
 const loginCfg = reactive(defaultLoginCfg())
+const chatCfg = reactive(defaultChatCfg())
 
 const rules = {
   name: [{ required: true, message: '请输入网站名称', trigger: 'blur' }],
@@ -171,7 +223,10 @@ function openDialog(w = null) {
   isEdit.value = !!w
   editId.value = w?.id ?? null
   Object.assign(form, w ? { ...w } : defaultForm())
-  Object.assign(loginCfg, w?.login_config ? { ...w.login_config } : defaultLoginCfg())
+  const savedLoginCfg = w?.login_config || {}
+  const { chat_config: savedChatCfg, ...plainLoginCfg } = savedLoginCfg
+  Object.assign(loginCfg, defaultLoginCfg(), plainLoginCfg)
+  Object.assign(chatCfg, defaultChatCfg(), savedChatCfg || {})
   dialogVisible.value = true
 }
 
@@ -179,7 +234,13 @@ async function handleSubmit() {
   await formRef.value?.validate()
   submitting.value = true
   try {
-    const data = { ...form, login_config: { ...loginCfg } }
+    const data = {
+      ...form,
+      login_config: {
+        ...loginCfg,
+        chat_config: { ...chatCfg },
+      },
+    }
     if (isEdit.value) {
       await updateWebsite(editId.value, data)
       ElMessage.success('更新成功')
@@ -215,4 +276,5 @@ onMounted(() => {
 .sort-badge { font-size: 12px; color: #909399; }
 .card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
+.chat-config-tip { margin-bottom: 18px; }
 </style>

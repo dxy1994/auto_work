@@ -21,6 +21,9 @@ class AppContext:
         self._runtime_status = None
         self._trade_task_gate = None
         self._active_trade = None
+        self._hardware_binding = None
+        self._hardware = None
+        self._hardware_executor = None
 
     # ── 属性访问 ──
 
@@ -93,3 +96,29 @@ class AppContext:
                 return False
             self._active_trade = None
             return True
+
+    def hardware_snapshot(self):
+        with self._lock:
+            return {
+                "binding": self._hardware_binding,
+                "hardware": self._hardware,
+                "executor": self._hardware_executor,
+            }
+
+    def install_hardware(self, binding, hardware, executor):
+        with self._lock:
+            self._hardware_binding = binding
+            self._hardware = hardware
+            self._hardware_executor = executor
+
+    def clear_hardware(self):
+        with self._lock:
+            previous = {
+                "binding": self._hardware_binding,
+                "hardware": self._hardware,
+                "executor": self._hardware_executor,
+            }
+            self._hardware_binding = None
+            self._hardware = None
+            self._hardware_executor = None
+            return previous

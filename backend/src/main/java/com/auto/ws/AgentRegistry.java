@@ -2,6 +2,8 @@ package com.auto.ws;
 
 import com.auto.entity.Machine;
 import com.auto.service.MachineService;
+import com.auto.service.WirelessHidDeviceManager;
+import com.auto.service.WirelessHidDeviceManager.WorkerBinding;
 import com.auto.trade.TradeOffer;
 import com.auto.trade.WorkerRuntimeStatus;
 import com.auto.trade.MachineSessionLost;
@@ -57,11 +59,14 @@ public class AgentRegistry {
     private final ObjectMapper objectMapper;
     private final MachineService machineService;
     private final ApplicationEventPublisher eventPublisher;
+    private final WirelessHidDeviceManager wirelessHidDeviceManager;
     public AgentRegistry(ObjectMapper objectMapper, MachineService machineService,
-                         ApplicationEventPublisher eventPublisher) {
+                         ApplicationEventPublisher eventPublisher,
+                         WirelessHidDeviceManager wirelessHidDeviceManager) {
         this.objectMapper = objectMapper;
         this.machineService = machineService;
         this.eventPublisher = eventPublisher;
+        this.wirelessHidDeviceManager = wirelessHidDeviceManager;
     }
 
     /** 任务镜像。 */
@@ -357,13 +362,35 @@ public class AgentRegistry {
 
     /** 向候选 Worker 发出有时效的交易指派，尚不授权执行。 */
     public boolean sendTradeOffer(int machineId, TradeOffer offer) {
+        WorkerBinding binding;
+        try {
+            binding = wirelessHidDeviceManager.prepareWorkerBinding(machineId);
+        } catch (Exception e) {
+            log.warn("[Trade] 无法读取机器键鼠绑定 machine_id={}: {}", machineId, e.getMessage());
+            return false;
+        }
+        if (binding == null) {
+            log.warn("[Trade] 机器尚未绑定键鼠设备 machine_id={}", machineId);
+            return false;
+        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "trade_offer");
         payload.put("assignment_id", offer.assignmentId());
         payload.put("execution_token", offer.executionToken());
         payload.put("lease_expires_at", offer.leaseExpiresAt().toString());
         payload.put("order", offer.orderPayload());
+        payload.put("wireless_hid", workerBindingPayload(binding));
         return sendToAgent(machineId, payload);
+    }
+
+    private Map<String, Object> workerBindingPayload(WorkerBinding binding) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("record_id", binding.recordId());
+        payload.put("device_id", binding.deviceId());
+        payload.put("name", binding.name());
+        payload.put("ip", binding.ip());
+        payload.put("control_port", binding.controlPort());
+        return payload;
     }
 
     /** Worker 接受 offer 后，使用同一不可持久化明文令牌授权开始。 */
@@ -395,18 +422,29 @@ public class AgentRegistry {
         return sendToAgent(machineId, payload);
     }
 
-    /** 下发招呼指令给指定机器。 */
-    public boolean sendGreeting(int machineId, int orderId, int websiteId, int accountId,
-                                java.util.List<java.util.Map<String, Object>> scripts, String chatUrl) {
+    /** 下发通用聊天指令给持有订单来源账号会话的监控机器。 */
+    public boolean sendChat(
+            int machineId,
+            String requestId,
+            int orderId,
+            int websiteId,
+            int accountId,
+            String platform,
+            String sourceOrderNo,
+            String purpose,
+            List<Map<String, Object>> messages,
+            Map<String, Object> target) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("type", "greeting");
+        payload.put("type", "chat");
+        payload.put("request_id", requestId);
         payload.put("order_id", orderId);
-        payload.put("scripts", scripts);
         payload.put("website_id", websiteId);
         payload.put("account_id", accountId);
-        if (chatUrl != null) {
-            payload.put("chat_url", chatUrl);
-        }
+        payload.put("platform", platform);
+        payload.put("source_order_no", sourceOrderNo);
+        payload.put("purpose", purpose);
+        payload.put("messages", messages);
+        payload.put("target", target);
         return sendToAgent(machineId, payload);
     }
 

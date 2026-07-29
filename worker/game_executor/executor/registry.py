@@ -25,6 +25,23 @@ class ExecutorRegistry:
             return None
         return self._executors.get(game_code.strip().lower())
 
+    def unregister(self, executor: BaseGameExecutor) -> None:
+        for game_code, current in tuple(self._executors.items()):
+            if current is executor:
+                del self._executors[game_code]
+
+    def replace(self, executor: BaseGameExecutor) -> None:
+        aliases = getattr(executor, "game_codes", (executor.game_code,))
+        game_codes = {str(code).strip().lower() for code in aliases if str(code).strip()}
+        existing = {
+            self._executors[game_code]
+            for game_code in game_codes
+            if game_code in self._executors
+        }
+        for current in existing:
+            self.unregister(current)
+        self.register(executor)
+
     def executors(self) -> tuple[BaseGameExecutor, ...]:
         """返回去重后的执行器；同一游戏的多个别名只检查一次。"""
         results: list[BaseGameExecutor] = []

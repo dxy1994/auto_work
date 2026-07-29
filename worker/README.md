@@ -6,7 +6,7 @@ Worker 已拆成三个互相有明确边界的模块：
 worker/
 ├─ common/          # 公共 WebSocket、协议、上报、时钟和主机信息
 ├─ monitor/         # 网站订单监控、浏览器登录、招呼发送
-└─ game_executor/   # 游戏窗口、OCR、ESP32 HID、交易状态机
+└─ game_executor/   # 游戏窗口、OCR、Wireless HID、交易状态机
 ```
 
 `monitor` 和 `game_executor` 是两个独立进程、两个独立依赖集和两个独立 EXE，
@@ -15,7 +15,7 @@ worker/
 
 ## 监控主机
 
-监控主机只负责网站订单检测和招呼，不包含 PaddleOCR、游戏窗口或 ESP32 代码。
+监控主机只负责网站订单检测和招呼，不包含 PaddleOCR、游戏窗口或 Wireless HID 代码。
 
 ```bat
 copy worker\.env.monitor.example worker\.env
@@ -51,6 +51,33 @@ python -m game_executor.main
 独立依赖：`worker/requirements-game-executor.txt`。
 游戏执行端向总控注册的角色是 `game_executor`；总控仍兼容升级前的 `trader`。
 
+真实键鼠通过 WHID/1 TCP SDK 直连设备，不再依赖旧的 ESP32 HTTP 占位接口。
+设备地址不在 Worker 上手工配置：Worker 使用本机 MAC 注册，总控根据机器记录的
+`mk_device_id` 下发 Wireless HID 的稳定设备 ID、IP 和控制端口。机器尚未绑定键鼠时，
+Worker 会保持在线并持续轮询；绑定设备通过 UDP 身份校验并成功取得控制权后，才会探测
+游戏和接受交易任务。每次交易下发还会重新携带当前绑定，避免机器改绑后继续使用旧设备。
+
+鼠标绝对坐标会转换为 HID 的 0～4095 坐标，并拆分成带加减速和弯曲的多点轨迹；
+点击、拖拽和按键包含随机停顿。文本逐字输入，默认按压 75～145ms、字间间隔
+80～220ms，底层会再次限制最短时长。每段硬件指令结束后更新 `last_feedback`，
+`health_check()` 同时返回 CH9329 在线状态和最近一段指令的结果。
+
+动作标注图和逐动作日志当前固定关闭，不提供运行时手动配置开关。步骤状态检测固定
+轮询 30 次，不读取环境变量覆盖该次数。
+
+### Wireless HID 浏览器调试
+
+下面的入口会发送真实键鼠指令：打开 Windows 运行窗口，输入 `google.com` 并打开
+默认浏览器，在 Google 输入随机搜索词，进入结果页后将鼠标移动到随机位置并向下滚动。
+每个完整步骤结束后输出一条 `[HID-DEBUG]` 完成反馈：
+
+```bat
+cd worker
+python -m game_executor.hid_browser_debug
+```
+
+启动后有 3 秒倒计时，运行前应保存当前工作并停止触碰键鼠。
+
 大区所在页码和点击坐标在总控“大区管理”中录入，坐标按 800×600 游戏客户区填写，
 并随每次交易指令下发给游戏执行机。执行机每次交易都会重新进入服务器列表，先切换到
 配置页，再优先使用总控坐标；未配置坐标时，才扫描当前页并通过 OCR 文本框定位大区
@@ -76,31 +103,6 @@ python -m game_executor.main
 首次运行会下载官方模型到 PaddleX 缓存。韩文 OCR 默认要求最低词块置信度不低于
 90，文本相似度不低于 0.90；可通过 `LINEAGE_OCR_MIN_CONFIDENCE` 和
 `LINEAGE_REGION_TEXT_SIMILARITY` 向上调整。
-
-## 人工键鼠真实测试
-
-接入总控真实订单，保留全部正式等待、识别、截图及终态上报，仅阻断 HID 指令：
-
-```env
-GAME_EXECUTOR_MANUAL_ACTIONS=true
-GAME_EXECUTOR_MANUAL_ACTION_WAIT_SECONDS=5
-```
-
-随后按正常方式启动 `game_executor.main`。Worker 会正常接收平台订单、上报中间状态，
-每个实际键鼠动作输出 `[MANUAL-ACTION]`，包含需要人工执行的点击坐标、拖拽起止坐标、
-按键或输入内容，但不会连接 ESP32。日志输出后会按配置预留人工操作时间，随后继续执行
-正式的画面检测。流程成功或失败时直接上报真实结果，不再改写为 `DRY_RUN_NO_HID`；
-因此成功测试会真实推进订单状态、库存和网站确认流程。启用前应使用明确的测试订单。
-
-也可以使用本地测试订单运行同一套人工操作编排：
-
-```bat
-cd worker
-python -m game_executor.dry_run_trade --amount 1000000 --buyer DryRunBuyer
-```
-
-日志末尾必须显示 `sent_hid_actions=0`。该入口不消费中控订单；需要验证真实总控订单时，
-应按上面的环境变量启动 `game_executor.main`。
 
 ## 独立打包
 

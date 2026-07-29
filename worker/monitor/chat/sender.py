@@ -1,238 +1,345 @@
-"""
-聊天发送器 — 统一的网站聊天消息发送实现。
+"""跨平台订单聊天发送器。
 
-合并自原有两份重复实现：
-  - automation/chat_sender.py（通用版）
-  - automation/monitors/itemmania.py（ItemMania 专用版）
-
-现在所有平台统一调用本模块的 send_web_chat()。
+后端负责把订单解析为明确的客户会话地址和平台选择器；本模块只在订单
+所属账号的浏览器会话中，严格按照消息顺序发送文字和图片。
 """
+
 import asyncio
 import os
 import tempfile
 from typing import Optional
+from urllib.parse import urlparse
+
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+DEFAULT_ITEMMANIA_TARGET = {
+    "input_selector": "#write_chat",
+    "send_selector": "#send_btn",
+    "file_selector": "#attach_layer input[type=file]",
+    "upload_auto_send": True,
+    "upload_close_selector": "#attach_layer .close",
+}
 
 
-def send_web_chat(account_id: int, chat_url: str, scripts: list,
-                  main_loop: Optional[asyncio.AbstractEventLoop] = None,
-                  keep_open: bool = False) -> dict:
-    """同步入口：向网站聊天页面发送招呼消息，阻塞直到完成。
-
-    Args:
-        account_id: 账号 ID（定位浏览器会话）
-        chat_url:  聊天页面完整 URL
-        scripts:   话术列表 [{"content": "...", "image_url": "..."}, ...]
-        main_loop: 主事件循环引用（可选，优先用于跨线程调度）
-        keep_open: True 时保留聊天页面不关闭，供后续使用
-
-    Returns:
-        {"success": bool, "message": str}
-    """
+def send_chat(
+    account_id: int,
+    target: dict,
+    messages: list,
+    main_loop: Optional[asyncio.AbstractEventLoop] = None,
+    keep_open: bool = False,
+) -> dict:
+    """同步入口：在指定平台账号的浏览器会话中发送有序聊天消息。"""
     from monitor.browser.session import BrowserSession
 
-    print(f"[ChatSender] 开始发送招呼 account_id={account_id}, "
-          f"chat_url={chat_url}, 话术条数={len(scripts)}")
-
-    # ── URL 校验 ──
-    if not chat_url:
-        return {"success": False, "message": "无效的聊天URL"}
+    try:
+        normalized_target = _normalize_target(target, messages)
+        normalized_messages = _normalize_messages(messages)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
 
     session = BrowserSession.get_or_create(account_id=account_id)
     if session._context is None:
         return {"success": False, "message": "浏览器会话未初始化"}
 
-    # ── 确定目标事件循环 ──
     owner_loop = main_loop or session.owner_loop
     if owner_loop is None or owner_loop.is_closed() or not owner_loop.is_running():
         return {"success": False, "message": "浏览器事件循环不可用"}
 
-    coroutine = _do_send_web_chat(session, chat_url, scripts, keep_open=keep_open)
+    coroutine = _do_send_chat(
+        session,
+        normalized_target,
+        normalized_messages,
+        keep_open=keep_open,
+    )
     try:
         future = asyncio.run_coroutine_threadsafe(coroutine, owner_loop)
         return future.result(timeout=120)
     except TimeoutError:
         future.cancel()
-        return {"success": False, "message": "招呼发送超时（120s）"}
-    except Exception as e:
+        return {"success": False, "message": "聊天发送超时（120s）"}
+    except Exception as exc:
         if not coroutine.cr_running:
             coroutine.close()
-        return {"success": False, "message": f"招呼执行异常: {e}"}
+        return {"success": False, "message": f"聊天执行异常: {exc}"}
 
 
-async def _do_send_web_chat(session, chat_url: str, scripts: list,
-                          keep_open: bool = False) -> dict:
-    """Async 实现：打开聊天页面 → 逐条发送 → (可选)关闭页面。
+def send_web_chat(
+    account_id: int,
+    chat_url: str,
+    scripts: list,
+    main_loop: Optional[asyncio.AbstractEventLoop] = None,
+    keep_open: bool = False,
+) -> dict:
+    """兼容旧版招呼调用，按 ItemMania 默认配置转换为聊天指令。"""
+    target = {**DEFAULT_ITEMMANIA_TARGET, "url": chat_url}
+    messages = [
+        {
+            "content": item.get("content", ""),
+            "image_urls": [item["image_url"]] if item.get("image_url") else [],
+        }
+        for item in (scripts or [])
+    ]
+    return send_chat(account_id, target, messages, main_loop, keep_open)
 
-    Args:
-        keep_open: True 时保留聊天页面不关闭，供后续使用（如持续监控）
-    """
+
+async def _do_send_web_chat(
+    session,
+    chat_url: str,
+    scripts: list,
+    keep_open: bool = False,
+) -> dict:
+    """兼容旧版异步入口。"""
+    target = {**DEFAULT_ITEMMANIA_TARGET, "url": chat_url}
+    messages = [
+        {
+            "content": item.get("content", ""),
+            "image_urls": [item["image_url"]] if item.get("image_url") else [],
+        }
+        for item in (scripts or [])
+    ]
+    return await _do_send_chat(session, target, messages, keep_open)
+
+
+async def _do_send_chat(
+    session,
+    target: dict,
+    messages: list,
+    keep_open: bool = False,
+) -> dict:
+    """串行执行同一账号的聊天命令，避免多个订单消息交叉发送。"""
+    chat_lock = getattr(session, "_chat_send_lock", None)
+    if chat_lock is None:
+        chat_lock = asyncio.Lock()
+        setattr(session, "_chat_send_lock", chat_lock)
+    async with chat_lock:
+        return await _do_send_chat_locked(session, target, messages, keep_open)
+
+
+async def _do_send_chat_locked(
+    session,
+    target: dict,
+    messages: list,
+    keep_open: bool = False,
+) -> dict:
+    """打开客户会话并按消息顺序发送，每张图片和每段文字均等待完成。"""
+    try:
+        target = _normalize_target(target, messages)
+        messages = _normalize_messages(messages)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
     if not session.begin_transient_operation():
         return {"success": False, "message": "浏览器会话正在关闭"}
 
     page = None
+    chat_url = target["url"]
     try:
         page = await session.new_page()
         session.track_transient_page(page)
-
-        # 打开聊天页面
-        print(f"[ChatSender] 打开聊天页面: {chat_url}")
         await page.goto(chat_url, wait_until="commit", timeout=10000)
-        print(f"[ChatSender] 页面 commit 完成")
         await page.wait_for_timeout(500)
 
-        # 等待输入框和发送按钮就绪（带重试）
-        input_ready = False
-        for attempt in range(2):
+        input_box = page.locator(target["input_selector"]).first
+        send_button = page.locator(target["send_selector"]).first
+        ready = False
+        for _ in range(2):
             try:
-                await page.locator("#write_chat").first.wait_for(timeout=5000)
-                await page.locator("#send_btn").first.wait_for(timeout=2000)
-                input_ready = True
-                print(f"[ChatSender] 输入框和发送按钮已就绪")
+                await input_box.wait_for(timeout=5000)
+                await send_button.wait_for(timeout=2000)
+                ready = True
                 break
             except Exception:
-                print(f"[ChatSender] 第{attempt+1}次等待元素失败，尝试重试...")
                 await page.wait_for_timeout(1000)
+        if not ready:
+            return {
+                "success": False,
+                "message": "客户聊天页面加载超时，未找到输入框或发送按钮",
+            }
 
-        if not input_ready:
-            return {"success": False, "message": "聊天页面加载超时，输入框或发送按钮未找到"}
-
-        # 图片相对路径补全：优先 STORAGE_PUBLIC_BASE_URL，为空则走后端代理
-        from common.config import BACKEND_WS_URL
-        from monitor.config import STORAGE_PUBLIC_BASE_URL
-        from urllib.parse import urlparse
-        if STORAGE_PUBLIC_BASE_URL:
-            image_base = STORAGE_PUBLIC_BASE_URL.rstrip("/")
-        else:
-            _ws = urlparse(BACKEND_WS_URL)
-            _scheme = "https" if _ws.scheme == "wss" else "http"
-            image_base = f"{_scheme}://{_ws.netloc}"
-
-        # 逐条发送
-        failed_items = []
-        print(f"[ChatSender] 开始逐条发送话术，共{len(scripts)}条")
-        for i, item in enumerate(scripts):
-            image_url = item.get("image_url", "")
-            content = item.get("content", "")
-            print(f"[ChatSender] 处理第{i+1}/{len(scripts)}条: "
-                  f"content_len={len(content)}, has_image={bool(image_url)}")
-
-            if image_url:
-                # 相对路径补全域名
-                if image_url.startswith("/"):
-                    image_url = image_base + image_url
+        image_base = _image_base_url()
+        for index, message in enumerate(messages):
+            for image_url in message["image_urls"]:
+                resolved_url = (
+                    image_base + image_url if image_url.startswith("/") else image_url
+                )
                 try:
-                    await _send_image_via_chat(page, image_url)
-                except Exception as e:
-                    print(f"[ChatSender] 图片发送失败 (第{i+1}条): {e}")
-                    failed_items.append(f"第{i+1}条图片发送失败: {e}")
+                    await _send_image_via_chat(page, resolved_url, target)
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "message": f"第 {index + 1} 条消息的图片发送失败: {exc}",
+                    }
 
+            content = message["content"]
             if content:
-                await page.locator("#write_chat").first.click()
-                await page.keyboard.type(str(content), delay=50)
-                await page.locator("#send_btn").click(force=True, timeout=5000)
-                await page.wait_for_timeout(600)
-                print(f"[ChatSender] 第{i+1}条文字已发送: "
-                      f"{content[:30]}{'...' if len(content) > 30 else ''}")
-            elif not image_url:
-                print(f"[ChatSender] 第{i+1}条无内容，跳过")
+                await input_box.click()
+                await page.keyboard.type(content, delay=50)
+                await send_button.click(force=True, timeout=5000)
+                await page.wait_for_timeout(
+                    _positive_int(target.get("text_settle_ms"), 600)
+                )
 
-        # 若最后一条包含图片消息，额外等待确保上传完成
-        last_item = scripts[-1] if scripts else {}
-        if last_item.get("image_url"):
-            print(f"[ChatSender] 最后一条为图片消息，额外等待10秒确保上传完成")
-            await page.wait_for_timeout(10000)
-
-        if failed_items:
-            msg = f"招呼部分失败: {'; '.join(failed_items)}"
-            print(f"[ChatSender] {msg}")
-            return {"success": False, "message": msg}
-
-        print(f"[ChatSender] 所有招呼已发送 (共{len(scripts)}条)")
-        return {"success": True, "message": "招呼发送成功"}
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"success": False, "message": f"招呼执行异常: {e}"}
+        return {
+            "success": True,
+            "message": f"聊天发送成功（{len(messages)} 条消息）",
+        }
+    except Exception as exc:
+        return {"success": False, "message": f"聊天执行异常: {exc}"}
     finally:
         try:
-            if page:
-                if keep_open:
-                    print(f"[ChatSender] 保留聊天页面供后续使用: {chat_url}")
-                else:
-                    try:
-                        await page.close()
-                    except Exception:
-                        pass
-                    finally:
-                        session.untrack_transient_page(page)
+            if page and not keep_open:
+                try:
+                    await page.close()
+                finally:
+                    session.untrack_transient_page(page)
         finally:
             session.end_transient_operation()
 
 
-async def _send_image_via_chat(page, image_url: str):
-    """下载图片并通过聊天页面的 input[type=file] 自动上传发送。
-
-    页面机制：设置文件到 input[type=file] 后，页面 JS 会自动上传，
-    无需点击发送按钮。
-    """
+async def _send_image_via_chat(page, image_url: str, target: dict):
+    """下载一张图片，并通过平台配置的文件控件完成上传/发送。"""
     import requests
 
-    print(f"[ChatSender] 开始下载图片: {image_url}")
-
     def _download():
-        resp = requests.get(image_url, timeout=15)
-        resp.raise_for_status()
-        print(f"[ChatSender] 图片下载完成, size={len(resp.content)} bytes")
-        return resp.content
+        with requests.get(image_url, timeout=15, stream=True) as response:
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "").split(";")[0]
+            if content_type and not content_type.lower().startswith("image/"):
+                raise RuntimeError("下载地址返回的不是图片")
+            length = response.headers.get("Content-Length")
+            if length and int(length) > MAX_IMAGE_BYTES:
+                raise RuntimeError("图片超过 10MB")
+            chunks = []
+            total = 0
+            for chunk in response.iter_content(64 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_IMAGE_BYTES:
+                    raise RuntimeError("图片超过 10MB")
+                chunks.append(chunk)
+            if not chunks:
+                raise RuntimeError("下载到的图片为空")
+            return b"".join(chunks), content_type
 
+    image_data, content_type = await asyncio.to_thread(_download)
+    suffix = _guess_ext(image_url, content_type)
+    temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     try:
-        img_data = await asyncio.to_thread(_download)
-    except Exception as e:
-        print(f"[ChatSender] 图片下载失败: {e}")
-        raise
+        temp_file.write(image_data)
+        temp_file.close()
 
-    ext = _guess_ext(image_url)
-    print(f"[ChatSender] 图片写入临时文件 ext={ext}")
-    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    try:
-        tmp.write(img_data)
-        tmp.close()
-
-        # 对 attach_layer 中的 input[type=file] 设置文件
-        # 页面 JS 会自动检测 change 事件并上传，无需点击发送按钮
-        file_input = page.locator("#attach_layer input[type=file]")
+        file_input = page.locator(target["file_selector"]).first
         if await file_input.count() == 0:
-            raise RuntimeError("上传控件 #attach_layer input[type=file] 未找到")
-        await file_input.set_input_files(tmp.name)
-        print(f"[ChatSender] 文件已设置到上传控件，等待自动上传")
+            raise RuntimeError("未找到聊天图片上传控件")
+        await file_input.set_input_files(temp_file.name)
 
-        # 等待上传完成（attach_layer 自动关闭或 file_info 更新）
-        await page.wait_for_timeout(2000)
+        if not target.get("upload_auto_send", True):
+            upload_send = page.locator(target["upload_send_selector"]).first
+            await upload_send.wait_for(timeout=5000)
+            await upload_send.click(force=True, timeout=5000)
 
-        # 如果 attach_layer 仍然可见，尝试关闭
-        close_btn = page.locator("#attach_layer .close")
-        if await close_btn.count() > 0 and await close_btn.is_visible():
-            await close_btn.click()
-            await page.wait_for_timeout(300)
-
-        print(f"[ChatSender] 图片已发送: {image_url}")
+        await page.wait_for_timeout(
+            _positive_int(target.get("image_settle_ms"), 2000)
+        )
+        close_selector = str(target.get("upload_close_selector") or "").strip()
+        if close_selector:
+            close_button = page.locator(close_selector).first
+            if await close_button.count() > 0 and await close_button.is_visible():
+                await close_button.click()
+                await page.wait_for_timeout(300)
     finally:
         try:
-            os.unlink(tmp.name)
-        except Exception:
+            os.unlink(temp_file.name)
+        except OSError:
             pass
 
 
-def _guess_ext(url: str) -> str:
-    """从 URL 推测文件扩展名。"""
-    url_lower = url.lower()
-    if ".png" in url_lower:
-        return ".png"
-    if ".jpg" in url_lower or ".jpeg" in url_lower:
+def _normalize_target(target: dict, messages: list) -> dict:
+    if not isinstance(target, dict):
+        raise ValueError("聊天目标配置无效")
+    result = dict(target)
+    for key, label in (
+        ("url", "客户聊天地址"),
+        ("input_selector", "聊天输入框选择器"),
+        ("send_selector", "聊天发送按钮选择器"),
+    ):
+        result[key] = str(result.get(key) or "").strip()
+        if not result[key]:
+            raise ValueError(f"{label}未配置")
+    parsed = urlparse(result["url"])
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("客户聊天地址无效")
+
+    has_images = any(
+        isinstance(message, dict)
+        and (message.get("image_url") or message.get("image_urls"))
+        for message in (messages or [])
+    )
+    result["file_selector"] = str(result.get("file_selector") or "").strip()
+    if has_images and not result["file_selector"]:
+        raise ValueError("聊天图片上传控件选择器未配置")
+    result["upload_auto_send"] = result.get("upload_auto_send", True) is not False
+    result["upload_send_selector"] = str(
+        result.get("upload_send_selector") or ""
+    ).strip()
+    if (
+        has_images
+        and not result["upload_auto_send"]
+        and not result["upload_send_selector"]
+    ):
+        raise ValueError("图片上传后发送按钮选择器未配置")
+    return result
+
+
+def _normalize_messages(messages: list) -> list:
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("聊天消息不能为空")
+    normalized = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise ValueError(f"第 {index + 1} 条聊天消息无效")
+        content = str(message.get("content") or message.get("text") or "").strip()
+        image_urls = message.get("image_urls") or []
+        if not isinstance(image_urls, list):
+            raise ValueError(f"第 {index + 1} 条消息的图片列表无效")
+        urls = [str(url).strip() for url in image_urls if str(url).strip()]
+        single_url = str(message.get("image_url") or "").strip()
+        if single_url and single_url not in urls:
+            urls.append(single_url)
+        if not content and not urls:
+            raise ValueError(f"第 {index + 1} 条消息必须包含文字或图片")
+        normalized.append({"content": content, "image_urls": urls})
+    return normalized
+
+
+def _image_base_url() -> str:
+    from common.config import BACKEND_WS_URL
+    from monitor.config import STORAGE_PUBLIC_BASE_URL
+
+    if STORAGE_PUBLIC_BASE_URL:
+        return STORAGE_PUBLIC_BASE_URL.rstrip("/")
+    websocket_url = urlparse(BACKEND_WS_URL)
+    scheme = "https" if websocket_url.scheme == "wss" else "http"
+    return f"{scheme}://{websocket_url.netloc}"
+
+
+def _guess_ext(url: str, content_type: str = "") -> str:
+    media_type = (content_type or "").lower()
+    if "jpeg" in media_type:
         return ".jpg"
-    if ".webp" in url_lower:
-        return ".webp"
-    if ".gif" in url_lower:
-        return ".gif"
+    for name in ("png", "webp", "gif", "bmp"):
+        if name in media_type:
+            return f".{name}"
+    path = urlparse(url).path.lower()
+    for suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        if path.endswith(suffix):
+            return ".jpg" if suffix == ".jpeg" else suffix
     return ".png"
+
+
+def _positive_int(value, fallback: int) -> int:
+    try:
+        parsed = int(value)
+        return parsed if parsed >= 0 else fallback
+    except (TypeError, ValueError):
+        return fallback

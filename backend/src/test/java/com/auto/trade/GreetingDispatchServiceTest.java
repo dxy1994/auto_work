@@ -2,12 +2,13 @@ package com.auto.trade;
 
 import com.auto.entity.GameItemOrder;
 import com.auto.entity.GameItemOrderDetail;
+import com.auto.entity.GameScript;
+import com.auto.entity.RegionScript;
 import com.auto.service.GameItemOrderDetailService;
 import com.auto.service.GameItemOrderService;
 import com.auto.service.GameScriptService;
 import com.auto.service.RegionScriptService;
 import com.auto.trade.statemachine.OrderDeliveryStateMachine;
-import com.auto.ws.AgentRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -36,7 +37,7 @@ class GreetingDispatchServiceTest {
     @Mock
     private GameScriptService gameScriptService;
     @Mock
-    private AgentRegistry agentRegistry;
+    private ChatDispatchService chatDispatchService;
     @Mock
     private GameItemOrderService orderService;
     @Mock
@@ -48,6 +49,42 @@ class GreetingDispatchServiceTest {
 
     @InjectMocks
     private GreetingDispatchService service;
+
+    @Test
+    void automaticGreetingUsesTheGenericChatPathWithoutChangingScriptOrder() {
+        int orderId = 40;
+        GameItemOrder order = new GameItemOrder();
+        order.setId(orderId);
+        GameScript gameScript = new GameScript();
+        gameScript.setContent("游戏话术");
+        RegionScript regionScript = new RegionScript();
+        regionScript.setImageUrl("/uploads/region.png");
+
+        when(gameScriptService.findAllByGameIdAndCategory(3, "招呼"))
+                .thenReturn(List.of(gameScript));
+        when(regionScriptService.findAllByRegionIdAndCategory(4, "招呼"))
+                .thenReturn(List.of(regionScript));
+        when(orderService.getById(orderId)).thenReturn(order);
+        when(chatDispatchService.dispatchGreeting(
+                eq(7), eq(orderId), eq(1), eq(5), eq("source-40"), eq("itemmania"),
+                org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(new ChatDispatchService.DispatchReceipt(
+                        "request-40", orderId, 7, "itemmania", 2, 1));
+
+        service.dispatch(7, orderId, 3, 4, 1, 5, "source-40", "itemmania");
+
+        verify(chatDispatchService).dispatchGreeting(
+                eq(7), eq(orderId), eq(1), eq(5), eq("source-40"), eq("itemmania"),
+                org.mockito.ArgumentMatchers.argThat(messages ->
+                        messages.size() == 2
+                                && "游戏话术".equals(messages.get(0).get("content"))
+                                && "/uploads/region.png".equals(
+                                        messages.get(1).get("image_url"))));
+        verify(stateMachine, never()).fire(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
 
     @Test
     void successfulGreetingDelegatesTheSingleStateTransitionToCoordinator() {
@@ -106,7 +143,7 @@ class GreetingDispatchServiceTest {
         assertSame(offer, service.continueAfterGreetingSuccess(orderId));
 
         verify(tradeDispatchCoordinator).dispatch(orderId);
-        verifyNoInteractions(agentRegistry);
+        verifyNoInteractions(chatDispatchService);
     }
 
     @Test

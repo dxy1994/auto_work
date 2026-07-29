@@ -67,22 +67,13 @@ WINDOW_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-STEP_VERIFY_ATTEMPTS = min(
-    120,
-    max(1, int(os.getenv("LINEAGE_STEP_VERIFY_ATTEMPTS", "30"))),
-)
+STEP_VERIFY_ATTEMPTS = 30
 CAPTURE_TIMEOUT_SECONDS = min(
     30.0,
     max(1.0, float(os.getenv("LINEAGE_CAPTURE_TIMEOUT_SECONDS", "5"))),
 )
-ACTION_DEBUG_IMAGES_ENABLED = os.getenv(
-    "LINEAGE_ACTION_DEBUG_IMAGES",
-    "1",
-).strip().lower() not in {"0", "false", "no", "off"}
-ACTION_DEBUG_IMAGE_DIR = Path(
-    os.getenv("LINEAGE_ACTION_DEBUG_IMAGE_DIR")
-    or Path.cwd() / "lineage_action_debug"
-)
+ACTION_DEBUG_IMAGES_ENABLED = False
+ACTION_DEBUG_IMAGE_DIR = Path.cwd() / "lineage_action_debug"
 
 
 @dataclass(frozen=True)
@@ -1434,11 +1425,10 @@ class LineageSessionNavigator:
         *,
         profile: str,
         fixed_wait: Optional[float] = None,
-        attempts: int = STEP_VERIFY_ATTEMPTS,
         probe_interval: Optional[float] = None,
         retry_wait_range: Optional[tuple[float, float]] = None,
     ):
-        """动作后先做人性化等待，再按配置次数循环检测下一步状态。"""
+        """动作后先做人性化等待，再固定循环检测下一步状态 30 次。"""
         timing = STEP_WAIT_PROFILES.get(profile)
         if timing is None:
             raise ValueError(f"未知步骤等待类型: {profile}")
@@ -1454,7 +1444,7 @@ class LineageSessionNavigator:
             max(timing.random_min, random_seconds),
         )
         total_wait = fixed_seconds + random_seconds
-        max_attempts = max(1, int(attempts))
+        max_attempts = STEP_VERIFY_ATTEMPTS
         check_interval = max(0.0, float(
             timing.probe_interval if probe_interval is None else probe_interval
         ))

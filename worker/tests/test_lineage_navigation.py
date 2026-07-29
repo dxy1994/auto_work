@@ -515,6 +515,9 @@ class _Vision:
 
 
 class LineageNavigationTest(unittest.TestCase):
+    def test_step_verification_polling_is_fixed_at_thirty_attempts(self):
+        self.assertEqual(30, lineage_navigation.STEP_VERIFY_ATTEMPTS)
+
     def test_in_game_detection_uses_dedicated_status_bar_anchor_first(self):
         vision = mock.Mock()
         vision.find.side_effect = lambda template, *_args: (
@@ -819,7 +822,7 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual((640, 480, 780, 555), Ui.CHARACTER_ACTION_REGION)
         self.assertEqual((212, 367, 450, 383), Ui.CHARACTER_NAME_VALUE_REGION)
 
-    def test_screen_step_wait_uses_business_delay_and_configured_detection_attempts(self):
+    def test_screen_step_wait_uses_business_delay_and_fixed_detection_attempts(self):
         sleeps = []
         random_ranges = []
         outcomes = iter([False, False, (320, 180)])
@@ -880,7 +883,7 @@ class LineageNavigationTest(unittest.TestCase):
             for call in output.call_args_list
         ))
 
-    def test_failed_step_only_reports_error_after_configured_checks(self):
+    def test_failed_step_only_reports_error_after_fixed_checks(self):
         checks = 0
         navigator = LineageSessionNavigator(
             mock.Mock(),
@@ -1040,10 +1043,11 @@ class LineageNavigationTest(unittest.TestCase):
             TradeUi.REQUEST_TEMPLATE_REGION,
             threshold=0.86,
         )
-        self.assertEqual(
-            30,
-            navigator.wait_for_step.call_args.kwargs["attempts"],
+        self.assertNotIn(
+            "attempts",
+            navigator.wait_for_step.call_args.kwargs,
         )
+        self.assertEqual(30, lineage_navigation.STEP_VERIFY_ATTEMPTS)
 
     def test_human_rejection_retries_when_request_is_still_visible(self):
         executor = LineageClassicExecutor(object())
@@ -1159,7 +1163,7 @@ class LineageNavigationTest(unittest.TestCase):
             events,
         )
 
-    def test_trade_close_verification_allows_30_attempts_and_requires_3_stable_frames(self):
+    def test_trade_close_verification_uses_fixed_polling_and_3_stable_frames(self):
         executor = LineageClassicExecutor(object())
         navigator = mock.Mock()
         navigator.vision.find.return_value = None
@@ -1175,7 +1179,8 @@ class LineageNavigationTest(unittest.TestCase):
         navigator.wait_for_step.side_effect = verify_three_frames
 
         self.assertTrue(executor._wait_for_trade_closed(navigator, timeout=12))
-        self.assertEqual(30, wait_options["attempts"])
+        self.assertNotIn("attempts", wait_options)
+        self.assertEqual(30, lineage_navigation.STEP_VERIFY_ATTEMPTS)
         self.assertEqual(0.5, wait_options["probe_interval"])
 
     def test_customer_name_uses_expected_prefix_and_allows_korean_particles(self):

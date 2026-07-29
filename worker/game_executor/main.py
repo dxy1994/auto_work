@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Mapping
 
 # ── 让 worker 目录内模块可平铺导入 ──
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,10 +24,9 @@ from game_executor.status import RuntimeStatus
 from game_executor.gate import TradeTaskGate
 from game_executor.executor.registry import EXECUTOR_REGISTRY
 from game_executor.executor.hardware.controller import HardwareController
-from game_executor.executor.hardware.manual import ManualActionHardwareController
 from game_executor.executor.lineage_classic import LineageClassicExecutor
 from game_executor.executor.lineage_classic.policy import execution_timeout_seconds
-from game_executor import config as executor_config
+from game_executor.hardware_binding import WirelessHidBinding
 
 # 安装时间戳 print
 clock.install()
@@ -48,14 +48,103 @@ TERMINAL_TRADE_STATUSES = {
 
 CONNECT_RECOVERY_ATTEMPTS = 3
 CONNECT_RECOVERY_INTERVAL_SECONDS = 3.0
+HARDWARE_BINDING_POLL_SECONDS = 3.0
 
 
-def _create_hardware_controller():
-    if executor_config.MANUAL_ACTIONS:
-        return ManualActionHardwareController(
-            action_wait_seconds=executor_config.MANUAL_ACTION_WAIT_SECONDS
+def _create_hardware_controller(binding: WirelessHidBinding):
+    return HardwareController(
+        binding.host,
+        binding.port,
+        expected_device_id=binding.device_id,
+    )
+
+
+def _clear_hardware_controller(ctx: AppContext) -> None:
+    previous = ctx.clear_hardware()
+    executor = previous.get("executor")
+    if executor is not None:
+        EXECUTOR_REGISTRY.unregister(executor)
+    hardware = previous.get("hardware")
+    if hardware is not None:
+        hardware.disconnect()
+
+
+def _configure_hardware_binding(payload, ctx: AppContext) -> bool:
+    """Install the exact HID assigned by the controller.
+
+    Returns True when a new controller was installed and False when the current
+    verified controller already matches the binding.
+    """
+    binding = WirelessHidBinding.from_payload(payload)
+    current = ctx.hardware_snapshot()
+    current_hardware = current.get("hardware")
+    if current.get("binding") == binding and bool(
+        current_hardware is not None and current_hardware.connected
+    ):
+        return False
+    if ctx.active_trade() is not None:
+        raise RuntimeError("cannot switch Wireless HID during an active trade")
+
+    _clear_hardware_controller(ctx)
+    hardware = _create_hardware_controller(binding)
+    if not hardware.connect():
+        feedback = hardware.last_feedback or {}
+        raise RuntimeError(
+            str(feedback.get("error") or "Wireless HID connection failed")
         )
-    return HardwareController(executor_config.ESP32_HOST)
+
+    try:
+        executor = LineageClassicExecutor(hardware, ctx.runtime_status)
+    except Exception:
+        hardware.disconnect()
+        raise
+    EXECUTOR_REGISTRY.replace(executor)
+    ctx.install_hardware(binding, hardware, executor)
+    ctx.runtime_status.update(executor_status="idle")
+    print(
+        "[GameExecutor][HID] 已关联并校验键鼠设备 "
+        f"record_id={binding.record_id} device_id={binding.device_id} "
+        f"address={binding.host}:{binding.port}",
+        flush=True,
+    )
+    return True
+
+
+async def _try_configure_hardware(message, ctx: AppContext) -> bool:
+    payload = message.get("wireless_hid")
+    if not isinstance(payload, Mapping):
+        if ctx.active_trade() is None:
+            await asyncio.to_thread(_clear_hardware_controller, ctx)
+        ctx.runtime_status.update(
+            client_status="not_ready",
+            executor_status="waiting_hardware",
+            ui_health="unhealthy",
+        )
+        error = message.get("hardware_error") or "当前机器尚未绑定键鼠设备"
+        print(f"[GameExecutor][HID] 等待键鼠设备绑定: {error}", flush=True)
+        return False
+    try:
+        await asyncio.to_thread(_configure_hardware_binding, payload, ctx)
+        return True
+    except Exception as exc:
+        ctx.runtime_status.update(
+            client_status="not_ready",
+            executor_status="waiting_hardware",
+            ui_health="unhealthy",
+        )
+        print(f"[GameExecutor][HID] 绑定设备尚未就绪，将继续轮询: {exc}", flush=True)
+        return False
+
+
+async def _poll_hardware_binding(client, ctx: AppContext) -> None:
+    """Keep the registered worker online until a verified HID is available."""
+    while True:
+        snapshot = ctx.hardware_snapshot()
+        hardware = snapshot.get("hardware")
+        if hardware is not None and hardware.connected:
+            return
+        await client.send({"type": "hardware_binding_request"})
+        await asyncio.sleep(HARDWARE_BINDING_POLL_SECONDS)
 
 
 async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext):
@@ -172,6 +261,21 @@ async def _dispatch_message(msg, ctx: AppContext):
 
     if mtype == "trade_offer":
         assignment_id = msg.get("assignment_id")
+        if "wireless_hid" in msg and not await _try_configure_hardware(msg, ctx):
+            reporter.report_trade_offer_decision(
+                assignment_id,
+                False,
+                "hardware_binding_not_ready",
+            )
+            return
+        hardware = ctx.hardware_snapshot().get("hardware")
+        if hardware is None or not hardware.connected:
+            reporter.report_trade_offer_decision(
+                assignment_id,
+                False,
+                "hardware_not_ready",
+            )
+            return
         order = msg.get("order") or {}
         game_code = order.get("game_code")
         executor = EXECUTOR_REGISTRY.get(game_code)
@@ -416,7 +520,7 @@ async def _connect_once(ctx: AppContext):
 
     info = config.get_machine_info()
     info["role"] = "game_executor"
-    info["execution_mode"] = "manual_actions" if executor_config.MANUAL_ACTIONS else "live"
+    info["execution_mode"] = "live"
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
         loop = asyncio.get_event_loop()
         client = AgentClient(ws, loop)
@@ -428,14 +532,39 @@ async def _connect_once(ctx: AppContext):
 
         hb = asyncio.create_task(_heartbeat(client, ctx))
         background_tasks: set[asyncio.Task] = set()
+        binding_poll_task = None
+        hardware_runtime_started = False
         try:
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
                 except Exception:
                     continue
-                if msg.get("type") == "registered":
-                    print(f"[GameExecutor] 注册成功 machine_id={msg.get('machine_id')}")
+                if msg.get("type") in {"registered", "hardware_binding"}:
+                    is_registration = msg.get("type") == "registered"
+                    if is_registration:
+                        print(
+                            f"[GameExecutor] 注册成功 machine_id={msg.get('machine_id')}"
+                        )
+                    hardware_ready = await _try_configure_hardware(msg, ctx)
+                    if not hardware_ready:
+                        await _send_runtime_heartbeat(client, ctx)
+                        if binding_poll_task is None or binding_poll_task.done():
+                            binding_poll_task = asyncio.create_task(
+                                _poll_hardware_binding(client, ctx),
+                                name="wireless-hid-binding-poll",
+                            )
+                            background_tasks.add(binding_poll_task)
+                            binding_poll_task.add_done_callback(background_tasks.discard)
+                        continue
+
+                    if binding_poll_task is not None and not binding_poll_task.done():
+                        binding_poll_task.cancel()
+                    if hardware_runtime_started:
+                        await _send_runtime_heartbeat(client, ctx)
+                        continue
+
+                    hardware_runtime_started = True
                     alert_text = await _probe_connected_games(ctx)
                     await _send_runtime_heartbeat(client, ctx)
                     if alert_text:
@@ -471,31 +600,26 @@ async def main_loop():
     trade_task_gate = TradeTaskGate()
     ctx.runtime_status = runtime_status
     ctx.trade_task_gate = trade_task_gate
+    runtime_status.update(
+        client_status="not_ready",
+        executor_status="waiting_hardware",
+        ui_health="unhealthy",
+    )
 
-    if EXECUTOR_REGISTRY.get("lineage_classic") is None:
-        hardware = _create_hardware_controller()
-        if not hardware.connect():
-            raise RuntimeError("failed to connect game executor hardware controller")
-        executor = LineageClassicExecutor(hardware, runtime_status)
-        EXECUTOR_REGISTRY.register(executor)
-
-    while True:
-        try:
-            await _connect_once(ctx)
-        except Exception as e:
-            print(f"[GameExecutor] 连接断开/失败: {e}，{config.RECONNECT_INTERVAL}s 后重连")
-        await asyncio.sleep(config.RECONNECT_INTERVAL)
+    try:
+        while True:
+            try:
+                await _connect_once(ctx)
+            except Exception as e:
+                print(f"[GameExecutor] 连接断开/失败: {e}，{config.RECONNECT_INTERVAL}s 后重连")
+            await asyncio.sleep(config.RECONNECT_INTERVAL)
+    finally:
+        await asyncio.to_thread(_clear_hardware_controller, ctx)
 
 
 def start():
     """启动独立的游戏执行 Worker。"""
     print(f"[GameExecutor] 启动，总控地址: {config.BACKEND_WS_URL}")
-    if executor_config.MANUAL_ACTIONS:
-        print(
-            "[GameExecutor] 人工操作测试模式已启用：订单、识别、等待和终态上报均为真实流程；"
-            "程序不会发送 HID；[GAME-ACTION] 会提前显示最终坐标和输入文字，"
-            "请按 [MANUAL-ACTION] 指引手动操作游戏"
-        )
     asyncio.run(main_loop())
 
 

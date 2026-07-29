@@ -1,7 +1,7 @@
 """公共 Worker 配置与本机信息检测。
 
 这里只保留监控主机和游戏执行主机都需要的连接参数；角色专用参数分别位于
-``monitor.config`` 和 ``game_executor.config``。
+``monitor.config``；游戏执行机的键鼠地址由总控按机器绑定下发。
 """
 import os
 import platform

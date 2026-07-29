@@ -172,6 +172,7 @@ export const reGreeting = (orderId) => request.post(`/orders/${orderId}/re-greet
 export const retryOrder = (orderId) => request.post(`/orders/${orderId}/retry`)
 export const completeOrder = (orderId) => request.post(`/orders/${orderId}/complete`)
 export const cancelOrder = (orderId) => request.post(`/orders/${orderId}/cancel`)
+export const sendOrderChat = (orderId, data) => request.post(`/orders/${orderId}/chat`, data)
 export const addOrderDetail = (orderId, data) => request.post(`/orders/${orderId}/details`, data)
 export const updateOrderDetail = (detailId, data) => request.put(`/orders/details/${detailId}`, data)
 export const deleteOrderDetail = (detailId) => request.delete(`/orders/details/${detailId}`)
