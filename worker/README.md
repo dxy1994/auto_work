@@ -57,6 +57,11 @@ python -m game_executor.main
 Worker 会保持在线并持续轮询；绑定设备通过 UDP 身份校验并成功取得控制权后，才会探测
 游戏和接受交易任务。每次交易下发还会重新携带当前绑定，避免机器改绑后继续使用旧设备。
 
+物品识别图由总控以下发 `/uploads/...` 相对地址。游戏执行端配置 `STORAGE_ENDPOINT`、
+`STORAGE_BUCKET`、`STORAGE_ACCESS_KEY`、`STORAGE_SECRET_KEY` 后，会去掉
+`/uploads/` 前缀并直接从 RustFS 读取对应对象；未配置完整的 RustFS 参数时，才根据
+`GAME_IMAGE_BASE_URL` 或 `BACKEND_WS_URL` 回退到总控 HTTP 代理。
+
 鼠标绝对坐标会转换为 HID 的 0～4095 坐标，并拆分成带加减速和弯曲的多点轨迹；
 点击、拖拽和按键包含随机停顿。文本逐字输入，默认按压 75～145ms、字间间隔
 80～220ms，底层会再次限制最短时长。每段硬件指令结束后更新 `last_feedback`，
@@ -102,7 +107,8 @@ python -m game_executor.hid_browser_debug
 
 首次运行会下载官方模型到 PaddleX 缓存。韩文 OCR 默认要求最低词块置信度不低于
 90，文本相似度不低于 0.90；可通过 `LINEAGE_OCR_MIN_CONFIDENCE` 和
-`LINEAGE_REGION_TEXT_SIMILARITY` 向上调整。
+`LINEAGE_REGION_TEXT_SIMILARITY` 向上调整。游戏画面截图默认最多等待 5 秒，
+可通过 `LINEAGE_CAPTURE_TIMEOUT_SECONDS` 调大（最低为 1 秒）。
 
 ## 独立打包
 

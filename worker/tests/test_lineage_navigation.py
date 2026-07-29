@@ -1368,6 +1368,76 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertIs(first, second)
         self.assertEqual((1, 1), first.shape[:2])
 
+    def test_relative_item_image_reads_directly_from_rustfs_when_configured(self):
+        try:
+            vision = TemplateVision(_Window())
+        except Exception as exc:
+            self.skipTest(str(exc))
+        raw = lineage_navigation.base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+            "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        with mock.patch.object(
+            lineage_navigation.game_storage,
+            "is_enabled",
+            return_value=True,
+        ), mock.patch.object(
+            lineage_navigation.game_storage,
+            "read_image",
+            return_value=(raw, "s3://auto-uploads/images/adena.png"),
+        ) as read_image:
+            image = vision._dynamic_template("/uploads/images/adena.png")
+
+        self.assertEqual((1, 1), image.shape[:2])
+        read_image.assert_called_once_with("/uploads/images/adena.png")
+
+    def test_relative_item_image_uses_backend_websocket_origin(self):
+        with mock.patch.object(lineage_navigation, "GAME_IMAGE_BASE_URL", ""), \
+                mock.patch.object(
+                    lineage_navigation,
+                    "BACKEND_WS_URL",
+                    "ws://10.20.30.40:8000/api/agent/ws",
+                ):
+            self.assertEqual(
+                "http://10.20.30.40:8000/uploads/images/adena.png",
+                TemplateVision._absolute_image_url("/uploads/images/adena.png"),
+            )
+
+    def test_relative_item_image_without_leading_slash_uses_backend_origin(self):
+        with mock.patch.object(lineage_navigation, "GAME_IMAGE_BASE_URL", ""), \
+                mock.patch.object(
+                    lineage_navigation,
+                    "BACKEND_WS_URL",
+                    "ws://10.20.30.40:8000/api/agent/ws",
+                ):
+            self.assertEqual(
+                "http://10.20.30.40:8000/uploads/images/adena.png",
+                TemplateVision._absolute_image_url("uploads/images/adena.png"),
+            )
+
+    def test_configured_item_image_base_url_overrides_websocket_origin(self):
+        with mock.patch.object(
+            lineage_navigation,
+            "GAME_IMAGE_BASE_URL",
+            "http://10.20.30.40:8088",
+        ):
+            self.assertEqual(
+                "http://10.20.30.40:8088/uploads/images/adena.png",
+                TemplateVision._absolute_image_url("/uploads/images/adena.png"),
+            )
+
+    def test_secure_websocket_origin_maps_to_https_for_item_images(self):
+        with mock.patch.object(lineage_navigation, "GAME_IMAGE_BASE_URL", ""), \
+                mock.patch.object(
+                    lineage_navigation,
+                    "BACKEND_WS_URL",
+                    "wss://controller.internal/api/agent/ws",
+                ):
+            self.assertEqual(
+                "https://controller.internal/uploads/images/adena.png",
+                TemplateVision._absolute_image_url("/uploads/images/adena.png"),
+            )
+
     def test_window_title_extracts_version_and_login_account(self):
         match = WINDOW_TITLE_RE.search(
             "Lineage Classic - 26.07.15.2001 [LIVE] - Login [jyz27a@gmail.com]"

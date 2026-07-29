@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 
 from common.config import BACKEND_WS_URL
 
+from game_executor import storage as game_storage
 from game_executor.executor.hardware.humanized import HumanizedInputController
 from game_executor.executor.lineage_classic.paddle_ocr import (
     recognize_korean,
@@ -72,6 +73,7 @@ CAPTURE_TIMEOUT_SECONDS = min(
     30.0,
     max(1.0, float(os.getenv("LINEAGE_CAPTURE_TIMEOUT_SECONDS", "5"))),
 )
+GAME_IMAGE_BASE_URL = os.getenv("GAME_IMAGE_BASE_URL", "").strip()
 ACTION_DEBUG_IMAGES_ENABLED = False
 ACTION_DEBUG_IMAGE_DIR = Path.cwd() / "lineage_action_debug"
 
@@ -906,7 +908,18 @@ class TemplateVision:
         parsed = urlparse(image_source)
         if parsed.scheme in {"http", "https"}:
             return image_source
+        if GAME_IMAGE_BASE_URL:
+            configured = urlparse(GAME_IMAGE_BASE_URL)
+            if configured.scheme not in {"http", "https"} or not configured.netloc:
+                raise NavigationError(
+                    "GAME_IMAGE_BASE_URL 必须是可访问的 http:// 或 https:// 地址"
+                )
+            return urljoin(GAME_IMAGE_BASE_URL.rstrip("/") + "/", image_source)
         backend = urlparse(BACKEND_WS_URL)
+        if backend.scheme not in {"ws", "wss"} or not backend.netloc:
+            raise NavigationError(
+                "BACKEND_WS_URL 格式不正确，无法推导游戏识别图片地址"
+            )
         scheme = "https" if backend.scheme == "wss" else "http"
         return urljoin(f"{scheme}://{backend.netloc}/", image_source)
 
@@ -921,13 +934,27 @@ class TemplateVision:
             f"[Lineage][物品识别图] 开始加载: {_printable(key)}",
             flush=True,
         )
+        resolved_url = ""
         try:
             if key.startswith("data:image/"):
                 _header, payload = key.split(",", 1)
                 raw = base64.b64decode(payload, validate=True)
+            elif game_storage.is_enabled():
+                raw, resolved_url = game_storage.read_image(key)
+                print(
+                    f"[Lineage][物品识别图] RustFS 对象地址: "
+                    f"{_printable(resolved_url)}",
+                    flush=True,
+                )
             else:
+                resolved_url = self._absolute_image_url(key)
+                print(
+                    f"[Lineage][物品识别图] 解析下载地址: "
+                    f"{_printable(resolved_url)}",
+                    flush=True,
+                )
                 request = Request(
-                    self._absolute_image_url(key),
+                    resolved_url,
                     headers={
                         "Accept": "image/*",
                         "User-Agent": "auto-game-executor/1.0",
@@ -944,8 +971,13 @@ class TemplateVision:
             template = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
         except NavigationError:
             raise
+        except game_storage.StorageImageError as exc:
+            raise NavigationError(str(exc)) from exc
         except (OSError, URLError, ValueError, binascii.Error) as exc:
-            raise NavigationError(f"加载物品识别图片失败: {key}") from exc
+            target = resolved_url or key
+            raise NavigationError(
+                f"加载物品识别图片失败: {key}（解析地址: {target}）"
+            ) from exc
         if template is None:
             raise NavigationError(f"无法解码物品识别图片: {key}")
         self._dynamic_templates[key] = template

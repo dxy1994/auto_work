@@ -11,6 +11,7 @@ import tempfile
 import zipfile
 from typing import Optional
 
+from common.object_storage import S3ConnectionSettings, create_s3_client
 from monitor import config
 
 _EXCLUDE_DIRS = {
@@ -28,19 +29,14 @@ def _get_client():
     if not config.STORAGE_ENDPOINT:
         return None
     try:
-        import boto3
-        from botocore.config import Config as BotoConfig
-
-        return boto3.client(
-            "s3",
-            endpoint_url=config.STORAGE_ENDPOINT,
-            region_name=config.STORAGE_REGION,
-            aws_access_key_id=config.STORAGE_ACCESS_KEY,
-            aws_secret_access_key=config.STORAGE_SECRET_KEY,
-            config=BotoConfig(
-                signature_version="s3v4",
-                s3={"addressing_style": "path" if config.STORAGE_PATH_STYLE else "virtual"},
-            ),
+        return create_s3_client(
+            S3ConnectionSettings(
+                endpoint=config.STORAGE_ENDPOINT,
+                region=config.STORAGE_REGION,
+                access_key=config.STORAGE_ACCESS_KEY,
+                secret_key=config.STORAGE_SECRET_KEY,
+                path_style=config.STORAGE_PATH_STYLE,
+            )
         )
     except ImportError:
         print("[StorageSync] boto3 未安装，无法使用远程存储同步")

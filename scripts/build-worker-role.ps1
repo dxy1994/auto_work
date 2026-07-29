@@ -233,7 +233,7 @@ print("monitor dependency preflight passed")
 }
 else {
     $PreflightCode = @"
-import cv2, numpy, paddle, paddleocr, paddlex, PIL, websockets, win32api, win32gui
+import boto3, cv2, numpy, paddle, paddleocr, paddlex, PIL, websockets, win32api, win32gui
 import common, game_executor
 from game_executor.executor.lineage_classic import LineageClassicExecutor
 print("game executor dependency preflight passed")
@@ -303,7 +303,6 @@ else {
         "--exclude-module", "monitor",
         "--exclude-module", "patchright",
         "--exclude-module", "playwright",
-        "--exclude-module", "boto3",
         "--exclude-module", "pygame"
     )
 }
@@ -358,7 +357,7 @@ $DeploymentText = if ($Role -eq "monitor") {
 }
 else {
 @"
-1. Edit .env and set BACKEND_WS_URL.
+1. Edit .env and set BACKEND_WS_URL plus the STORAGE_* RustFS settings.
 2. Bind this machine to a Wireless HID device in the controller.
 3. Keep the game client at 800x600 and run check-package.bat.
 4. OCR models are downloaded to the PaddleX cache on first use.

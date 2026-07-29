@@ -47,6 +47,7 @@ def run_self_check() -> int:
         "paddle",
         "paddleocr",
         "paddlex",
+        "boto3",
         "pythoncom",
         "win32api",
         "win32gui",

@@ -3,3 +3,4 @@
 # ═══════════════════════════════════════════════
 websockets==16.1
 python-dotenv==1.2.2
+boto3>=1.28                    # Monitor 与 Game Executor 共用 RustFS/S3 客户端
