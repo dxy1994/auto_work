@@ -136,6 +136,7 @@ class ChatCommandTest(unittest.TestCase):
                         "image_urls": ["https://files.example.com/a.png"],
                     },
                 ],
+                keep_open=True,
             ))
 
         self.assertTrue(result["success"])
@@ -150,7 +151,7 @@ class ChatCommandTest(unittest.TestCase):
             "type:second",
             "click:#send",
         ], relevant)
-        self.assertEqual(["untrack", "end"], events[-2:])
+        self.assertEqual(["close", "untrack", "end"], events[-3:])
 
     def test_sender_rejects_images_without_a_file_selector(self):
         result = asyncio.run(sender._do_send_chat(

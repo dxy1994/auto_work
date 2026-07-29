@@ -28,7 +28,7 @@ def send_chat(
     keep_open: bool = False,
     post_action: Optional[dict] = None,
 ) -> dict:
-    """同步入口：在指定平台账号的浏览器会话中发送有序聊天消息。"""
+    """同步入口：发送一批有序聊天消息，结束后始终关闭临时聊天页。"""
     from monitor.browser.session import BrowserSession
 
     try:
@@ -50,7 +50,7 @@ def send_chat(
         normalized_target,
         normalized_messages,
         post_action,
-        keep_open=keep_open,
+        keep_open=False,
     )
     try:
         future = asyncio.run_coroutine_threadsafe(coroutine, owner_loop)
@@ -89,7 +89,7 @@ async def _do_send_web_chat(
     scripts: list,
     keep_open: bool = False,
 ) -> dict:
-    """兼容旧版异步入口。"""
+    """兼容旧版异步入口；keep_open 参数不再保留聊天页。"""
     target = {**DEFAULT_ITEMMANIA_TARGET, "url": chat_url}
     messages = [
         {
@@ -98,7 +98,7 @@ async def _do_send_web_chat(
         }
         for item in (scripts or [])
     ]
-    return await _do_send_chat(session, target, messages, keep_open)
+    return await _do_send_chat(session, target, messages, keep_open=False)
 
 
 async def _do_send_chat(
@@ -107,20 +107,19 @@ async def _do_send_chat(
     messages: list,
     keep_open: bool = False,
 ) -> dict:
-    """串行执行同一账号的聊天命令，避免多个订单消息交叉发送。"""
+    """串行执行聊天命令；keep_open 仅为兼容旧调用，页面始终关闭。"""
     chat_lock = getattr(session, "_chat_send_lock", None)
     if chat_lock is None:
         chat_lock = asyncio.Lock()
         setattr(session, "_chat_send_lock", chat_lock)
     async with chat_lock:
-        return await _do_send_chat_locked(session, target, messages, keep_open)
+        return await _do_send_chat_locked(session, target, messages)
 
 
 async def _do_send_chat_locked(
     session,
     target: dict,
     messages: list,
-    keep_open: bool = False,
 ) -> dict:
     """打开客户会话并按消息顺序发送，每张图片和每段文字均等待完成。"""
     try:
@@ -188,7 +187,7 @@ async def _do_send_chat_locked(
         return {"success": False, "message": f"聊天执行异常: {exc}"}
     finally:
         try:
-            if page and not keep_open:
+            if page:
                 try:
                     await page.close()
                 finally:
@@ -210,7 +209,7 @@ async def _do_send_chat_with_post_action(
         session,
         target,
         messages,
-        keep_open=False if action else keep_open,
+        keep_open=False,
     )
     if not action:
         return chat_result

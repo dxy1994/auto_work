@@ -139,7 +139,7 @@ class BaseOrderMonitor:
             command["target"],
             command["messages"],
             command.get("post_action"),
-            keep_open=True)
+            keep_open=False)
         try:
             future = asyncio.run_coroutine_threadsafe(coro, session._owner_loop)
             result = future.result(timeout=120)

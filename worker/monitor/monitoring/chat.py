@@ -91,7 +91,7 @@ def handle_chat(
             command["target"],
             command["messages"],
             main_loop=main_loop,
-            keep_open=True,
+            keep_open=False,
             post_action=command.get("post_action"),
         )
     except Exception as exc:
