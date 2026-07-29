@@ -13,6 +13,14 @@ class AgentClient:
         self._ws = ws
         self._loop = loop
 
+    @property
+    def local_ip(self):
+        """返回当前 WebSocket 实际使用的本机 IPv4。"""
+        address = getattr(self._ws, "local_address", None)
+        if isinstance(address, (tuple, list)) and address:
+            return address[0]
+        return None
+
     async def send(self, msg: dict):
         await self._ws.send(json.dumps(msg, ensure_ascii=False))
 

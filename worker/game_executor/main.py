@@ -554,6 +554,7 @@ async def _retry_pending_game_recovery(client, ctx: AppContext) -> None:
 async def _send_runtime_heartbeat(client, ctx: AppContext) -> None:
     await client.send({
         "type": "heartbeat",
+        "ip": config.get_machine_ip(getattr(client, "local_ip", None)),
         "runtime": {
             "role": "game_executor",
             **ctx.runtime_status.snapshot(),
@@ -576,12 +577,12 @@ async def _heartbeat(client, ctx: AppContext):
 async def _connect_once(ctx: AppContext):
     import websockets
 
-    info = config.get_machine_info()
-    info["role"] = "game_executor"
-    info["execution_mode"] = "live"
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
         loop = asyncio.get_event_loop()
         client = AgentClient(ws, loop)
+        info = config.get_machine_info(client.local_ip)
+        info["role"] = "game_executor"
+        info["execution_mode"] = "live"
         reporter = Reporter(client)
         ctx.reporter = reporter
 

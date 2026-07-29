@@ -141,6 +141,10 @@ public class AgentRegistry {
         Machine m = machineService.getById(machineId);
         if (m != null) {
             boolean restored = !"online".equals(m.getStatus());
+            String reportedIp = str(msg.get("ip"));
+            if (reportedIp != null && !reportedIp.isBlank()) {
+                m.setIpAddress(reportedIp);
+            }
             m.setLastHeartbeat(LocalDateTime.now());
             if (!"online".equals(m.getStatus())) {
                 m.setStatus("online");

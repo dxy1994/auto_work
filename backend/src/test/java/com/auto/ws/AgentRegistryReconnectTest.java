@@ -91,6 +91,18 @@ class AgentRegistryReconnectTest {
     }
 
     @Test
+    void heartbeatRefreshesTheMachinesReportedLanIp() {
+        Machine machine = machine(7, "online");
+        machine.setIpAddress("172.20.0.1");
+        when(machineService.getById(7)).thenReturn(machine);
+
+        registry.updateHeartbeat(7, Map.of("ip", "192.168.1.88"));
+
+        assertEquals("192.168.1.88", machine.getIpAddress());
+        verify(machineService).updateById(machine);
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void sessionSnapshotContainsCurrentConnectionAndRuntimeState() {
         WebSocketSession session = mock(WebSocketSession.class);

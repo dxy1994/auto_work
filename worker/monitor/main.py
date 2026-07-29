@@ -212,6 +212,7 @@ async def _heartbeat(client, ctx: AppContext):
         await asyncio.sleep(config.HEARTBEAT_INTERVAL)
         await client.send({
             "type": "heartbeat",
+            "ip": config.get_machine_ip(getattr(client, "local_ip", None)),
             "runtime": {"role": "monitor"},
         })
 
@@ -219,11 +220,11 @@ async def _heartbeat(client, ctx: AppContext):
 async def _connect_once(ctx: AppContext):
     import websockets
 
-    info = config.get_machine_info()
-    info["role"] = "monitor"
     async with websockets.connect(config.BACKEND_WS_URL, max_size=None) as ws:
         loop = asyncio.get_event_loop()
         client = AgentClient(ws, loop)
+        info = config.get_machine_info(client.local_ip)
+        info["role"] = "monitor"
         try:
             reporter = ctx.reporter
             reporter.set_client(client)

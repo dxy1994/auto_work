@@ -18,6 +18,7 @@ from monitor.monitoring.platforms.itemmania import (  # noqa: E402
     SELL_REGIST_URL,
 )
 from monitor.monitoring.platforms import itemmania as itemmania_module  # noqa: E402
+from monitor.browser.session import BrowserSession  # noqa: E402
 
 
 class _FakeSession:
@@ -315,6 +316,22 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("REFRESH_PAGE_MAX_ACTIONS", refresh_source)
         self.assertIn("recycle_page", refresh_source)
         self.assertNotIn("recycle_page", order_source)
+
+    def test_worker_pages_navigate_independently_and_only_relogin_is_locked(self):
+        navigation_source = "\n".join((
+            inspect.getsource(ManiaOrderWorker._ensure_order_page_ready),
+            inspect.getsource(ManiaOrderWorker._reload_order_page),
+            inspect.getsource(ManiaRefreshWorker._do_refresh),
+            inspect.getsource(ManiaRefreshWorker._ensure_refresh_page_ready),
+        ))
+        relogin_source = inspect.getsource(BrowserSession.relogin)
+
+        self.assertNotIn("navigation_lock", navigation_source)
+        self.assertFalse(hasattr(
+            itemmania_module.ItemmaniaMonitor,
+            "navigation_lock",
+        ))
+        self.assertIn("async with self._relogin_lock", relogin_source)
 
     async def test_refresh_worker_escalates_renderer_crash_for_page_rebuild(self):
         monitor = SimpleNamespace(

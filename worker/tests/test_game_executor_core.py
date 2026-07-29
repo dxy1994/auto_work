@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game_executor.executor.registry import ExecutorRegistry
+from game_executor.executor.lineage_classic import LineageClassicExecutor
 from game_executor.gate import TradeTaskGate
 from game_executor.main import (
     _create_hardware_controller,
@@ -109,6 +110,12 @@ class GameExecutorCoreTest(unittest.TestCase):
         self.assertIs(executor, registry.get("LINEAGE_CLASSIC"))
         self.assertIs(executor, registry.get("리니지클래식"))
         self.assertEqual((executor,), registry.executors())
+
+    def test_lineage_executor_uses_canonical_script_name_and_legacy_aliases(self):
+        self.assertEqual("lineage_classic", LineageClassicExecutor.game_code)
+        self.assertIn("리니지클래식", LineageClassicExecutor.game_codes)
+        self.assertIn("天堂经典版", LineageClassicExecutor.game_codes)
+        self.assertEqual("天堂经典版", LineageClassicExecutor.game_name)
 
     def test_registry_can_replace_all_aliases_for_rebound_hardware(self):
         registry = ExecutorRegistry()

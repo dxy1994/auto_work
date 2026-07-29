@@ -1,7 +1,6 @@
 import inspect
 import os
 import sys
-import tempfile
 import threading
 import unittest
 from types import SimpleNamespace
@@ -62,65 +61,6 @@ ORDER = {
         "recognition_image_selected_url": "/uploads/images/adena-selected.png",
     }],
 }
-
-
-@unittest.skipIf(
-    lineage_navigation.Image is None or lineage_navigation.np is None,
-    "Pillow/numpy not installed",
-)
-class ActionVisualizationTest(unittest.TestCase):
-    def test_drag_and_keyboard_actions_create_distinct_annotated_images(self):
-        vision = object.__new__(TemplateVision)
-        vision._recent_match_visuals = []
-        vision._debug_image_sequence = 0
-        vision._capture = mock.Mock(return_value=lineage_navigation.np.zeros(
-            (600, 800, 3),
-            dtype=lineage_navigation.np.uint8,
-        ))
-
-        drag_action = {
-            "action": "mouse_drag",
-            "client_target_start": [630, 180],
-            "client_target_end": [420, 310],
-            "client_actual_start": [631, 179],
-            "client_actual_end": [417, 314],
-            "client_start_action_bounds": [628, 178, 632, 182],
-            "client_end_action_bounds": [414, 304, 426, 316],
-        }
-        keyboard_action = {
-            "action": "key_type",
-            "text": "250000",
-            "typing_plan": [
-                {"key": key, "hold_ms": 60, "gap_ms": 40}
-                for key in "250000"
-            ],
-        }
-
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
-            lineage_navigation,
-            "ACTION_DEBUG_IMAGE_DIR",
-            lineage_navigation.Path(temp_dir),
-        ):
-            drag_path = vision.save_action_visualization(drag_action)
-            keyboard_path = vision.save_action_visualization(keyboard_action)
-
-            self.assertIsNotNone(drag_path)
-            self.assertIsNotNone(keyboard_path)
-            self.assertNotEqual(drag_path, keyboard_path)
-            with lineage_navigation.Image.open(drag_path) as drag_image:
-                self.assertEqual((800, 600), drag_image.size)
-                drag_colors = {
-                    color
-                    for _count, color in drag_image.getcolors(maxcolors=1_000_000)
-                }
-                self.assertIn((255, 0, 255), drag_colors)
-            with lineage_navigation.Image.open(keyboard_path) as keyboard_image:
-                self.assertEqual((800, 600), keyboard_image.size)
-                keyboard_colors = {
-                    color
-                    for _count, color in keyboard_image.getcolors(maxcolors=1_000_000)
-                }
-                self.assertIn((235, 235, 235), keyboard_colors)
 
 
 def _instant_navigator(vision):

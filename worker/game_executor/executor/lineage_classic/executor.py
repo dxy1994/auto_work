@@ -119,8 +119,14 @@ class LineageClassicExecutor(BaseGameExecutor):
     同步 Win32/图像/硬件调用放在独立线程，不占用 WebSocket 事件循环。
     """
 
-    game_code = "리니지클래식"
-    game_codes = ("리니지클래식", "lineage_classic", "lineage classic")
+    game_code = "lineage_classic"
+    game_codes = (
+        "lineage_classic",
+        "lineage classic",
+        "리니지클래식",
+        "天堂经典版",
+        "天堂",
+    )
     game_name = "天堂经典版"
 
     def __init__(self, hw, runtime_status=None):
