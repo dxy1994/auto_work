@@ -58,7 +58,7 @@ const routes = [
     path: '/mk-devices',
     name: 'MouseKeyboardDeviceList',
     component: () => import('../views/MouseKeyboardDeviceList.vue'),
-    meta: { title: '鼠标键盘设备管理' },
+    meta: { title: 'Wireless HID 上位机' },
   },
   {
     path: '/vs-devices',

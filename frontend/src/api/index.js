@@ -105,6 +105,42 @@ export const createMkDevice = (data) => request.post('/mk-devices', data)
 export const updateMkDevice = (id, data) => request.put(`/mk-devices/${id}`, data)
 export const deleteMkDevice = (id) => request.delete(`/mk-devices/${id}`)
 
+// ── Wireless HID 上位机 ────────────────────────────────────────────────────
+export const getWirelessHidDevices = () => request.get('/wireless-hid/devices')
+export const discoverWirelessHidDevices = (data = {}) =>
+  request.post('/wireless-hid/discover', data, { timeout: 10000 })
+export const connectWirelessHidDevice = (id) => request.post(`/wireless-hid/${id}/connect`)
+export const disconnectWirelessHidDevice = (id) => request.post(`/wireless-hid/${id}/disconnect`)
+export const getWirelessHidStatus = (id) => request.get(`/wireless-hid/${id}/status`)
+export const sendWirelessHidKeyboard = (id, data) => request.post(`/wireless-hid/${id}/keyboard`, data)
+export const sendWirelessHidRelativeMouse = (id, data) => request.post(`/wireless-hid/${id}/mouse/relative`, data)
+export const sendWirelessHidAbsoluteMouse = (id, data) => request.post(`/wireless-hid/${id}/mouse/absolute`, data)
+export const releaseWirelessHidAll = (id) => request.post(`/wireless-hid/${id}/release-all`)
+export const authenticateWirelessHid = (id, pin) =>
+  request.post(`/wireless-hid/${id}/management/session`, { pin })
+export const getWirelessHidManagementStatus = (id) =>
+  request.get(`/wireless-hid/${id}/management/status`)
+export const renameWirelessHidDevice = (id, name) =>
+  request.post(`/wireless-hid/${id}/management/name`, { name })
+export const enterWirelessHidProvisioning = (id) =>
+  request.post(`/wireless-hid/${id}/management/provision`)
+export const factoryResetWirelessHidDevice = (id, confirmDeviceId) =>
+  request.post(`/wireless-hid/${id}/management/factory-reset`, { confirm_device_id: confirmDeviceId })
+export const uploadWirelessHidFirmware = (id, file, onProgress) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return request.post(`/wireless-hid/${id}/management/ota`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 210000,
+    onUploadProgress: (event) => {
+      if (event.total && onProgress) onProgress(Math.round((event.loaded * 100) / event.total))
+    },
+  })
+}
+export const provisionWirelessHidAccessPoint = (data) =>
+  request.post('/wireless-hid/ap/provision', data, { timeout: 30000 })
+export const deleteWirelessHidDevice = (id) => request.delete(`/wireless-hid/${id}`)
+
 // ── 中控平台：视频流设备 ────────────────────────────────────
 export const getVsDevices = (params) => request.get('/vs-devices', { params })
 export const getAllVsDevices = () => request.get('/vs-devices/all')

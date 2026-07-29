@@ -82,7 +82,7 @@
           </template>
           <el-menu-item index="/mk-devices">
             <el-icon><Mouse /></el-icon>
-            <span>键鼠设备</span>
+            <span>Wireless HID</span>
           </el-menu-item>
           <el-menu-item index="/vs-devices">
             <el-icon><VideoCameraFilled /></el-icon>
