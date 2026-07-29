@@ -127,6 +127,7 @@ const cancellingId = ref(null)
 // 订单检查状态轮询
 const orderCheckStatuses = ref({})  // { accountId: { status, message, start_time } }
 let statusPollTimer = null
+const STATUS_REFRESH_INTERVAL_MS = 5000
 
 const currentRow = ref(null)
 function onCurrentChange(row) { currentRow.value = row }
@@ -141,23 +142,12 @@ async function pollStatus() {
     const res = await getOrderCheckStatus()
     // 构建新的状态映射：合并已有 running/stopping 状态，移除已完成的
     const newMap = {}
-    let hasActive = false
     for (const [key, info] of Object.entries(res)) {
       if (info.status === 'running' || info.status === 'stopping') {
         newMap[Number(key)] = info
-        hasActive = true
       }
     }
     orderCheckStatuses.value = newMap
-    // 如果没有活跃任务，降低轮询频率（10秒）
-    if (!hasActive && statusPollTimer) {
-      clearInterval(statusPollTimer)
-      statusPollTimer = setInterval(pollStatus, 10000)
-    } else if (hasActive && statusPollTimer) {
-      // 有活跃任务，2秒轮询
-      clearInterval(statusPollTimer)
-      statusPollTimer = setInterval(pollStatus, 2000)
-    }
   } catch (e) {
     // 静默忽略轮询错误
   }
@@ -247,9 +237,8 @@ async function handleOrderCheck(row) {
         message: '订单监控运行中...',
         start_time: Date.now() / 1000,
       }
-      // 确保轮询以最快频率运行
-      if (statusPollTimer) clearInterval(statusPollTimer)
-      statusPollTimer = setInterval(pollStatus, 2000)
+      // 立即再向后端同步一次，随后保持统一的 5 秒刷新。
+      pollStatus()
     } else {
       ElMessage.warning(res.message || res.status)
     }
@@ -286,9 +275,9 @@ async function handleCancelCheck(row) {
 onMounted(() => {
   fetchAllWebsites()
   fetchList()
-  // 初始轮询检查状态（10秒间隔，发现活跃任务自动切换为2秒）
+  // 默认开启自动刷新，进入页面立即同步，之后每 5 秒刷新。
   pollStatus()
-  statusPollTimer = setInterval(pollStatus, 10000)
+  statusPollTimer = setInterval(pollStatus, STATUS_REFRESH_INTERVAL_MS)
 })
 
 onUnmounted(() => {

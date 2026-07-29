@@ -95,6 +95,10 @@
             <el-icon><Files /></el-icon>
             <span>系统工具</span>
           </template>
+          <el-menu-item index="/system-controls">
+            <el-icon><Operation /></el-icon>
+            <span>系统控制</span>
+          </el-menu-item>
           <el-menu-item index="/software-distribution">
             <el-icon><Download /></el-icon>
             <span>软件分发</span>

@@ -17,6 +17,7 @@ import com.auto.service.GameRegionService;
 import com.auto.service.GameService;
 import com.auto.service.MachineGameAccountService;
 import com.auto.service.MachineService;
+import com.auto.service.SystemControlService;
 import com.auto.service.TradeAssignmentService;
 import com.auto.trade.statemachine.DeliveryEvent;
 import com.auto.trade.statemachine.OrderDeliveryStateMachine;
@@ -92,6 +93,7 @@ public class TradeDispatchCoordinator {
     private final GameRegionService gameRegionService;
     private final ManualOrderStatusService manualOrderStatusService;
     private final BuyerReviewAuditService buyerReviewAuditService;
+    private final SystemControlService systemControlService;
     private final TransactionTemplate committedTransaction;
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, TradeOffer> pendingOffers = new ConcurrentHashMap<>();
@@ -118,6 +120,7 @@ public class TradeDispatchCoordinator {
             GameRegionService gameRegionService,
             ManualOrderStatusService manualOrderStatusService,
             BuyerReviewAuditService buyerReviewAuditService,
+            SystemControlService systemControlService,
             PlatformTransactionManager transactionManager) {
         this.orderService = orderService;
         this.machineGameService = machineGameService;
@@ -133,11 +136,13 @@ public class TradeDispatchCoordinator {
         this.gameRegionService = gameRegionService;
         this.manualOrderStatusService = manualOrderStatusService;
         this.buyerReviewAuditService = buyerReviewAuditService;
+        this.systemControlService = systemControlService;
         this.committedTransaction = new TransactionTemplate(transactionManager);
         this.committedTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     public TradeOffer dispatch(Integer orderId) {
+        requireAutoGameTradeEnabled();
         // 必须先提交 offered 状态和资源预占，再向 Worker 发送 offer。
         // Worker 的 WebSocket 回执可能在 sendTradeOffer 返回前就到达；如果仍处于同一事务，
         // 回执线程只能读到旧状态，从而把合法的 OFFER_ACCEPTED 判定为非法转换。
@@ -167,6 +172,7 @@ public class TradeDispatchCoordinator {
     }
 
     private TradeOffer prepareOffer(Integer orderId) {
+        requireAutoGameTradeEnabled();
         GameItemOrder order = orderService.getById(orderId);
         if (order == null) {
             throw new IllegalStateException("订单不存在");
@@ -530,6 +536,17 @@ public class TradeDispatchCoordinator {
                 return;
             }
 
+            if (!systemControlService.isAutoGameTradeEnabled()) {
+                agentRegistry.sendTradeCancel(
+                        machineId, assignmentId, "auto_game_trade_disabled");
+                committedTransaction.execute(status ->
+                        rejectOffer(offer, "系统控制已关闭自动游戏交易"));
+                log.info("[Trade] 系统控制已关闭，阻止待接受指派启动 "
+                                + "order_id={} assignment_id={} machine_id={}",
+                        offer.orderId(), assignmentId, machineId);
+                return;
+            }
+
             // 先提交 offered → assigned，再发送 trade_start；这样 Worker 即时上报状态时
             // 一定能够从数据库读到 ASSIGNED。
             committedTransaction.executeWithoutResult(status -> {
@@ -813,6 +830,9 @@ public class TradeDispatchCoordinator {
     /** 定时兜底扫描持久化队列；后端重启或 Worker 心跳稍晚时也不会遗失后续订单。 */
     @Scheduled(fixedDelayString = "${trade.queue-scan-ms:5000}")
     public void dispatchQueuedOrders() {
+        if (!systemControlService.isAutoGameTradeEnabled()) {
+            return;
+        }
         List<Integer> machineIds = orderService.list(
                         new LambdaQueryWrapper<GameItemOrder>()
                                 .select(GameItemOrder::getAssignedMachineId)
@@ -832,6 +852,9 @@ public class TradeDispatchCoordinator {
 
     /** 资源释放后主动唤醒该机器最早进入队列且仍为 pending/queued 的订单。 */
     public void triggerNextQueuedOrder(int machineId) {
+        if (!systemControlService.isAutoGameTradeEnabled()) {
+            return;
+        }
         Object queueLock = machineQueueLocks.computeIfAbsent(machineId, ignored -> new Object());
         synchronized (queueLock) {
             GameItemOrder queued = orderService.getOne(
@@ -873,6 +896,9 @@ public class TradeDispatchCoordinator {
     }
 
     private TradeOffer prepareQueuedOffer(int orderId, int machineId) {
+        if (!systemControlService.isAutoGameTradeEnabled()) {
+            return null;
+        }
         GameItemOrder order = orderService.getById(orderId);
         if (order == null
                 || !"queued".equals(order.getDeliveryStatus())
@@ -898,6 +924,12 @@ public class TradeDispatchCoordinator {
         }
         return createOffer(order, game, candidate.get(), DeliveryEvent.DEQUEUE_ASSIGNMENT,
                 "机器空闲，FIFO 队首订单开始交易指派");
+    }
+
+    private void requireAutoGameTradeEnabled() {
+        if (!systemControlService.isAutoGameTradeEnabled()) {
+            throw new IllegalStateException("系统控制已关闭自动游戏交易");
+        }
     }
 
     private void returnQueuedOffer(TradeOffer offer, DeliveryEvent event, String reason) {

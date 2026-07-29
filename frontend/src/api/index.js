@@ -30,6 +30,10 @@ export const deleteSoftwarePackage = (id) => request.delete(`/software-packages/
 export const softwarePackageDownloadUrl = (id) =>
   `/api/software-packages/${encodeURIComponent(id)}/download`
 
+// ── 系统控制 ──────────────────────────────────────────────
+export const getSystemControls = () => request.get('/system-controls')
+export const updateSystemControls = (data) => request.put('/system-controls', data)
+
 // ── 网站管理 ──────────────────────────────────────────────
 export const getWebsites = (params) => request.get('/platforms', { params })
 export const getAllWebsites = () => request.get('/platforms/all')

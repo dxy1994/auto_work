@@ -14,6 +14,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.net.InetSocketAddress;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -100,6 +101,35 @@ class AgentRegistryReconnectTest {
 
         assertEquals("192.168.1.88", machine.getIpAddress());
         verify(machineService).updateById(machine);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void monitorHeartbeatRestoresSharedOrderCheckStatus() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        registry.bindAgent(7, session);
+
+        registry.updateHeartbeat(7, Map.of("runtime", Map.of(
+                "role", "monitor",
+                "active_tasks", List.of(Map.of(
+                        "account_id", 4,
+                        "task_id", "order-4",
+                        "status", "running",
+                        "start_time", 1234.5)))));
+
+        Map<String, Object> all =
+                (Map<String, Object>) registry.getOrderCheckStatus(null);
+        Map<String, Object> task = (Map<String, Object>) all.get("4");
+        assertNotNull(task);
+        assertEquals("running", task.get("status"));
+        assertEquals(1234.5, task.get("start_time"));
+
+        registry.updateHeartbeat(7, Map.of("runtime", Map.of(
+                "role", "monitor",
+                "active_tasks", List.of())));
+
+        assertTrue(((Map<?, ?>) registry.getOrderCheckStatus(null)).isEmpty());
     }
 
     @Test

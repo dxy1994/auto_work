@@ -12,6 +12,7 @@ import com.auto.service.GameRegionService;
 import com.auto.service.GameService;
 import com.auto.service.MachineGameAccountService;
 import com.auto.service.MachineService;
+import com.auto.service.SystemControlService;
 import com.auto.service.TradeAssignmentService;
 import com.auto.trade.statemachine.OrderDeliveryStateMachine;
 import com.auto.ws.AgentRegistry;
@@ -50,6 +51,8 @@ class TradeDispatchCoordinatorTransactionTest {
         GameItemService itemService = mock(GameItemService.class);
         GameRegionService regionService = mock(GameRegionService.class);
         ManualOrderStatusService manualOrderStatusService = mock(ManualOrderStatusService.class);
+        SystemControlService systemControlService = mock(SystemControlService.class);
+        when(systemControlService.isAutoGameTradeEnabled()).thenReturn(true);
         RecordingTransactionManager transactionManager = new RecordingTransactionManager();
 
         GameItemOrder order = new GameItemOrder();
@@ -103,6 +106,7 @@ class TradeDispatchCoordinatorTransactionTest {
                 assignmentService, registry, selector, stateMachine, gameService,
                 detailService, itemService, regionService, manualOrderStatusService,
                 mock(BuyerReviewAuditService.class),
+                systemControlService,
                 transactionManager);
 
         TradeOffer offer = coordinator.dispatch(24);

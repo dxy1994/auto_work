@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0, str(WORKER_ROOT))
 
 from monitor.browser.session import BrowserSession  # noqa: E402
+from monitor.main import _heartbeat  # noqa: E402
 from monitor.monitoring.worker import PageWorker  # noqa: E402
 
 
@@ -20,6 +21,32 @@ class _NoopPageWorker(PageWorker):
 
 
 class MonitorBrowserLifecycleTest(unittest.TestCase):
+    def test_heartbeat_reports_active_order_monitors_immediately(self):
+        client = SimpleNamespace(
+            local_ip="192.168.1.88",
+            send=AsyncMock(side_effect=RuntimeError("stop after first heartbeat")),
+        )
+        task_manager = SimpleNamespace(snapshot=lambda: {
+            4: {
+                "task_id": "order-4",
+                "kind": "order_check",
+                "status": "running",
+                "start_time": 1234.5,
+            },
+        })
+
+        with self.assertRaisesRegex(RuntimeError, "stop after first heartbeat"):
+            asyncio.run(_heartbeat(client, SimpleNamespace(task_manager=task_manager)))
+
+        payload = client.send.await_args.args[0]
+        self.assertEqual("monitor", payload["runtime"]["role"])
+        self.assertEqual([{
+            "account_id": 4,
+            "task_id": "order-4",
+            "status": "running",
+            "start_time": 1234.5,
+        }], payload["runtime"]["active_tasks"])
+
     def test_websocket_disconnect_does_not_cancel_monitor_tasks(self):
         source = (WORKER_ROOT / "monitor" / "main.py").read_text(encoding="utf-8")
         tree = ast.parse(source)

@@ -19,9 +19,11 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -171,6 +173,87 @@ public class AgentRegistry {
                     str(runtime.get("executor_status")),
                     str(runtime.get("current_assignment_id")),
                     str(runtime.get("ui_health"))));
+            if ("monitor".equals(role) && runtime.containsKey("active_tasks")) {
+                syncMonitorTasks(machineId, runtime.get("active_tasks"));
+            }
+        }
+    }
+
+    /**
+     * 使用 Monitor 心跳中的真实任务快照恢复后端镜像。
+     *
+     * <p>这样后端重启或 Worker 重连后，任意浏览器查询到的都是同一份服务器状态，
+     * 而不是只有发起监控的浏览器依赖本地乐观状态。</p>
+     */
+    private void syncMonitorTasks(int machineId, Object activeTasksObject) {
+        if (!(activeTasksObject instanceof List<?> activeTasks)) {
+            return;
+        }
+        Set<Integer> reportedAccounts = new HashSet<>();
+        WebSocketSession session = agentConnections.get(machineId);
+        synchronized (taskLock) {
+            for (Object itemObject : activeTasks) {
+                if (!(itemObject instanceof Map<?, ?> item)) {
+                    continue;
+                }
+                Integer accountId = asInt(item.get("account_id"));
+                String taskId = str(item.get("task_id"));
+                String status = str(item.get("status"));
+                if (accountId == null
+                        || taskId == null
+                        || taskId.isBlank()
+                        || (!"running".equals(status) && !"stopping".equals(status))) {
+                    continue;
+                }
+
+                TaskInfo current = accountTasks.get(accountId);
+                if (current != null && current.machineId != machineId) {
+                    log.warn(
+                            "[Agent] 忽略与其他机器冲突的监控任务快照 "
+                                    + "account_id={} reported_machine={} owner_machine={}",
+                            accountId, machineId, current.machineId);
+                    continue;
+                }
+                reportedAccounts.add(accountId);
+                if (current != null
+                        && current.taskId != null
+                        && !current.taskId.equals(taskId)) {
+                    taskToMachine.remove(current.taskId, machineId);
+                    taskToAgentSession.remove(current.taskId);
+                    accountTaskIds.remove(accountId, current.taskId);
+                    retireTaskId(current.taskId);
+                }
+
+                TaskInfo reported = current != null ? current : new TaskInfo();
+                reported.machineId = machineId;
+                reported.taskId = taskId;
+                reported.status = status;
+                reported.message = "stopping".equals(status)
+                        ? "正在终止..."
+                        : "订单监控运行中...";
+                Object startTime = item.get("start_time");
+                reported.startTime = startTime instanceof Number number
+                        ? number.doubleValue()
+                        : System.currentTimeMillis() / 1000.0;
+                accountTasks.put(accountId, reported);
+                accountTaskIds.put(accountId, taskId);
+                taskToMachine.put(taskId, machineId);
+                if (session != null && session.isOpen()) {
+                    taskToAgentSession.put(taskId, session);
+                }
+            }
+
+            accountTasks.forEach((accountId, info) -> {
+                if (info != null
+                        && info.machineId == machineId
+                        && !reportedAccounts.contains(accountId)
+                        && accountTasks.remove(accountId, info)) {
+                    accountTaskIds.remove(accountId, info.taskId);
+                    taskToMachine.remove(info.taskId, machineId);
+                    taskToAgentSession.remove(info.taskId);
+                    retireTaskId(info.taskId);
+                }
+            });
         }
     }
 

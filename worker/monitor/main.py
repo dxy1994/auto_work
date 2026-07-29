@@ -209,12 +209,27 @@ async def _dispatch_message(msg, ctx: AppContext):
 
 async def _heartbeat(client, ctx: AppContext):
     while True:
-        await asyncio.sleep(config.HEARTBEAT_INTERVAL)
+        task_snapshot = ctx.task_manager.snapshot()
+        active_tasks = [
+            {
+                "account_id": account_id,
+                "task_id": info.get("task_id"),
+                "status": info.get("status"),
+                "start_time": info.get("start_time"),
+            }
+            for account_id, info in task_snapshot.items()
+            if info.get("kind") == "order_check"
+            and info.get("status") in {"running", "stopping"}
+        ]
         await client.send({
             "type": "heartbeat",
             "ip": config.get_machine_ip(getattr(client, "local_ip", None)),
-            "runtime": {"role": "monitor"},
+            "runtime": {
+                "role": "monitor",
+                "active_tasks": active_tasks,
+            },
         })
+        await asyncio.sleep(config.HEARTBEAT_INTERVAL)
 
 
 async def _connect_once(ctx: AppContext):

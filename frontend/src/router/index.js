@@ -67,6 +67,12 @@ const routes = [
     meta: { title: '视频流设备管理' },
   },
   {
+    path: '/system-controls',
+    name: 'SystemControl',
+    component: () => import('../views/SystemControl.vue'),
+    meta: { title: '系统控制' },
+  },
+  {
     path: '/software-distribution',
     name: 'SoftwareDistribution',
     component: () => import('../views/SoftwareDistribution.vue'),

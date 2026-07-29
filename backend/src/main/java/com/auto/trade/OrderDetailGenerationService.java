@@ -76,9 +76,10 @@ public class OrderDetailGenerationService {
                     "未找到编码或名称匹配的启用物品: " + itemCodeOrName);
         }
 
+        int platformQuantity = resolvePlatformQuantity(order);
         List<GameItemOrderDetail> generated = Integer.valueOf(1).equals(matchedItem.getIsBundle())
-                ? buildBundleDetails(order, matchedItem)
-                : List.of(buildDetail(order, matchedItem, null, 1));
+                ? buildBundleDetails(order, matchedItem, platformQuantity)
+                : List.of(buildDetail(order, matchedItem, null, platformQuantity));
         for (GameItemOrderDetail detail : generated) {
             detailService.save(detail);
         }
@@ -91,7 +92,8 @@ public class OrderDetailGenerationService {
 
     private List<GameItemOrderDetail> buildBundleDetails(
             GameItemOrder order,
-            GameItem bundle) {
+            GameItem bundle,
+            int platformQuantity) {
         List<ItemBundleRelation> relations = bundleItemService.findRelationsByBundleId(bundle.getId());
         if (relations.isEmpty()) {
             throw new IllegalStateException("套装尚未配置子物品: " + bundle.getName());
@@ -110,12 +112,26 @@ public class OrderDetailGenerationService {
                 throw new IllegalStateException(
                         "套装包含不存在或已停用的子物品，item_id=" + relation.getItemId());
             }
-            int quantity = relation.getQuantity() != null && relation.getQuantity() > 0
+            int bundleItemQuantity = relation.getQuantity() != null && relation.getQuantity() > 0
                     ? relation.getQuantity()
                     : 1;
+            int quantity;
+            try {
+                quantity = Math.multiplyExact(bundleItemQuantity, platformQuantity);
+            } catch (ArithmeticException e) {
+                throw new IllegalStateException(
+                        "套装子物品数量超出系统支持范围，item_id=" + relation.getItemId(), e);
+            }
             details.add(buildDetail(order, child, bundle.getName(), quantity));
         }
         return details;
+    }
+
+    private int resolvePlatformQuantity(GameItemOrder order) {
+        if (order.getSaleQuantity() == null || order.getSaleQuantity() <= 0) {
+            throw new IllegalStateException("订单缺少有效的平台已售数量，无法生成子订单");
+        }
+        return order.getSaleQuantity();
     }
 
     private GameItemOrderDetail buildDetail(

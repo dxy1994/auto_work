@@ -958,8 +958,8 @@ function openOrderLogs(order) {
 }
 
 // ── 自动刷新 ──
-const autoRefreshEnabled = ref(false)
-const refreshIntervalSeconds = ref(10)
+const autoRefreshEnabled = ref(true)
+const refreshIntervalSeconds = ref(5)
 let autoRefreshTimer = null
 
 function clearAutoRefreshTimer() {
@@ -989,7 +989,7 @@ function toggleAutoRefresh() {
     return
   }
   if (!Number.isFinite(Number(refreshIntervalSeconds.value)) || Number(refreshIntervalSeconds.value) < 1) {
-    refreshIntervalSeconds.value = 10
+    refreshIntervalSeconds.value = 5
   }
   autoRefreshEnabled.value = true
   startAutoRefreshTimer()
@@ -1356,6 +1356,7 @@ onMounted(async () => {
   gameAccountList.value = Array.isArray(gameAccounts) ? gameAccounts : (gameAccounts.items || [])
   await fetchList()
   await openAlertOrderFromRoute()
+  startAutoRefreshTimer()
 })
 
 onBeforeUnmount(clearAutoRefreshTimer)

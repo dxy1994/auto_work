@@ -13,10 +13,12 @@ import com.auto.service.GameRegionService;
 import com.auto.service.GameService;
 import com.auto.service.MachineGameAccountService;
 import com.auto.service.MachineService;
+import com.auto.service.SystemControlService;
 import com.auto.service.TradeAssignmentService;
 import com.auto.trade.statemachine.DeliveryEvent;
 import com.auto.trade.statemachine.OrderDeliveryStateMachine;
 import com.auto.ws.AgentRegistry;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -37,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -56,6 +59,7 @@ class TradeQueueCoordinatorTest {
     private OrderDeliveryStateMachine stateMachine;
     private GameService gameService;
     private ManualOrderStatusService manualOrderStatusService;
+    private SystemControlService systemControlService;
     private TradeDispatchCoordinator coordinator;
 
     @BeforeEach
@@ -70,13 +74,39 @@ class TradeQueueCoordinatorTest {
         stateMachine = mock(OrderDeliveryStateMachine.class);
         gameService = mock(GameService.class);
         manualOrderStatusService = mock(ManualOrderStatusService.class);
+        systemControlService = mock(SystemControlService.class);
+        when(systemControlService.isAutoGameTradeEnabled()).thenReturn(true);
         coordinator = new TradeDispatchCoordinator(
                 orderService, machineGameService, gameAccountService, machineService,
                 assignmentService, registry, selector, stateMachine, gameService,
                 mock(GameItemOrderDetailService.class), mock(GameItemService.class),
                 mock(GameRegionService.class), manualOrderStatusService,
                 mock(BuyerReviewAuditService.class),
+                systemControlService,
                 new ImmediateTransactionManager());
+    }
+
+    @Test
+    void disabledSystemControlPreventsNewGameTradeDispatch() {
+        when(systemControlService.isAutoGameTradeEnabled()).thenReturn(false);
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> coordinator.dispatch(42));
+
+        assertEquals("系统控制已关闭自动游戏交易", error.getMessage());
+        verify(orderService, never()).getById(any());
+        verify(registry, never()).sendTradeOffer(anyInt(), any());
+    }
+
+    @Test
+    void disabledSystemControlKeepsQueuedOrdersWaiting() {
+        when(systemControlService.isAutoGameTradeEnabled()).thenReturn(false);
+
+        coordinator.dispatchQueuedOrders();
+
+        verify(orderService, never()).list(any(LambdaQueryWrapper.class));
+        verify(registry, never()).sendTradeOffer(anyInt(), any());
     }
 
     @Test

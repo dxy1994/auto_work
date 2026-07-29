@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS system_controls (
+    id INT NOT NULL,
+    auto_game_trade_enabled TINYINT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='中控系统级运行开关';
+
+INSERT INTO system_controls (id, auto_game_trade_enabled)
+VALUES (1, 1)
+ON DUPLICATE KEY UPDATE id = VALUES(id);
