@@ -46,6 +46,9 @@ public class ChatDispatchService {
     private static final String ITEMMANIA_URL_TEMPLATE =
             "https://www.itemmania.com/myroom/chat/new_chat.html"
                     + "?tid={order_no}&type=sell&c_type=apl";
+    private static final String ITEMMANIA_DELIVERY_URL_TEMPLATE =
+            "https://www.itemmania.com/myroom/sell/sell_ing_view.html"
+                    + "?id={order_no}&type=sell";
 
     private final GameItemOrderService orderService;
     private final PlatformAccountService accountService;
@@ -81,7 +84,8 @@ public class ChatDispatchService {
                 route.platform(),
                 route.accountId(),
                 normalizeMessages(rawMessages),
-                "manual");
+                "manual",
+                null);
     }
 
     /** Dispatch automatic greeting scripts through the same generic chat command. */
@@ -108,7 +112,36 @@ public class ChatDispatchService {
                 new PlatformRoute(platform, platformCode),
                 accountId,
                 normalizeMessages(rawMessages),
-                "greeting");
+                "greeting",
+                null);
+    }
+
+    /**
+     * 发送最终确认前截图，并要求 Monitor 在聊天页关闭后确认网站商品交付。
+     */
+    public DispatchReceipt dispatchDeliveryConfirmation(int orderId) {
+        GameItemOrder order = requireOrder(orderId);
+        if (!"wait_web_confirm".equals(order.getDeliveryStatus())) {
+            throw ApiException.badRequest("订单尚未进入等待网站确认状态");
+        }
+        String screenshotPath = safe(order.getGameTradeScreenshot()).strip();
+        if (!screenshotPath.startsWith("/uploads/trade-screenshots/")
+                || screenshotPath.length() > 512
+                || screenshotPath.contains("..")) {
+            throw ApiException.badRequest("订单缺少有效的最终确认前截图路径");
+        }
+
+        Route route = resolveRoute(order);
+        ChatMessage screenshot = new ChatMessage(
+                "image", null, List.of(screenshotPath));
+        return dispatch(
+                route.machineId(),
+                order,
+                route.platform(),
+                route.accountId(),
+                List.of(screenshot),
+                "delivery_confirmation",
+                resolveDeliveryAction(route.platform(), order));
     }
 
     public void handleResult(
@@ -197,23 +230,37 @@ public class ChatDispatchService {
             PlatformRoute platformRoute,
             int accountId,
             List<ChatMessage> messages,
-            String purpose) {
+            String purpose,
+            Map<String, Object> postAction) {
         Map<String, Object> target =
                 resolveTarget(platformRoute.platform(), platformRoute.code(), order, messages);
         String requestId = UUID.randomUUID().toString();
         List<Map<String, Object>> payloadMessages =
                 messages.stream().map(ChatMessage::toPayload).toList();
-        boolean sent = agentRegistry.sendChat(
-                machineId,
-                requestId,
-                order.getId(),
-                order.getWebsiteId(),
-                accountId,
-                platformRoute.code(),
-                order.getSourceOrderNo(),
-                purpose,
-                payloadMessages,
-                target);
+        boolean sent = postAction == null
+                ? agentRegistry.sendChat(
+                        machineId,
+                        requestId,
+                        order.getId(),
+                        order.getWebsiteId(),
+                        accountId,
+                        platformRoute.code(),
+                        order.getSourceOrderNo(),
+                        purpose,
+                        payloadMessages,
+                        target)
+                : agentRegistry.sendChat(
+                        machineId,
+                        requestId,
+                        order.getId(),
+                        order.getWebsiteId(),
+                        accountId,
+                        platformRoute.code(),
+                        order.getSourceOrderNo(),
+                        purpose,
+                        payloadMessages,
+                        target,
+                        postAction);
         if (!sent) {
             throw ApiException.badRequest("订单来源账号绑定的监控机器不在线或连接不可用");
         }
@@ -236,6 +283,70 @@ public class ChatDispatchService {
                 platformRoute.code(),
                 messages.size(),
                 imageCount);
+    }
+
+    private Map<String, Object> resolveDeliveryAction(
+            PlatformRoute platformRoute,
+            GameItemOrder order) {
+        Platform platform = platformRoute.platform();
+        String platformCode = platformRoute.code();
+        Map<?, ?> config = nestedMap(platform.getLoginConfig(), "delivery_config");
+        String urlTemplate = configString(config, "detail_url_template");
+        String openConfirmSelector = configString(config, "open_confirm_selector");
+        String confirmSelector = configString(config, "confirm_selector");
+        String successSelector = configString(config, "success_selector");
+        List<String> successTexts = configStringList(config, "success_texts");
+
+        if ("itemmania".equals(platformCode)) {
+            if (urlTemplate.isBlank()) {
+                urlTemplate = ITEMMANIA_DELIVERY_URL_TEMPLATE;
+            }
+            if (openConfirmSelector.isBlank()) {
+                openConfirmSelector = "#trade_btn";
+            }
+            if (confirmSelector.isBlank()) {
+                confirmSelector =
+                        "#dvTradeSellCheck button:has-text(\"상품인계 확인\")";
+            }
+            if (successSelector.isBlank()) {
+                successSelector = ".caution_list .caution.active p";
+            }
+            if (successTexts.isEmpty()) {
+                successTexts = List.of("인계완료", "판매완료");
+            }
+        }
+
+        String orderNo = normalizeOrderNo(order.getSourceOrderNo());
+        if (orderNo.isBlank()) {
+            throw ApiException.badRequest("订单缺少平台订单号，无法确认商品交付");
+        }
+        if (urlTemplate.isBlank()
+                || (!urlTemplate.contains("{order_no}")
+                && !urlTemplate.contains("{source_order_no}"))) {
+            throw ApiException.badRequest(
+                    "平台未配置包含 {order_no} 的订单详情地址模板");
+        }
+        if (openConfirmSelector.isBlank()
+                || confirmSelector.isBlank()
+                || successSelector.isBlank()
+                || successTexts.isEmpty()) {
+            throw ApiException.badRequest("平台未完整配置商品交付确认选择器");
+        }
+
+        String encodedOrderNo = URLEncoder.encode(orderNo, StandardCharsets.UTF_8);
+        String detailUrl = urlTemplate
+                .replace("{order_no}", encodedOrderNo)
+                .replace("{source_order_no}", encodedOrderNo);
+        validateTargetUrl(detailUrl, platform);
+
+        Map<String, Object> action = new LinkedHashMap<>();
+        action.put("type", "confirm_delivery");
+        action.put("detail_url", detailUrl);
+        action.put("open_confirm_selector", openConfirmSelector);
+        action.put("confirm_selector", confirmSelector);
+        action.put("success_selector", successSelector);
+        action.put("success_texts", successTexts);
+        return action;
     }
 
     private Route resolveRoute(GameItemOrder order) {
@@ -437,6 +548,18 @@ public class ChatDispatchService {
     private boolean configBoolean(Map<?, ?> source, String key, boolean fallback) {
         Object value = source.get(key);
         return value instanceof Boolean booleanValue ? booleanValue : fallback;
+    }
+
+    private List<String> configStringList(Map<?, ?> source, String key) {
+        Object value = source.get(key);
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .map(this::safe)
+                .map(String::strip)
+                .filter(item -> !item.isBlank())
+                .toList();
     }
 
     private String normalizeResultMessage(String message) {

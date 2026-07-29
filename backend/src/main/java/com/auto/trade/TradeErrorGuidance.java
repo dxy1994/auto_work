@@ -30,6 +30,10 @@ public final class TradeErrorGuidance {
                     "在游戏和平台核对实际交易结果，完成人工复核后再更新订单状态";
             case "TRADE_RETRYABLE_FAILURE" ->
                     "根据执行端日志修正临时问题，并在确认游戏界面恢复后重试";
+            case "WEBSITE_DELIVERY_DISPATCH_FAILED" ->
+                    "检查订单来源账号的监控机器、RustFS 截图路径和平台聊天/交付配置后重新处理";
+            case "WEBSITE_DELIVERY_CONFIRM_FAILED" ->
+                    "检查平台账号登录状态、聊天图片上传结果和订单详情页交付按钮后人工确认或重试";
             default -> "根据错误码查看对应服务日志，修正配置或运行环境后重试；无法确认结果时转人工处理";
         };
         return limit("原因：" + value + "。解决方案：" + solution + "。");

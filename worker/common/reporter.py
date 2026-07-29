@@ -62,14 +62,14 @@ class Reporter:
         self._client.send_threadsafe(
             trade_buyer_review_msg(assignment_id, review))
 
-    def save_trade_game_screenshot(self, assignment_id, screenshot_data_url, timeout=10):
+    def save_trade_game_screenshot(self, assignment_id, screenshot_path, timeout=10):
         request_id = str(uuid.uuid4())
         event = threading.Event()
         with self._lock:
             self._trade_screenshot_events[request_id] = event
         try:
             self._client.send_threadsafe(trade_game_screenshot_msg(
-                assignment_id, request_id, screenshot_data_url))
+                assignment_id, request_id, screenshot_path))
             if not event.wait(timeout):
                 return False
             with self._lock:
@@ -96,9 +96,12 @@ class Reporter:
             greeting_result_msg(order_id, success, message))
 
     def report_chat_result(
-            self, request_id, order_id, success, message=""):
+            self, request_id, order_id, success, message="", purpose="manual",
+            details=None):
         self._client.send_threadsafe(
-            chat_result_msg(request_id, order_id, success, message))
+            chat_result_msg(
+                request_id, order_id, success, message, purpose, details
+            ))
 
     # ── 订单查重（跨线程请求-响应）──
 

@@ -79,10 +79,15 @@ def run_self_check() -> int:
         failures.append(f"recognition assets: {exc}")
         print(f"[SelfCheck][FAILED] recognition assets: {exc}")
 
+    format_ocr_error = str
     try:
         from game_executor.executor.lineage_classic.paddle_ocr import (
+            build_paddle_ocr_engine,
+            build_text_recognition_engine,
             bundled_ocr_model_directories,
+            exception_chain_message,
         )
+        format_ocr_error = exception_chain_message
 
         model_directories = bundled_ocr_model_directories()
         if getattr(sys, "frozen", False) and not model_directories:
@@ -91,9 +96,18 @@ def run_self_check() -> int:
             "[SelfCheck][OK] bundled OCR models: "
             + ", ".join(sorted(model_directories))
         )
+
+        # Importing PaddleOCR is insufficient: PaddleX validates distribution
+        # metadata only while constructing each predictor. Exercise the exact
+        # engines used by trades so a broken frozen package cannot be deployed.
+        build_paddle_ocr_engine()
+        build_text_recognition_engine("english")
+        build_text_recognition_engine("korean")
+        print("[SelfCheck][OK] OCR predictors: full, english, korean")
     except Exception as exc:
-        failures.append(f"OCR models: {exc}")
-        print(f"[SelfCheck][FAILED] OCR models: {exc}")
+        detail = format_ocr_error(exc)
+        failures.append(f"OCR runtime: {detail}")
+        print(f"[SelfCheck][FAILED] OCR runtime: {detail}")
 
     print(
         f"[SelfCheck] Python={platform.python_version()} "
@@ -245,10 +259,31 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
         )
     set_trade_screenshot = getattr(executor, "set_trade_screenshot_callback", None)
     if callable(set_trade_screenshot):
-        set_trade_screenshot(
-            lambda screenshot: reporter.save_trade_game_screenshot(
-                assignment_id, screenshot
+        def save_trade_screenshot(screenshot):
+            from game_executor import storage as game_storage
+
+            try:
+                screenshot_path = game_storage.upload_trade_screenshot(
+                    assignment_id, screenshot
+                )
+            except Exception as exc:
+                print(
+                    f"[GameExecutor][Trade] assignment_id={assignment_id} "
+                    f"交易截图上传 RustFS 失败: {exc}",
+                    flush=True,
+                )
+                return False
+            print(
+                f"[GameExecutor][Trade] assignment_id={assignment_id} "
+                f"交易截图已直传 RustFS path={screenshot_path}",
+                flush=True,
             )
+            return reporter.save_trade_game_screenshot(
+                assignment_id, screenshot_path
+            )
+
+        set_trade_screenshot(
+            save_trade_screenshot
         )
 
     print(

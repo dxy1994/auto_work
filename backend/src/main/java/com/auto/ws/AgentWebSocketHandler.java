@@ -3,6 +3,7 @@ package com.auto.ws;
 import com.auto.service.WirelessHidDeviceManager;
 import com.auto.service.WirelessHidDeviceManager.WorkerBinding;
 import com.auto.trade.ChatDispatchService;
+import com.auto.trade.DeliveryConfirmationService;
 import com.auto.trade.TradeDispatchCoordinator;
 import com.auto.trade.MarketplaceOrderIngestionService;
 import com.auto.trade.GreetingDispatchService;
@@ -40,6 +41,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
     private final MarketplaceOrderIngestionService orderIngestionService;
     private final GreetingDispatchService greetingDispatchService;
     private final ChatDispatchService chatDispatchService;
+    private final DeliveryConfirmationService deliveryConfirmationService;
     private final WirelessHidDeviceManager wirelessHidDeviceManager;
 
     public AgentWebSocketHandler(
@@ -49,6 +51,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             MarketplaceOrderIngestionService orderIngestionService,
             GreetingDispatchService greetingDispatchService,
             ChatDispatchService chatDispatchService,
+            DeliveryConfirmationService deliveryConfirmationService,
             WirelessHidDeviceManager wirelessHidDeviceManager) {
         this.registry = registry;
         this.objectMapper = objectMapper;
@@ -56,6 +59,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         this.orderIngestionService = orderIngestionService;
         this.greetingDispatchService = greetingDispatchService;
         this.chatDispatchService = chatDispatchService;
+        this.deliveryConfirmationService = deliveryConfirmationService;
         this.wirelessHidDeviceManager = wirelessHidDeviceManager;
     }
 
@@ -245,7 +249,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             tradeCoordinator.handleGameTradeScreenshot(
                     str(raw.get("assignment_id")),
                     machineId,
-                    str(raw.get("screenshot_data_url")));
+                    str(raw.get("screenshot_path")));
             success = true;
         } catch (Exception e) {
             error = e.getMessage();
@@ -348,12 +352,23 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             log.warn("[Chat] chat_result 缺少 order_id 或 request_id");
             return;
         }
-        chatDispatchService.handleResult(
-                machineId,
-                requestId,
-                orderId,
-                Boolean.TRUE.equals(raw.get("success")),
-                str(raw.get("message")));
+        String purpose = str(raw.get("purpose"));
+        if (DeliveryConfirmationService.PURPOSE.equals(purpose)) {
+            deliveryConfirmationService.handleResult(
+                    machineId,
+                    requestId,
+                    orderId,
+                    Boolean.TRUE.equals(raw.get("success")),
+                    str(raw.get("message")),
+                    stringObjectMap(raw.get("details")));
+        } else {
+            chatDispatchService.handleResult(
+                    machineId,
+                    requestId,
+                    orderId,
+                    Boolean.TRUE.equals(raw.get("success")),
+                    str(raw.get("message")));
+        }
     }
 
     private static Integer asInt(Object value) {
@@ -365,5 +380,18 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    private static Map<String, Object> stringObjectMap(Object value) {
+        if (!(value instanceof Map<?, ?> source)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        source.forEach((key, item) -> {
+            if (key != null) {
+                result.put(key.toString(), item);
+            }
+        });
+        return result;
     }
 }

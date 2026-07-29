@@ -4,6 +4,7 @@ import com.auto.service.WirelessHidDeviceManager;
 import com.auto.service.WirelessHidDeviceManager.WorkerBinding;
 import com.auto.trade.GreetingDispatchService;
 import com.auto.trade.ChatDispatchService;
+import com.auto.trade.DeliveryConfirmationService;
 import com.auto.trade.MarketplaceOrderIngestionService;
 import com.auto.trade.TradeDispatchCoordinator;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +44,7 @@ class AgentWebSocketHandlerHardwareBindingTest {
                 mock(MarketplaceOrderIngestionService.class),
                 mock(GreetingDispatchService.class),
                 mock(ChatDispatchService.class),
+                mock(DeliveryConfirmationService.class),
                 wirelessHidDeviceManager);
         session = mock(WebSocketSession.class);
         when(session.getAttributes()).thenReturn(new HashMap<>());

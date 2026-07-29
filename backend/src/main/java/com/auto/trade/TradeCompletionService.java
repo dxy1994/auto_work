@@ -73,7 +73,9 @@ public class TradeCompletionService {
                 continue;
             }
             if (inventory.getStock() == null || inventory.getStock() < quantity) {
-                reconciliationErrors.add("物品" + itemId + "库存不足，需要人工对账");
+                log.warn("[TradeCompletion] 数据库库存不足，跳过库存扣减但继续订单 "
+                                + "order_id={} item_id={} database_stock={} delivery_quantity={}",
+                        order.getId(), itemId, inventory.getStock(), quantity);
                 continue;
             }
 

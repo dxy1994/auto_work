@@ -12,6 +12,7 @@ import com.auto.service.MachineService;
 import com.auto.service.GameAccountService;
 import com.auto.trade.TradeCompletionService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
@@ -38,7 +39,8 @@ public class OrderDeliveryStateMachine {
             MachineService machineService,
             GameAccountService gameAccountService,
             AgentRegistry agentRegistry,
-            TradeCompletionService tradeCompletionService) {
+            TradeCompletionService tradeCompletionService,
+            ApplicationEventPublisher eventPublisher) {
 
         this.orderService = orderService;
         this.eventService = eventService;
@@ -125,7 +127,7 @@ public class OrderDeliveryStateMachine {
         register(DeliveryState.ASSIGNED, DeliveryEvent.GAME_TRADE_COMPLETED,
                 DeliveryState.WAIT_WEB_CONFIRM,
                 new GameTradeCompletedAction(assignmentService, machineService, gameAccountService,
-                        agentRegistry, tradeCompletionService));
+                        agentRegistry, tradeCompletionService, eventPublisher));
 
         // 交易取消
         register(DeliveryState.ASSIGNED, DeliveryEvent.TRADE_CANCELLED,

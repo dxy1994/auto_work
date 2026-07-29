@@ -131,12 +131,12 @@ def trade_buyer_review_msg(assignment_id: str, review: dict) -> dict:
 
 
 def trade_game_screenshot_msg(
-        assignment_id: str, request_id: str, screenshot_data_url: str) -> dict:
+        assignment_id: str, request_id: str, screenshot_path: str) -> dict:
     return {
         "type": TYPE_TRADE_GAME_SCREENSHOT,
         "assignment_id": assignment_id,
         "request_id": request_id,
-        "screenshot_data_url": screenshot_data_url,
+        "screenshot_path": screenshot_path,
     }
 
 
@@ -151,11 +151,16 @@ def greeting_result_msg(order_id: int, success: bool,
 
 
 def chat_result_msg(request_id: str, order_id: int, success: bool,
-                    message: str = "") -> dict:
-    return {
+                    message: str = "", purpose: str = "manual",
+                    details: Optional[dict] = None) -> dict:
+    result = {
         "type": TYPE_CHAT_RESULT,
         "request_id": request_id,
         "order_id": order_id,
         "success": success,
         "message": message,
+        "purpose": purpose,
     }
+    if details:
+        result["details"] = details
+    return result

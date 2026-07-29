@@ -35,6 +35,7 @@ $SpecName = [IO.Path]::GetFileNameWithoutExtension($ExecutableName)
 $SpecFile = Join-Path $WorkerDirectory "$SpecName.spec"
 $PackageFile = Join-Path $WorkerDirectory "dist\$SpecName-windows-x64.zip"
 $CheckScript = Join-Path $ScriptDirectory "check-worker-package.bat"
+$PyInstallerHookDirectory = Join-Path $ScriptDirectory "pyinstaller-hooks"
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -182,6 +183,7 @@ foreach ($requiredPath in @(
     $BuildRequirementFile,
     $EnvironmentTemplate,
     $CheckScript,
+    $PyInstallerHookDirectory,
     (Join-Path $WorkerDirectory $EntryPoint)
 )) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
@@ -306,6 +308,7 @@ $PyInstallerArguments = @(
     "--distpath", $DistributionDirectory,
     "--workpath", $BuildDirectory,
     "--specpath", $WorkerDirectory,
+    "--additional-hooks-dir", $PyInstallerHookDirectory,
     "--collect-submodules", "common",
     "--add-data", "$EnvironmentTemplate;.",
     "--exclude-module", "tests"
@@ -333,9 +336,15 @@ else {
     }
     $PyInstallerArguments += @(
         "--collect-submodules", "game_executor",
-        "--collect-all", "paddle",
-        "--collect-all", "paddleocr",
-        "--collect-all", "paddlex",
+        # PaddleX uses importlib.metadata to decide whether these OCR
+        # dependencies are installed. Their modules alone are not enough in a
+        # frozen EXE, so preserve the matching dist-info metadata as well.
+        "--copy-metadata", "python-bidi",
+        "--copy-metadata", "opencv-contrib-python",
+        "--copy-metadata", "pyclipper",
+        "--copy-metadata", "imagesize",
+        "--copy-metadata", "pypdfium2",
+        "--copy-metadata", "shapely",
         "--hidden-import", "pythoncom",
         "--hidden-import", "pywintypes",
         "--hidden-import", "win32com.client",

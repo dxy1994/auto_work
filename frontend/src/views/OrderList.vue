@@ -333,7 +333,7 @@
       <section v-if="currentOrder?.game_trade_screenshot" class="detail-section game-trade-proof">
         <div class="game-trade-proof-title">
           <strong>游戏交易证据</strong>
-          <span>最终确认前保存于 {{ currentOrder.game_trade_screenshot_at || '-' }}</span>
+          <span>最终确认前直传 RustFS 于 {{ currentOrder.game_trade_screenshot_at || '-' }}</span>
         </div>
         <el-image
           class="game-trade-proof-image"
@@ -341,6 +341,9 @@
           :preview-src-list="[currentOrder.game_trade_screenshot]"
           fit="contain"
         />
+        <div class="game-trade-proof-path">
+          RustFS 路径：<code>{{ currentOrder.game_trade_screenshot }}</code>
+        </div>
       </section>
 
       <section v-if="currentOrder?.buyer_review" class="detail-section buyer-review-detail">
@@ -388,7 +391,10 @@
           <el-tag type="danger" size="small">{{ errorCodeLabel(currentOrder.last_error_code) }}</el-tag>
           <span class="error-code-text">{{ currentOrder.last_error_code }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="创建时间" :span="2">{{ currentOrder?.created_at }}</el-descriptions-item>
+        <el-descriptions-item label="游戏交付时间">{{ currentOrder?.game_delivered_at || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="网站确认时间">{{ currentOrder?.website_confirmed_at || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="完成时间">{{ currentOrder?.completed_at || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="创建时间">{{ currentOrder?.created_at }}</el-descriptions-item>
       </el-descriptions>
 
       <el-divider>明细列表</el-divider>
@@ -679,6 +685,8 @@ function errorCodeLabel(code) {
     TRADE_REQUEST_TIMEOUT: '游戏交易超时',
     FINAL_CONFIRMATION_NOT_FOUND: '未识别到最终确认提示',
     TRADE_RESULT_UNCERTAIN: '交易结果待复核',
+    WEBSITE_DELIVERY_DISPATCH_FAILED: '网站交付确认指令下发失败',
+    WEBSITE_DELIVERY_CONFIRM_FAILED: '网站商品交付确认失败',
   }[code] || code || '未知异常'
 }
 function orderErrorMessage(order) {
@@ -895,6 +903,12 @@ function orderLogLabel(type) {
     queued_worker_disconnected: '队首机器断线，继续排队',
     trade_completed: '交易完成',
     game_trade_completed: '游戏内交易完成',
+    trade_screenshot_stored: '交易截图已存入 RustFS',
+    delivery_proof_sent: '交易截图已发送并关闭聊天',
+    delivery_proof_failed: '交易截图发送失败',
+    delivery_confirmation_dispatched: '截图与网站确认指令已下发',
+    delivery_confirmation_completed: '网站商品交付已确认',
+    delivery_confirmation_failed: '网站商品交付确认失败',
     trade_retryable_failed: '交易失败，可重新尝试',
     trade_failed: '交易失败',
     trade_timed_out: '交易超时',
@@ -908,8 +922,8 @@ function orderLogLabel(type) {
   }[type] || type || '未知事件'
 }
 function orderLogType(type) {
-  if (['greeting_success', 'chat_message_sent', 'dequeue_assignment', 'offer_accepted', 'trade_completed', 'game_trade_completed'].includes(type)) return 'success'
-  if (['chat_command_sent', 'queue_assignment', 'queued_offer_rejected', 'queued_offer_expired', 'queued_start_failed', 'queued_worker_disconnected', 'retry_greeting', 'retry_assignment', 'reset_to_greeting', 'manual_dispatch'].includes(type)) return 'warning'
+  if (['greeting_success', 'chat_message_sent', 'dequeue_assignment', 'offer_accepted', 'trade_completed', 'game_trade_completed', 'trade_screenshot_stored', 'delivery_proof_sent', 'delivery_confirmation_completed'].includes(type)) return 'success'
+  if (['chat_command_sent', 'delivery_confirmation_dispatched', 'queue_assignment', 'queued_offer_rejected', 'queued_offer_expired', 'queued_start_failed', 'queued_worker_disconnected', 'retry_greeting', 'retry_assignment', 'reset_to_greeting', 'manual_dispatch'].includes(type)) return 'warning'
   if (type?.includes('failed') || ['no_greeting_script', 'no_sub_order', 'offer_rejected', 'offer_expired', 'worker_disconnected', 'trade_timed_out', 'trade_cancelled', 'buyer_review_rejected'].includes(type)) return 'danger'
   return 'primary'
 }
@@ -1371,6 +1385,7 @@ onBeforeUnmount(clearAutoRefreshTimer)
 .game-trade-proof-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .game-trade-proof-title span { color: #606266; font-size: 12px; }
 .game-trade-proof-image { width: 100%; min-height: 220px; max-height: 480px; border: 1px solid #dcdfe6; border-radius: 6px; background: #111827; }
+.game-trade-proof-path { margin-top: 8px; color: #606266; font-size: 12px; word-break: break-all; }
 .chat-target { display: flex; justify-content: space-between; gap: 20px; padding: 14px 16px; border: 1px solid #d9ecff; border-radius: 8px; background: #f4f9ff; }
 .chat-target-label { margin-right: 8px; color: #909399; font-size: 12px; }
 .chat-target-meta { display: flex; gap: 16px; align-items: center; color: #606266; font-size: 12px; }

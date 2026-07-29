@@ -113,7 +113,7 @@ class BaseOrderMonitor:
         与 Itemmania 详情页同理：直接在 session owner loop 上调度
         _do_send_chat，不需要 queue/processor/pause。
         """
-        from monitor.chat.sender import _do_send_chat
+        from monitor.chat.sender import _do_send_chat_with_post_action
         from monitor.monitoring.chat import normalize_chat_command, report_chat_result
 
         try:
@@ -134,10 +134,11 @@ class BaseOrderMonitor:
             report_chat_result(self.reporter, command, result)
             return result
 
-        coro = _do_send_chat(
+        coro = _do_send_chat_with_post_action(
             session,
             command["target"],
             command["messages"],
+            command.get("post_action"),
             keep_open=True)
         try:
             future = asyncio.run_coroutine_threadsafe(coro, session._owner_loop)

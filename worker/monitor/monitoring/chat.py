@@ -92,6 +92,7 @@ def handle_chat(
             command["messages"],
             main_loop=main_loop,
             keep_open=True,
+            post_action=command.get("post_action"),
         )
     except Exception as exc:
         traceback.print_exc()
@@ -118,6 +119,16 @@ def report_chat_result(
                 order_id,
                 success,
                 message,
+                command.get("purpose") or "manual",
+                {
+                    key: result[key]
+                    for key in (
+                        "chat_sent",
+                        "chat_closed",
+                        "delivery_confirmed",
+                    )
+                    if key in result
+                },
             )
     except Exception as exc:
         print(

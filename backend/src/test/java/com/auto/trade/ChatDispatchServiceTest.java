@@ -106,6 +106,55 @@ class ChatDispatchServiceTest {
     }
 
     @Test
+    void deliveryConfirmationSendsStoredProofThenRequestsPlatformConfirmation() {
+        GameItemOrder order = itemManiaOrder();
+        order.setDeliveryStatus("wait_web_confirm");
+        order.setStatus("processing");
+        order.setGameTradeScreenshot(
+                "/uploads/trade-screenshots/2026/07/29/proof.png");
+        PlatformAccount account = new PlatformAccount();
+        account.setId(5);
+        account.setWebsiteId(1);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(7);
+        binding.setAccountId(5);
+
+        when(orderService.getById(42)).thenReturn(order);
+        when(accountService.getById(5)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(5))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(7)).thenReturn(7);
+        when(platformService.getById(1)).thenReturn(itemMania());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap(), anyMap()))
+                .thenReturn(true);
+
+        ChatDispatchService.DispatchReceipt receipt =
+                service.dispatchDeliveryConfirmation(42);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Map<String, Object>>> messages =
+                ArgumentCaptor.forClass(List.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> action =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), messages.capture(), anyMap(), action.capture());
+
+        assertEquals(1, receipt.imageCount());
+        assertEquals(
+                List.of("/uploads/trade-screenshots/2026/07/29/proof.png"),
+                messages.getValue().get(0).get("image_urls"));
+        assertEquals("confirm_delivery", action.getValue().get("type"));
+        assertTrue(action.getValue().get("detail_url").toString()
+                .contains("sell_ing_view.html?id=IM-2026-42"));
+        assertEquals("#trade_btn", action.getValue().get("open_confirm_selector"));
+    }
+
+    @Test
     void configuredPlatformRequiresImageSendSelectorWhenUploadIsNotAutomatic() {
         GameItemOrder order = itemManiaOrder();
         Platform platform = itemMania();

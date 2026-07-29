@@ -26,6 +26,7 @@ def send_chat(
     messages: list,
     main_loop: Optional[asyncio.AbstractEventLoop] = None,
     keep_open: bool = False,
+    post_action: Optional[dict] = None,
 ) -> dict:
     """同步入口：在指定平台账号的浏览器会话中发送有序聊天消息。"""
     from monitor.browser.session import BrowserSession
@@ -44,10 +45,11 @@ def send_chat(
     if owner_loop is None or owner_loop.is_closed() or not owner_loop.is_running():
         return {"success": False, "message": "浏览器事件循环不可用"}
 
-    coroutine = _do_send_chat(
+    coroutine = _do_send_chat_with_post_action(
         session,
         normalized_target,
         normalized_messages,
+        post_action,
         keep_open=keep_open,
     )
     try:
@@ -195,6 +197,121 @@ async def _do_send_chat_locked(
             session.end_transient_operation()
 
 
+async def _do_send_chat_with_post_action(
+    session,
+    target: dict,
+    messages: list,
+    post_action: Optional[dict] = None,
+    keep_open: bool = False,
+) -> dict:
+    """先完成聊天；有后置动作时关闭聊天页，再串行执行后置动作。"""
+    action = dict(post_action or {})
+    chat_result = await _do_send_chat(
+        session,
+        target,
+        messages,
+        keep_open=False if action else keep_open,
+    )
+    if not action:
+        return chat_result
+    if not chat_result.get("success"):
+        return {
+            **chat_result,
+            "chat_sent": False,
+            "chat_closed": True,
+            "delivery_confirmed": False,
+        }
+    if action.get("type") != "confirm_delivery":
+        return {
+            "success": False,
+            "message": "不支持的聊天后置动作",
+            "chat_sent": True,
+            "chat_closed": True,
+            "delivery_confirmed": False,
+        }
+    delivery_result = await _do_confirm_delivery(session, action)
+    return {
+        **delivery_result,
+        "chat_sent": True,
+        "chat_closed": True,
+        "delivery_confirmed": bool(delivery_result.get("success")),
+    }
+
+
+async def _do_confirm_delivery(session, action: dict) -> dict:
+    """打开订单详情页，点击两级商品交付确认，并复核页面状态。"""
+    try:
+        normalized = _normalize_delivery_action(action)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
+    if not session.begin_transient_operation():
+        return {"success": False, "message": "浏览器会话正在关闭"}
+
+    page = None
+    try:
+        page = await session.new_page()
+        session.track_transient_page(page)
+
+        on_event = getattr(page, "on", None)
+        if callable(on_event):
+            def accept_dialog(dialog):
+                asyncio.create_task(dialog.accept())
+
+            on_event("dialog", accept_dialog)
+
+        await page.goto(
+            normalized["detail_url"],
+            wait_until="domcontentloaded",
+            timeout=15000,
+        )
+        await page.wait_for_timeout(1000)
+
+        open_confirm = page.locator(
+            normalized["open_confirm_selector"]
+        ).first
+        await open_confirm.wait_for(state="visible", timeout=10000)
+        await open_confirm.click(force=True, timeout=5000)
+
+        confirm = page.locator(normalized["confirm_selector"]).first
+        await confirm.wait_for(state="visible", timeout=5000)
+        await confirm.click(force=True, timeout=10000)
+        await page.wait_for_timeout(1500)
+
+        # 重新进入详情页，以服务器最终状态作为成功依据，避免只凭点击判断。
+        await page.goto(
+            normalized["detail_url"],
+            wait_until="domcontentloaded",
+            timeout=15000,
+        )
+        status = page.locator(normalized["success_selector"]).first
+        await status.wait_for(state="visible", timeout=10000)
+        status_text = (await status.inner_text()).strip()
+        if not any(
+            expected in status_text
+            for expected in normalized["success_texts"]
+        ):
+            return {
+                "success": False,
+                "message": f"网站商品交付状态未更新，当前状态: {status_text or '未知'}",
+            }
+        return {
+            "success": True,
+            "message": "截图已发送，聊天页已关闭，网站商品交付已确认",
+        }
+    except Exception as exc:
+        return {"success": False, "message": f"网站商品交付确认失败: {exc}"}
+    finally:
+        try:
+            if page:
+                try:
+                    await page.close()
+                finally:
+                    session.untrack_transient_page(page)
+        finally:
+            session.end_transient_operation()
+
+
 async def _send_image_via_chat(page, image_url: str, target: dict):
     """下载一张图片，并通过平台配置的文件控件完成上传/发送。"""
     import requests
@@ -288,6 +405,33 @@ def _normalize_target(target: dict, messages: list) -> dict:
         and not result["upload_send_selector"]
     ):
         raise ValueError("图片上传后发送按钮选择器未配置")
+    return result
+
+
+def _normalize_delivery_action(action: dict) -> dict:
+    if not isinstance(action, dict) or action.get("type") != "confirm_delivery":
+        raise ValueError("商品交付确认动作无效")
+    result = dict(action)
+    for key, label in (
+        ("detail_url", "订单详情地址"),
+        ("open_confirm_selector", "商品交付按钮选择器"),
+        ("confirm_selector", "最终交付确认按钮选择器"),
+        ("success_selector", "交付结果选择器"),
+    ):
+        result[key] = str(result.get(key) or "").strip()
+        if not result[key]:
+            raise ValueError(f"{label}未配置")
+    parsed = urlparse(result["detail_url"])
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("订单详情地址无效")
+    values = result.get("success_texts")
+    if not isinstance(values, list):
+        raise ValueError("商品交付成功状态未配置")
+    result["success_texts"] = [
+        str(value).strip() for value in values if str(value).strip()
+    ]
+    if not result["success_texts"]:
+        raise ValueError("商品交付成功状态未配置")
     return result
 
 

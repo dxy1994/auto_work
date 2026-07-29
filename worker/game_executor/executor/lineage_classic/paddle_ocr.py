@@ -30,6 +30,20 @@ OCR_MODEL_REQUIRED_FILES = (
 )
 
 
+def exception_chain_message(error: BaseException) -> str:
+    """保留第三方库包装异常时隐藏的根因，便于定位真机依赖问题。"""
+    messages: list[str] = []
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        detail = str(current).strip() or current.__class__.__name__
+        if detail not in messages:
+            messages.append(detail)
+        current = current.__cause__ or current.__context__
+    return "；根因: ".join(messages)
+
+
 @dataclass(frozen=True)
 class OcrTextBox:
     text: str

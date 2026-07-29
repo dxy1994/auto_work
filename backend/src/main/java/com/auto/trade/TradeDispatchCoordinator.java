@@ -739,24 +739,28 @@ public class TradeDispatchCoordinator {
     /** 保存最终确认按钮点击前的完整游戏截图。 */
     @Transactional
     public void handleGameTradeScreenshot(
-            String assignmentId, int machineId, String screenshotDataUrl) {
+            String assignmentId, int machineId, String screenshotPath) {
         TradeOffer offer = requirePendingOffer(assignmentId, machineId);
         synchronized (offer) {
             if (!acceptedAssignments.contains(assignmentId)) {
                 throw new IllegalStateException("指派尚未接受，不能保存交易截图");
             }
-            if (screenshotDataUrl == null
-                    || !screenshotDataUrl.startsWith("data:image/png;base64,")
-                    || screenshotDataUrl.length() > 3_500_000) {
-                throw new IllegalStateException("游戏交易截图无效或过大");
+            if (screenshotPath == null
+                    || !screenshotPath.startsWith("/uploads/trade-screenshots/")
+                    || screenshotPath.length() > 512
+                    || screenshotPath.contains("..")) {
+                throw new IllegalStateException("游戏交易截图路径无效");
             }
             GameItemOrder order = orderService.getById(offer.orderId());
             if (order == null || !assignmentId.equals(order.getAssignmentId())) {
                 throw new IllegalStateException("订单不存在或交易指派已失效");
             }
-            order.setGameTradeScreenshot(screenshotDataUrl);
+            order.setGameTradeScreenshot(screenshotPath);
             order.setGameTradeScreenshotAt(LocalDateTime.now());
             orderService.updateById(order);
+            log.info(
+                    "[Trade] 最终确认前截图路径已保存 order_id={} assignment_id={} path={}",
+                    order.getId(), assignmentId, screenshotPath);
         }
     }
 

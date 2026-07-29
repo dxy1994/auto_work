@@ -1,4 +1,5 @@
 import io
+import base64
 import os
 import sys
 import unittest
@@ -55,6 +56,30 @@ class GameExecutorStorageTest(unittest.TestCase):
         with mock.patch.object(storage, "_get_client", return_value=client):
             with self.assertRaises(storage.StorageImageError):
                 storage.read_image("/uploads/images/item.png", max_bytes=4)
+
+    def test_trade_screenshot_uploads_directly_to_rustfs_and_returns_path(self):
+        client = mock.Mock()
+        screenshot = (
+            "data:image/png;base64,"
+            + base64.b64encode(b"png-bytes").decode("ascii")
+        )
+        with mock.patch.object(storage, "_get_client", return_value=client), \
+                mock.patch.object(config, "STORAGE_BUCKET", "auto-uploads"):
+            path = storage.upload_trade_screenshot("assignment-1", screenshot)
+
+        self.assertRegex(
+            path,
+            r"^/uploads/trade-screenshots/\d{4}/\d{2}/\d{2}/"
+            r"assignment-1-[a-f0-9]{32}\.png$",
+        )
+        kwargs = client.put_object.call_args.kwargs
+        self.assertEqual("auto-uploads", kwargs["Bucket"])
+        self.assertEqual(b"png-bytes", kwargs["Body"])
+        self.assertEqual("image/png", kwargs["ContentType"])
+        self.assertEqual(
+            {"assignment-id": "assignment-1"},
+            kwargs["Metadata"],
+        )
 
 
 if __name__ == "__main__":

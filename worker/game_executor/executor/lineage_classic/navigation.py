@@ -24,6 +24,7 @@ from common.config import BACKEND_WS_URL
 from game_executor import storage as game_storage
 from game_executor.executor.hardware.humanized import HumanizedInputController
 from game_executor.executor.lineage_classic.paddle_ocr import (
+    exception_chain_message,
     recognize_korean,
     recognize_korean_boxes,
 )
@@ -1150,7 +1151,10 @@ class TemplateVision:
             return OcrResult(text, confidence)
         except Exception as exc:
             if not self._ocr_warning_printed:
-                print(f"[Lineage] PaddleOCR 不可用，将执行一次安全切区: {exc}")
+                print(
+                    "[Lineage] PaddleOCR 不可用，将执行一次安全切区: "
+                    f"{exception_chain_message(exc)}"
+                )
                 self._ocr_warning_printed = True
             return OcrResult("", -1.0)
 
@@ -1192,7 +1196,7 @@ class TemplateVision:
         except Exception as exc:
             print(
                 f"[Lineage][玩家名分段识别] 执行失败，转用整行韩文 OCR 并保留人工复核: "
-                f"{exc}",
+                f"{exception_chain_message(exc)}",
                 flush=True,
             )
             scaled = cv2.resize(
@@ -1204,7 +1208,12 @@ class TemplateVision:
             try:
                 text, confidence = recognize_korean(enhanced)
                 return OcrResult(text, confidence)
-            except Exception:
+            except Exception as fallback_exc:
+                print(
+                    "[Lineage][玩家名整行识别] 执行失败，保留人工复核: "
+                    f"{exception_chain_message(fallback_exc)}",
+                    flush=True,
+                )
                 return OcrResult("", -1.0)
 
     def find_text(

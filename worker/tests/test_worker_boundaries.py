@@ -46,6 +46,56 @@ class WorkerBoundaryTest(unittest.TestCase):
         self.assertIn("korean_PP-OCRv5_mobile_rec", build_script)
         self.assertIn("en_PP-OCRv5_mobile_rec", build_script)
 
+    def test_game_executor_build_copies_paddlex_dependency_metadata(self):
+        build_script = (
+            WORKER_ROOT.parent / "scripts" / "build-worker-role.ps1"
+        ).read_text("utf-8")
+        self.assertIn('"--copy-metadata", "python-bidi"', build_script)
+        self.assertIn('"--copy-metadata", "opencv-contrib-python"', build_script)
+        self.assertIn('"--copy-metadata", "pyclipper"', build_script)
+        self.assertIn('"--copy-metadata", "imagesize"', build_script)
+        self.assertIn('"--copy-metadata", "pypdfium2"', build_script)
+        self.assertIn('"--copy-metadata", "shapely"', build_script)
+
+    def test_game_executor_build_filters_unused_paddle_plugins(self):
+        script_root = WORKER_ROOT.parent / "scripts"
+        build_script = (script_root / "build-worker-role.ps1").read_text("utf-8")
+        self.assertIn('"--additional-hooks-dir", $PyInstallerHookDirectory', build_script)
+        self.assertNotIn('"--collect-all", "paddle"', build_script)
+        self.assertNotIn('"--collect-all", "paddleocr"', build_script)
+        self.assertNotIn('"--collect-all", "paddlex"', build_script)
+
+        expected_exclusions = {
+            "hook-paddle.py": "paddle.tensorrt",
+            "hook-paddleocr.py": "paddleocr._doc2md",
+            "hook-paddlex.py": "paddlex.inference.serving",
+        }
+        for hook_name, excluded_module in expected_exclusions.items():
+            hook_source = (
+                script_root / "pyinstaller-hooks" / hook_name
+            ).read_text("utf-8")
+            self.assertIn("collect_all(", hook_source)
+            self.assertIn(excluded_module, hook_source)
+        paddle_hook = (
+            script_root / "pyinstaller-hooks" / "hook-paddle.py"
+        ).read_text("utf-8")
+        self.assertIn("paddle.utils.cpp_extension", paddle_hook)
+        paddlex_hook = (
+            script_root / "pyinstaller-hooks" / "hook-paddlex.py"
+        ).read_text("utf-8")
+        self.assertIn("paddlex.inference.genai", paddlex_hook)
+
+        chardet_hook = (
+            script_root / "pyinstaller-hooks" / "hook-chardet.py"
+        ).read_text("utf-8")
+        self.assertIn('collect_submodules("chardet.pipeline")', chardet_hook)
+
+    def test_game_executor_self_check_constructs_all_ocr_predictors(self):
+        main_source = (WORKER_ROOT / "game_executor" / "main.py").read_text("utf-8")
+        self.assertIn("build_paddle_ocr_engine()", main_source)
+        self.assertIn('build_text_recognition_engine("english")', main_source)
+        self.assertIn('build_text_recognition_engine("korean")', main_source)
+
 
 if __name__ == "__main__":
     unittest.main()

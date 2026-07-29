@@ -18,6 +18,20 @@ def create_model_root(root: Path) -> None:
 
 
 class BundledOcrModelTest(unittest.TestCase):
+    def test_exception_chain_message_includes_wrapped_dependency_reason(self):
+        dependency_error = RuntimeError(
+            "The following dependencies are not available: python-bidi"
+        )
+        try:
+            raise RuntimeError(
+                "A dependency error occurred during predictor creation"
+            ) from dependency_error
+        except RuntimeError as error:
+            message = paddle_ocr.exception_chain_message(error)
+
+        self.assertIn("predictor creation", message)
+        self.assertIn("python-bidi", message)
+
     def test_configured_model_root_resolves_all_required_models(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             model_root = Path(temporary_directory)

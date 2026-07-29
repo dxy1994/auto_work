@@ -162,6 +162,7 @@ class OrderRetryStateMachineTest {
                 mock(MachineService.class),
                 mock(GameAccountService.class),
                 mock(AgentRegistry.class),
-                mock(TradeCompletionService.class));
+                mock(TradeCompletionService.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
     }
 }

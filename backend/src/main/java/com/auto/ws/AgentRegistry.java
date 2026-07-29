@@ -438,6 +438,24 @@ public class AgentRegistry {
             String purpose,
             List<Map<String, Object>> messages,
             Map<String, Object> target) {
+        return sendChat(
+                machineId, requestId, orderId, websiteId, accountId, platform,
+                sourceOrderNo, purpose, messages, target, null);
+    }
+
+    /** 下发聊天指令，并可在聊天页关闭后串行执行一个平台动作。 */
+    public boolean sendChat(
+            int machineId,
+            String requestId,
+            int orderId,
+            int websiteId,
+            int accountId,
+            String platform,
+            String sourceOrderNo,
+            String purpose,
+            List<Map<String, Object>> messages,
+            Map<String, Object> target,
+            Map<String, Object> postAction) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "chat");
         payload.put("request_id", requestId);
@@ -449,6 +467,9 @@ public class AgentRegistry {
         payload.put("purpose", purpose);
         payload.put("messages", messages);
         payload.put("target", target);
+        if (postAction != null && !postAction.isEmpty()) {
+            payload.put("post_action", postAction);
+        }
         return sendToAgent(machineId, payload);
     }
 
