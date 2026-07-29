@@ -43,11 +43,15 @@ except ImportError:  # 单元测试和未安装 Trader 图像依赖的环境
     ImageGrab = None
 
 try:
+    import win32api
     import win32con
     import win32gui
+    import win32process
 except ImportError:
+    win32api = None
     win32con = None
     win32gui = None
+    win32process = None
 
 
 # 游戏分辨率与客户区均为 800x600，客户区左上角就是游戏坐标 (0, 0)。
@@ -308,6 +312,85 @@ class ClientWindow:
                 except Exception:
                     pass
 
+    def _foreground_window(self) -> Optional[int]:
+        get_foreground = getattr(win32gui, "GetForegroundWindow", None)
+        if not callable(get_foreground):
+            return None
+        try:
+            return int(get_foreground())
+        except Exception:
+            return None
+
+    def _activate_normally(self) -> None:
+        bring_to_top = getattr(win32gui, "BringWindowToTop", None)
+        if callable(bring_to_top):
+            try:
+                bring_to_top(self.hwnd)
+            except Exception:
+                pass
+        win32gui.SetForegroundWindow(self.hwnd)
+
+    def _activate_with_attached_input(self) -> None:
+        """临时共享前台线程输入队列，绕过 Windows 的普通前台切换限制。"""
+        if win32api is None or win32process is None:
+            raise RuntimeError("pywin32 前台线程接口不可用")
+
+        current_thread = int(win32api.GetCurrentThreadId())
+        foreground_hwnd = self._foreground_window()
+        target_thread, _ = win32process.GetWindowThreadProcessId(self.hwnd)
+        foreground_thread = 0
+        if foreground_hwnd:
+            foreground_thread, _ = win32process.GetWindowThreadProcessId(foreground_hwnd)
+
+        attached_threads: list[int] = []
+        try:
+            for thread_id in (foreground_thread, target_thread):
+                thread_id = int(thread_id or 0)
+                if (
+                    thread_id
+                    and thread_id != current_thread
+                    and thread_id not in attached_threads
+                ):
+                    win32process.AttachThreadInput(current_thread, thread_id, True)
+                    attached_threads.append(thread_id)
+            bring_to_top = getattr(win32gui, "BringWindowToTop", None)
+            if callable(bring_to_top):
+                try:
+                    bring_to_top(self.hwnd)
+                except Exception:
+                    pass
+            set_active = getattr(win32gui, "SetActiveWindow", None)
+            if callable(set_active):
+                try:
+                    set_active(self.hwnd)
+                except Exception:
+                    pass
+            win32gui.SetForegroundWindow(self.hwnd)
+        finally:
+            for thread_id in reversed(attached_threads):
+                try:
+                    win32process.AttachThreadInput(current_thread, thread_id, False)
+                except Exception:
+                    pass
+
+    def _activate_with_topmost_pulse(self) -> None:
+        """短暂提升窗口层级后立即还原，避免永久改变游戏窗口置顶状态。"""
+        set_window_pos = getattr(win32gui, "SetWindowPos", None)
+        if not callable(set_window_pos):
+            raise RuntimeError("SetWindowPos 不可用")
+        flags = (
+            getattr(win32con, "SWP_NOMOVE", 0x0002)
+            | getattr(win32con, "SWP_NOSIZE", 0x0001)
+            | getattr(win32con, "SWP_SHOWWINDOW", 0x0040)
+        )
+        hwnd_topmost = getattr(win32con, "HWND_TOPMOST", -1)
+        hwnd_notopmost = getattr(win32con, "HWND_NOTOPMOST", -2)
+        try:
+            set_window_pos(self.hwnd, hwnd_topmost, 0, 0, 0, 0, flags)
+            win32gui.SetForegroundWindow(self.hwnd)
+        finally:
+            set_window_pos(self.hwnd, hwnd_notopmost, 0, 0, 0, 0, flags)
+
     def _wait_for_restored_size(self, timeout: float) -> tuple[int, int]:
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
@@ -367,15 +450,41 @@ class ClientWindow:
             f"{suffix}"
         )
 
-    def focus(self) -> None:
+    def focus(self, timeout: float = 2.0) -> None:
         size = self.restore()
         if size == (0, 0):
             raise NavigationError("游戏窗口仍处于最小化状态，自动恢复后客户区暂时为 0x0")
-        try:
-            win32gui.SetForegroundWindow(self.hwnd)
-        except Exception as exc:
-            raise NavigationError(f"游戏窗口已恢复，但无法切换到前台: {exc}") from exc
-        time.sleep(0.3)
+
+        if self._foreground_window() == self.hwnd:
+            return
+
+        attempts: tuple[tuple[str, Callable[[], object]], ...] = (
+            ("普通激活", self._activate_normally),
+            ("附加前台线程", self._activate_with_attached_input),
+            ("临时置顶激活", self._activate_with_topmost_pulse),
+        )
+        deadline = time.monotonic() + max(0.2, timeout)
+        errors: list[str] = []
+        while True:
+            for name, activate in attempts:
+                try:
+                    activate()
+                except Exception as exc:
+                    errors.append(f"{name}: {exc}")
+                if self._foreground_window() == self.hwnd:
+                    time.sleep(0.3)
+                    return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+
+        detail = "；".join(errors[-3:]) if errors else "Windows 未将目标窗口设为前台"
+        raise NavigationError(
+            "游戏窗口已恢复，但 Windows 拒绝切换到前台。"
+            "请确认游戏执行器与游戏使用相同的管理员权限，"
+            "并确认主机未锁屏、未切换用户且远程桌面会话仍处于活动状态。"
+            f"最后尝试：{detail}"
+        )
 
     def client_origin(self) -> tuple[int, int]:
         return win32gui.ClientToScreen(self.hwnd, (0, 0))

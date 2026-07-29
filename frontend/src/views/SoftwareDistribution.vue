@@ -65,6 +65,10 @@
               placeholder="说明本次更新内容或安装注意事项"
             />
           </el-form-item>
+          <div v-if="autoFillHint" class="auto-fill-hint">
+            <el-icon><InfoFilled /></el-icon>
+            {{ autoFillHint }}
+          </div>
           <el-button
             class="publish-button"
             type="primary"
@@ -174,6 +178,7 @@ import {
   softwarePackageDownloadUrl,
   uploadSoftwarePackage,
 } from '../api'
+import { suggestReleaseMetadata } from '../utils/softwareRelease'
 
 const acceptedExtensions = '.exe,.msi,.msix,.zip,.7z,.rar,.tar,.gz,.tgz'
 const allowedSuffixes = ['.exe', '.msi', '.msix', '.zip', '.7z', '.rar', '.tar', '.tar.gz', '.tgz']
@@ -186,6 +191,7 @@ const loading = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const deletingId = ref(null)
+const autoFillHint = ref('')
 const form = reactive({ version: '', notes: '' })
 
 function hasAllowedSuffix(name) {
@@ -199,25 +205,55 @@ function handleFileChange(file) {
     ElMessage.error('仅支持 EXE、MSI、MSIX、ZIP、7Z、RAR、TAR、TGZ 安装包')
     uploadRef.value?.clearFiles()
     selectedFile.value = null
+    resetSuggestedMetadata()
     return
   }
   if (raw.size > maxFileSize) {
     ElMessage.error('单个安装包不能超过 2GB')
     uploadRef.value?.clearFiles()
     selectedFile.value = null
+    resetSuggestedMetadata()
     return
   }
   selectedFile.value = raw
+  applySuggestedMetadata()
 }
 
 function handleFileRemove() {
   selectedFile.value = null
+  resetSuggestedMetadata()
+}
+
+function resetSuggestedMetadata() {
+  form.version = ''
+  form.notes = ''
+  autoFillHint.value = ''
+}
+
+function applySuggestedMetadata() {
+  if (!selectedFile.value) return
+  const suggestion = suggestReleaseMetadata(selectedFile.value.name, packages.value)
+  form.version = suggestion.version
+  form.notes = suggestion.notes
+
+  if (suggestion.versionFromFileName) {
+    autoFillHint.value = suggestion.notes
+      ? `已从包名识别版本 ${suggestion.version}，并复用该软件之前的描述`
+      : `已从包名识别版本 ${suggestion.version}`
+  } else if (suggestion.previous) {
+    autoFillHint.value = suggestion.notes
+      ? `已生成下一版本 ${suggestion.version}，并复用该软件之前的描述`
+      : `已根据该软件上一版本生成 ${suggestion.version}`
+  } else {
+    autoFillHint.value = '未找到同名历史包，版本号从 1.0.0 开始'
+  }
 }
 
 async function loadPackages() {
   loading.value = true
   try {
     packages.value = await getSoftwarePackages()
+    applySuggestedMetadata()
   } catch (error) {
     ElMessage.error(error.message || '软件目录加载失败')
   } finally {
@@ -237,8 +273,7 @@ async function publishPackage() {
     ElMessage.success('安装包已发布到内网')
     uploadRef.value?.clearFiles()
     selectedFile.value = null
-    form.version = ''
-    form.notes = ''
+    resetSuggestedMetadata()
     await loadPackages()
   } catch (error) {
     ElMessage.error(error.message || '安装包发布失败')
@@ -462,6 +497,19 @@ onMounted(loadPackages)
 .upload-hint { margin-top: 5px; color: #829ab1; font-size: 12px; }
 .release-form { margin-top: 20px; }
 .release-form :deep(.el-form-item__label) { color: #486581; font-size: 13px; font-weight: 700; }
+.auto-fill-hint {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin: -4px 0 14px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  background: #eef8f5;
+  color: #33766a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.auto-fill-hint .el-icon { flex: none; margin-top: 2px; }
 .publish-button { width: 100%; height: 42px; font-weight: 700; }
 .upload-progress {
   margin-top: 18px;

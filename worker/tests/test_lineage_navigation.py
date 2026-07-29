@@ -258,6 +258,103 @@ class RuntimeProbeTest(unittest.TestCase):
         ), self.assertRaisesRegex(NavigationError, "管理员身份"):
             window.restore(timeout=0.2)
 
+    def test_client_window_focus_retries_with_attached_window_threads(self):
+        window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
+        foreground = {"hwnd": 999}
+        activation_attempts = {"count": 0}
+        fake_gui = mock.Mock()
+        fake_gui.GetForegroundWindow.side_effect = lambda: foreground["hwnd"]
+
+        def set_foreground(hwnd):
+            activation_attempts["count"] += 1
+            if activation_attempts["count"] == 1:
+                raise OSError(0, "SetForegroundWindow", "No error message is available")
+            foreground["hwnd"] = hwnd
+
+        fake_gui.SetForegroundWindow.side_effect = set_foreground
+        fake_api = mock.Mock()
+        fake_api.GetCurrentThreadId.return_value = 11
+        fake_process = mock.Mock()
+        fake_process.GetWindowThreadProcessId.side_effect = (
+            lambda hwnd: (22, 100) if hwnd == 123 else (33, 200)
+        )
+
+        with mock.patch.object(
+            window, "restore", return_value=(800, 600)
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32gui", fake_gui
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32api", fake_api
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32process", fake_process
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.time.sleep"
+        ):
+            window.focus(timeout=0.2)
+
+        self.assertEqual(123, foreground["hwnd"])
+        self.assertEqual(2, fake_gui.SetForegroundWindow.call_count)
+        fake_process.AttachThreadInput.assert_has_calls([
+            mock.call(11, 33, True),
+            mock.call(11, 22, True),
+            mock.call(11, 22, False),
+            mock.call(11, 33, False),
+        ])
+
+    def test_client_window_focus_does_nothing_when_already_foreground(self):
+        window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
+        fake_gui = mock.Mock()
+        fake_gui.GetForegroundWindow.return_value = 123
+
+        with mock.patch.object(
+            window, "restore", return_value=(800, 600)
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32gui", fake_gui
+        ):
+            window.focus(timeout=0.2)
+
+        fake_gui.SetForegroundWindow.assert_not_called()
+
+    def test_client_window_focus_failure_explains_real_host_requirements(self):
+        window = ClientWindow(123, "Lineage Classic - 1.0 [LIVE] - Login [account]")
+        fake_gui = mock.Mock()
+        fake_gui.GetForegroundWindow.return_value = 999
+        fake_gui.SetForegroundWindow.side_effect = OSError(
+            0,
+            "SetForegroundWindow",
+            "No error message is available",
+        )
+        fake_api = mock.Mock()
+        fake_api.GetCurrentThreadId.return_value = 11
+        fake_process = mock.Mock()
+        fake_process.GetWindowThreadProcessId.return_value = (22, 100)
+        fake_con = SimpleNamespace(
+            SWP_NOMOVE=0x0002,
+            SWP_NOSIZE=0x0001,
+            SWP_SHOWWINDOW=0x0040,
+            HWND_TOPMOST=-1,
+            HWND_NOTOPMOST=-2,
+        )
+
+        with mock.patch.object(
+            window, "restore", return_value=(800, 600)
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32gui", fake_gui
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32api", fake_api
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32process", fake_process
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32con", fake_con
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.time.monotonic",
+            side_effect=[0.0, 1.0],
+        ), self.assertRaisesRegex(
+            NavigationError,
+            "相同的管理员权限.*未锁屏",
+        ):
+            window.focus(timeout=0.2)
+
 
 class _Window:
     def __init__(self):
