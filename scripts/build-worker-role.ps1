@@ -158,6 +158,18 @@ function Invoke-PythonCode([string]$Python, [string]$Code) {
     & $Python -c "import base64;exec(base64.b64decode('$encoded'))"
 }
 
+function Assert-OcrModelDirectory([string]$ModelDirectory, [string]$ModelName) {
+    if (-not (Test-Path -LiteralPath $ModelDirectory -PathType Container)) {
+        throw "OCR model directory is missing: $ModelDirectory"
+    }
+    foreach ($requiredFile in @("inference.json", "inference.pdiparams", "inference.yml")) {
+        $requiredPath = Join-Path $ModelDirectory $requiredFile
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            throw "OCR model $ModelName is incomplete; missing $requiredPath"
+        }
+    }
+}
+
 Write-Host "============================================================"
 Write-Host "  $RoleTitle Windows x64 package build"
 Write-Host "============================================================"
@@ -232,10 +244,17 @@ print("monitor dependency preflight passed")
 "@
 }
 else {
-    $PreflightCode = @"
+$PreflightCode = @"
 import boto3, cv2, numpy, paddle, paddleocr, paddlex, PIL, websockets, win32api, win32gui
 import common, game_executor
 from game_executor.executor.lineage_classic import LineageClassicExecutor
+from game_executor.executor.lineage_classic.paddle_ocr import (
+    build_paddle_ocr_engine,
+    build_text_recognition_engine,
+)
+build_paddle_ocr_engine()
+build_text_recognition_engine("english")
+build_text_recognition_engine("korean")
 print("game executor dependency preflight passed")
 "@
 }
@@ -246,6 +265,27 @@ try {
 }
 finally {
     Pop-Location
+}
+
+$OcrModelNames = @(
+    "PP-OCRv5_mobile_det",
+    "korean_PP-OCRv5_mobile_rec",
+    "en_PP-OCRv5_mobile_rec"
+)
+$OcrModelsSourceDirectory = $null
+if ($Role -eq "game-executor") {
+    $OcrCacheOutput = & $VirtualPython -c "from pathlib import Path; from paddlex.utils.cache import CACHE_DIR; print((Path(CACHE_DIR) / 'official_models').resolve())"
+    Assert-LastExitCode "Unable to resolve PaddleX model cache"
+    $OcrModelsSourceDirectory = ($OcrCacheOutput | Select-Object -Last 1).Trim()
+    if ([string]::IsNullOrWhiteSpace($OcrModelsSourceDirectory)) {
+        throw "PaddleX returned an empty OCR model cache path"
+    }
+    foreach ($modelName in $OcrModelNames) {
+        Assert-OcrModelDirectory `
+            (Join-Path $OcrModelsSourceDirectory $modelName) `
+            $modelName
+    }
+    Write-Host "OCR model source: $OcrModelsSourceDirectory"
 }
 
 Write-Step "Cleaning generated role output"
@@ -335,6 +375,21 @@ Copy-Item -LiteralPath $EnvironmentTemplate `
 Copy-Item -LiteralPath $CheckScript `
     -Destination (Join-Path $DistributionDirectory "check-package.bat") -Force
 
+if ($Role -eq "game-executor") {
+    Write-Step "Copying bundled OCR models"
+    $OcrModelsDestinationDirectory = Join-Path $DistributionDirectory "ocr_models"
+    New-Item -ItemType Directory -Path $OcrModelsDestinationDirectory -Force | Out-Null
+    foreach ($modelName in $OcrModelNames) {
+        $sourceModel = Join-Path $OcrModelsSourceDirectory $modelName
+        $destinationModel = Join-Path $OcrModelsDestinationDirectory $modelName
+        New-Item -ItemType Directory -Path $destinationModel -Force | Out-Null
+        Get-ChildItem -LiteralPath $sourceModel -Force |
+            Where-Object { $_.Name -ne ".cache" } |
+            Copy-Item -Destination $destinationModel -Recurse -Force
+        Assert-OcrModelDirectory $destinationModel $modelName
+    }
+}
+
 $RequirementsHash = Get-RequirementsHash
 $BuildInfo = @(
     "role=$Role",
@@ -360,7 +415,7 @@ else {
 1. Edit .env and set BACKEND_WS_URL plus the STORAGE_* RustFS settings.
 2. Bind this machine to a Wireless HID device in the controller.
 3. Keep the game client at 800x600 and run check-package.bat.
-4. OCR models are downloaded to the PaddleX cache on first use.
+4. Keep the ocr_models directory beside the EXE; OCR runs offline without downloading models.
 "@
 }
 Set-Content -LiteralPath (Join-Path $DistributionDirectory "DEPLOYMENT.txt") `

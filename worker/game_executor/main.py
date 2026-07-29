@@ -79,6 +79,22 @@ def run_self_check() -> int:
         failures.append(f"recognition assets: {exc}")
         print(f"[SelfCheck][FAILED] recognition assets: {exc}")
 
+    try:
+        from game_executor.executor.lineage_classic.paddle_ocr import (
+            bundled_ocr_model_directories,
+        )
+
+        model_directories = bundled_ocr_model_directories()
+        if getattr(sys, "frozen", False) and not model_directories:
+            raise RuntimeError("packaged OCR model directory was not selected")
+        print(
+            "[SelfCheck][OK] bundled OCR models: "
+            + ", ".join(sorted(model_directories))
+        )
+    except Exception as exc:
+        failures.append(f"OCR models: {exc}")
+        print(f"[SelfCheck][FAILED] OCR models: {exc}")
+
     print(
         f"[SelfCheck] Python={platform.python_version()} "
         f"architecture={platform.architecture()[0]} frozen={getattr(sys, 'frozen', False)}"

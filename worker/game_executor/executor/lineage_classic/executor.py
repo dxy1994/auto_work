@@ -349,7 +349,6 @@ class LineageClassicExecutor(BaseGameExecutor):
                 threshold=0.90,
             ),
             profile="screen",
-            fixed_wait=1.0,
         )
         if trade_cancel is None:
             raise NavigationError("接受申请后未识别到交易界面")
@@ -412,7 +411,6 @@ class LineageClassicExecutor(BaseGameExecutor):
                 TradeUi.FINAL_CONFIRM_TEMPLATE, Ui.FULL_CLIENT, threshold=0.90
             ),
             profile="screen",
-            fixed_wait=1.0,
         )
         if final_prompt is None:
             return self._result(
@@ -472,7 +470,6 @@ class LineageClassicExecutor(BaseGameExecutor):
         navigator.wait_after_step(
             "悬停我方交易区第一个物品并等待数量显示",
             profile="recognition",
-            fixed_wait=0.5,
         )
         return navigator.vision.capture_data_url(Ui.FULL_CLIENT)
 
@@ -608,7 +605,6 @@ class LineageClassicExecutor(BaseGameExecutor):
                     threshold=0.86,
                 ) is None,
                 profile="panel",
-                fixed_wait=0.5,
                 probe_interval=0.5,
             )
             if closed:
@@ -748,7 +744,6 @@ class LineageClassicExecutor(BaseGameExecutor):
             "最终确认后验证交易窗口关闭",
             trade_closed_sample,
             profile="final_verify",
-            fixed_wait=1.0,
             probe_interval=0.5,
         )
         return bool(result)

@@ -102,22 +102,35 @@ class SoftwarePackageServiceTest {
     }
 
     @Test
-    void uploadRejectsUnsupportedFileBeforeWritingStorage() throws Exception {
+    void uploadAcceptsOtherFileTypes() throws Exception {
         MockMultipartFile file = new MockMultipartFile(
-                "file", "说明.txt", "text/plain", "not a package".getBytes(StandardCharsets.UTF_8));
+                "file", "使用说明.txt", "text/plain", "distribution file".getBytes(StandardCharsets.UTF_8));
+        Instant uploadedAt = Instant.parse("2026-07-29T11:00:00Z");
+        when(storageService.getInfo(anyString())).thenAnswer(invocation -> new StorageService.StoredObject(
+                invocation.getArgument(0),
+                file.getSize(),
+                uploadedAt,
+                file.getContentType(),
+                Map.of(
+                        "filename-b64", encoded("使用说明.txt"),
+                        "version-b64", encoded(""),
+                        "notes-b64", encoded(""),
+                        "sha256", "abc123")));
 
-        ApiException error = assertThrows(
-                ApiException.class,
-                () -> service.upload(file, "", ""));
+        SoftwarePackageService.PackageInfo result = service.upload(file, "", "");
 
-        assertTrue(error.getMessage().contains("仅支持"));
-        verify(storageService, never()).uploadObject(anyString(), eq(file), org.mockito.ArgumentMatchers.anyMap());
+        assertEquals("使用说明.txt", result.fileName());
+        assertEquals("text/plain", result.contentType());
+        verify(storageService).uploadObject(
+                anyString(),
+                eq(file),
+                org.mockito.ArgumentMatchers.anyMap());
     }
 
     @Test
     void deleteRejectsMalformedPackageId() {
         ApiException error = assertThrows(ApiException.class, () -> service.delete("../images/demo"));
-        assertEquals("安装包编号格式不正确", error.getMessage());
+        assertEquals("文件编号格式不正确", error.getMessage());
         verify(storageService, never()).delete(anyString());
     }
 

@@ -859,7 +859,7 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual((640, 480, 780, 555), Ui.CHARACTER_ACTION_REGION)
         self.assertEqual((212, 367, 450, 383), Ui.CHARACTER_NAME_VALUE_REGION)
 
-    def test_screen_step_wait_uses_business_delay_and_fixed_detection_attempts(self):
+    def test_screen_step_initial_wait_is_capped_and_keeps_detection_attempts(self):
         sleeps = []
         random_ranges = []
         outcomes = iter([False, False, (320, 180)])
@@ -881,9 +881,9 @@ class LineageNavigationTest(unittest.TestCase):
             )
 
         self.assertEqual((320, 180), result)
-        self.assertEqual([(1.0, 4.0)], random_ranges)
-        # 画面切换：固定 1 + 随机上限 4，前两次未就绪各等待 1 秒。
-        self.assertAlmostEqual(7.0, sum(sleeps), places=5)
+        self.assertEqual([(0.5, 1.5)], random_ranges)
+        # 首次随机等待取上界 1.5 秒，前两次未就绪各等待 0.5 秒。
+        self.assertAlmostEqual(2.5, sum(sleeps), places=5)
         self.assertTrue(any(
             f"第 3/{lineage_navigation.STEP_VERIFY_ATTEMPTS} 次 已就绪"
             in call.args[0]
@@ -950,7 +950,47 @@ class LineageNavigationTest(unittest.TestCase):
             for call in output.call_args_list
         ))
 
-    def test_item_drag_delay_is_shorter_than_screen_transition(self):
+    def test_non_server_initial_waits_share_the_same_random_range(self):
+        for profile in lineage_navigation.STEP_WAIT_PROFILES:
+            with self.subTest(profile=profile):
+                sleeps = []
+                random_ranges = []
+                navigator = LineageSessionNavigator(
+                    mock.Mock(),
+                    _Window(),
+                    mock.Mock(),
+                    sleep=sleeps.append,
+                    random_uniform=lambda low, high: (
+                        random_ranges.append((low, high)) or high
+                    ),
+                )
+                with mock.patch("builtins.print"):
+                    navigator.wait_after_step("动作完成", profile=profile)
+
+                total = sum(sleeps)
+                if profile == "server_connect":
+                    self.assertEqual([(1.0, 4.0)], random_ranges)
+                    self.assertAlmostEqual(5.0, total, places=5)
+                else:
+                    self.assertEqual([(0.5, 1.5)], random_ranges)
+                    self.assertAlmostEqual(1.5, total, places=5)
+
+    def test_non_server_wait_uses_sampled_value_without_hard_limit_clipping(self):
+        sleeps = []
+        navigator = LineageSessionNavigator(
+            mock.Mock(),
+            _Window(),
+            mock.Mock(),
+            sleep=sleeps.append,
+            random_uniform=lambda _low, _high: 0.73,
+        )
+
+        with mock.patch("builtins.print"):
+            navigator.wait_after_step("切换画面", profile="screen")
+
+        self.assertAlmostEqual(0.73, sum(sleeps), places=5)
+
+    def test_item_drag_and_screen_use_the_same_initial_wait_range(self):
         screen_sleeps = []
         item_sleeps = []
         screen = LineageSessionNavigator(
@@ -968,9 +1008,8 @@ class LineageNavigationTest(unittest.TestCase):
             screen.wait_after_step("切换画面", profile="screen")
             item.wait_after_step("拖拽物品", profile="item_drag")
 
-        self.assertAlmostEqual(5.0, sum(screen_sleeps), places=5)
-        self.assertAlmostEqual(1.4, sum(item_sleeps), places=5)
-        self.assertGreater(sum(screen_sleeps), sum(item_sleeps) * 3)
+        self.assertAlmostEqual(1.5, sum(screen_sleeps), places=5)
+        self.assertAlmostEqual(1.5, sum(item_sleeps), places=5)
 
     def test_buyer_ocr_at_90_or_above_auto_accepts_only_matching_name(self):
         self.assertEqual("accept", buyer_ocr_action("홍길동이", "홍길동", 90.0))
@@ -1164,7 +1203,6 @@ class LineageNavigationTest(unittest.TestCase):
         navigator.wait_after_step.assert_called_once_with(
             "悬停我方交易区第一个物品并等待数量显示",
             profile="recognition",
-            fixed_wait=0.5,
         )
         navigator.vision.capture_data_url.assert_called_once_with(Ui.FULL_CLIENT)
 

@@ -3,7 +3,7 @@
     <header class="distribution-hero">
       <div class="hero-copy">
         <div class="eyebrow">INTRANET RELEASE DESK</div>
-        <h1>把安装包放到离机器最近的地方</h1>
+        <h1>把文件放到离机器最近的地方</h1>
         <p>在总控发布一次，内网中的每台电脑都能从这里直接下载。</p>
       </div>
       <div class="release-rail" aria-hidden="true">
@@ -26,7 +26,7 @@
         <div class="section-heading">
           <span class="section-kicker">发布入口</span>
           <h2>上传新版本</h2>
-          <p>支持常见的 Windows 安装包和压缩包，单个文件最大 2GB。</p>
+          <p>支持上传任意类型的文件，单个文件最大 2GB。</p>
         </div>
 
         <el-upload
@@ -36,13 +36,12 @@
           :auto-upload="false"
           :limit="1"
           :disabled="uploading"
-          :accept="acceptedExtensions"
           :on-change="handleFileChange"
           :on-remove="handleFileRemove"
         >
           <el-icon class="upload-glyph"><UploadFilled /></el-icon>
-          <div class="upload-title">拖入打包后的软件</div>
-          <div class="upload-hint">或点击选择 EXE / MSI / ZIP / 7Z / RAR</div>
+          <div class="upload-title">拖入需要分发的文件</div>
+          <div class="upload-hint">或点击选择任意类型文件</div>
         </el-upload>
 
         <el-form class="release-form" label-position="top" @submit.prevent="publishPackage">
@@ -107,7 +106,7 @@
 
         <el-empty
           v-else-if="!packages.length"
-          description="还没有发布安装包，请从左侧上传第一个版本"
+          description="还没有发布文件，请从左侧上传第一个文件"
         />
 
         <div v-else class="package-list">
@@ -162,7 +161,7 @@
 
         <div class="catalog-footnote">
           <el-icon><InfoFilled /></el-icon>
-          下载文件来自总控对象存储；SHA-256 可用于确认安装包在传输过程中未损坏。
+          下载内容来自总控对象存储；SHA-256 可用于确认文件在传输过程中未损坏。
         </div>
       </main>
     </div>
@@ -180,8 +179,6 @@ import {
 } from '../api'
 import { suggestReleaseMetadata } from '../utils/softwareRelease'
 
-const acceptedExtensions = '.exe,.msi,.msix,.zip,.7z,.rar,.tar,.gz,.tgz'
-const allowedSuffixes = ['.exe', '.msi', '.msix', '.zip', '.7z', '.rar', '.tar', '.tar.gz', '.tgz']
 const maxFileSize = 2 * 1024 * 1024 * 1024
 
 const uploadRef = ref(null)
@@ -194,22 +191,11 @@ const deletingId = ref(null)
 const autoFillHint = ref('')
 const form = reactive({ version: '', notes: '' })
 
-function hasAllowedSuffix(name) {
-  const lowerName = String(name || '').toLowerCase()
-  return allowedSuffixes.some((suffix) => lowerName.endsWith(suffix))
-}
-
 function handleFileChange(file) {
   const raw = file.raw
-  if (!raw || !hasAllowedSuffix(raw.name)) {
-    ElMessage.error('仅支持 EXE、MSI、MSIX、ZIP、7Z、RAR、TAR、TGZ 安装包')
-    uploadRef.value?.clearFiles()
-    selectedFile.value = null
-    resetSuggestedMetadata()
-    return
-  }
+  if (!raw) return
   if (raw.size > maxFileSize) {
-    ElMessage.error('单个安装包不能超过 2GB')
+    ElMessage.error('单个文件不能超过 2GB')
     uploadRef.value?.clearFiles()
     selectedFile.value = null
     resetSuggestedMetadata()
@@ -270,13 +256,13 @@ async function publishPackage() {
       uploadProgress.value = progress
     })
     uploadProgress.value = 100
-    ElMessage.success('安装包已发布到内网')
+    ElMessage.success('文件已发布到内网')
     uploadRef.value?.clearFiles()
     selectedFile.value = null
     resetSuggestedMetadata()
     await loadPackages()
   } catch (error) {
-    ElMessage.error(error.message || '安装包发布失败')
+    ElMessage.error(error.message || '文件发布失败')
   } finally {
     uploading.value = false
   }
@@ -286,7 +272,7 @@ async function removePackage(item) {
   try {
     await ElMessageBox.confirm(
       `删除“${item.file_name}”后，内网中的其他电脑将无法继续下载。`,
-      '删除安装包',
+      '删除文件',
       {
         confirmButtonText: '确认删除',
         cancelButtonText: '保留',
@@ -295,7 +281,7 @@ async function removePackage(item) {
     )
     deletingId.value = item.id
     await deleteSoftwarePackage(item.id)
-    ElMessage.success('安装包已删除')
+    ElMessage.success('文件已删除')
     await loadPackages()
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {

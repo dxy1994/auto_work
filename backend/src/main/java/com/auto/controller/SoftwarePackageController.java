@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 总控内网软件分发接口：发布、列出、下载和删除安装包。
+ * 总控内网软件分发接口：发布、列出、下载和删除文件。
  */
 @RestController
 @RequestMapping("/api/software-packages")
@@ -73,6 +73,6 @@ public class SoftwarePackageController {
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         softwarePackageService.delete(id);
-        return Map.of("message", "安装包已删除");
+        return Map.of("message", "文件已删除");
     }
 }

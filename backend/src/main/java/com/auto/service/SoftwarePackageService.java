@@ -16,21 +16,17 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
- * 内网软件分发服务。安装包本体及展示元数据均保存在对象存储中，
+ * 内网软件分发服务。文件本体及展示元数据均保存在对象存储中，
  * 无需额外数据库表，也不会因应用重启丢失。
  */
 @Service
 public class SoftwarePackageService {
 
     private static final String KEY_PREFIX = "software-packages/";
-    private static final Set<String> ALLOWED_SUFFIXES = Set.of(
-            ".exe", ".msi", ".msix", ".zip", ".7z", ".rar", ".tar", ".tar.gz", ".tgz");
     private static final int MAX_FILE_NAME_LENGTH = 180;
     private static final int MAX_VERSION_LENGTH = 60;
     private static final int MAX_NOTES_LENGTH = 500;
@@ -52,7 +48,7 @@ public class SoftwarePackageService {
 
     public PackageInfo upload(MultipartFile file, String version, String notes) throws IOException {
         if (file == null || file.isEmpty()) {
-            throw ApiException.badRequest("请选择要发布的安装包");
+            throw ApiException.badRequest("请选择要发布的文件");
         }
         String fileName = cleanFileName(file.getOriginalFilename());
         validateFileName(fileName);
@@ -71,7 +67,7 @@ public class SoftwarePackageService {
 
         StorageService.StoredObject stored = storageService.getInfo(objectKey);
         if (stored == null) {
-            throw ApiException.unavailable("安装包已上传，但暂时无法读取文件信息");
+            throw ApiException.unavailable("文件已上传，但暂时无法读取文件信息");
         }
         return toPackageInfo(stored);
     }
@@ -80,7 +76,7 @@ public class SoftwarePackageService {
         String objectKey = objectKey(id);
         ResponseInputStream<GetObjectResponse> stream = storageService.getStream(objectKey);
         if (stream == null) {
-            throw ApiException.notFound("安装包不存在或已被删除");
+            throw ApiException.notFound("文件不存在或已被删除");
         }
         GetObjectResponse response = stream.response();
         PackageInfo info = fromMetadata(
@@ -95,7 +91,7 @@ public class SoftwarePackageService {
     public void delete(String id) {
         String objectKey = objectKey(id);
         if (storageService.getInfo(objectKey) == null) {
-            throw ApiException.notFound("安装包不存在或已被删除");
+            throw ApiException.notFound("文件不存在或已被删除");
         }
         storageService.delete(objectKey);
     }
@@ -114,7 +110,7 @@ public class SoftwarePackageService {
         Map<String, String> safeMetadata = metadata != null ? metadata : Map.of();
         return new PackageInfo(
                 id,
-                decode(safeMetadata.get("filename-b64"), "未命名安装包"),
+                decode(safeMetadata.get("filename-b64"), "未命名文件"),
                 decode(safeMetadata.get("version-b64"), ""),
                 decode(safeMetadata.get("notes-b64"), ""),
                 size,
@@ -127,7 +123,7 @@ public class SoftwarePackageService {
         try {
             return KEY_PREFIX + UUID.fromString(id);
         } catch (IllegalArgumentException | NullPointerException e) {
-            throw ApiException.badRequest("安装包编号格式不正确");
+            throw ApiException.badRequest("文件编号格式不正确");
         }
     }
 
@@ -142,15 +138,10 @@ public class SoftwarePackageService {
 
     private static void validateFileName(String fileName) {
         if (fileName.isBlank()) {
-            throw ApiException.badRequest("无法识别安装包文件名");
+            throw ApiException.badRequest("无法识别文件名");
         }
         if (fileName.length() > MAX_FILE_NAME_LENGTH) {
-            throw ApiException.badRequest("安装包文件名不能超过 " + MAX_FILE_NAME_LENGTH + " 个字符");
-        }
-        String lowerName = fileName.toLowerCase(Locale.ROOT);
-        boolean allowed = ALLOWED_SUFFIXES.stream().anyMatch(lowerName::endsWith);
-        if (!allowed) {
-            throw ApiException.badRequest("仅支持 EXE、MSI、MSIX、ZIP、7Z、RAR、TAR、TGZ 安装包");
+            throw ApiException.badRequest("文件名不能超过 " + MAX_FILE_NAME_LENGTH + " 个字符");
         }
     }
 

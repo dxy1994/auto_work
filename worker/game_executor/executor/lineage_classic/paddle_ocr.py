@@ -2,8 +2,10 @@
 
 import json
 import os
+import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
 
@@ -16,6 +18,16 @@ TEXT_RECOGNITION_MODELS = {
     "english": "en_PP-OCRv5_mobile_rec",
     "korean": "korean_PP-OCRv5_mobile_rec",
 }
+OCR_MODEL_NAMES = (
+    "PP-OCRv5_mobile_det",
+    "korean_PP-OCRv5_mobile_rec",
+    "en_PP-OCRv5_mobile_rec",
+)
+OCR_MODEL_REQUIRED_FILES = (
+    "inference.json",
+    "inference.pdiparams",
+    "inference.yml",
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +44,44 @@ class OcrTextBox:
         return (self.left + self.right) / 2, (self.top + self.bottom) / 2
 
 
+def bundled_ocr_model_root() -> Path | None:
+    """返回显式配置或随 EXE 分发的 OCR 模型根目录。"""
+    configured = os.getenv("LINEAGE_OCR_MODEL_DIR", "").strip()
+    if configured:
+        return Path(os.path.expandvars(configured)).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "ocr_models"
+    return None
+
+
+def bundled_ocr_model_directories() -> dict[str, Path]:
+    """校验并返回随程序分发的三个模型目录；源码模式仍使用 PaddleX 缓存。"""
+    root = bundled_ocr_model_root()
+    if root is None:
+        return {}
+
+    missing: list[str] = []
+    directories: dict[str, Path] = {}
+    for model_name in OCR_MODEL_NAMES:
+        model_directory = root / model_name
+        absent_files = [
+            file_name
+            for file_name in OCR_MODEL_REQUIRED_FILES
+            if not (model_directory / file_name).is_file()
+        ]
+        if absent_files:
+            missing.append(f"{model_name}: {', '.join(absent_files)}")
+        else:
+            directories[model_name] = model_directory
+    if missing:
+        raise RuntimeError(
+            f"OCR 模型目录不完整: {root}；"
+            + "；".join(missing)
+            + "。请重新解压完整的游戏执行端安装包"
+        )
+    return directories
+
+
 def build_paddle_ocr_engine():
     """创建轻量韩文 OCR 引擎；调用方负责复用实例。"""
     # 直接使用已指定的官方模型，避免每次启动探测多个模型托管站点。
@@ -42,9 +92,16 @@ def build_paddle_ocr_engine():
         raise RuntimeError(
             "未安装 PaddleOCR/PaddlePaddle，请安装游戏执行端依赖"
         ) from exc
+    model_directories = bundled_ocr_model_directories()
     return PaddleOCR(
         text_detection_model_name="PP-OCRv5_mobile_det",
+        text_detection_model_dir=str(
+            model_directories["PP-OCRv5_mobile_det"]
+        ) if model_directories else None,
         text_recognition_model_name="korean_PP-OCRv5_mobile_rec",
+        text_recognition_model_dir=str(
+            model_directories["korean_PP-OCRv5_mobile_rec"]
+        ) if model_directories else None,
         device="cpu",
         # Paddle 3.3.1 在 Windows CPU 上执行该模型的 oneDNN 图时会触发
         # ConvertPirAttribute2RuntimeAttribute；关闭后使用稳定的 CPU 推理路径。
@@ -90,8 +147,10 @@ def build_text_recognition_engine(language: str):
         raise RuntimeError(
             "当前 PaddleOCR 版本不支持 TextRecognition，请升级游戏执行端依赖"
         ) from exc
+    model_directories = bundled_ocr_model_directories()
     return TextRecognition(
         model_name=model_name,
+        model_dir=str(model_directories[model_name]) if model_directories else None,
         device="cpu",
         enable_mkldnn=False,
     )

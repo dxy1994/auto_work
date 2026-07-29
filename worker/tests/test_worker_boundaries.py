@@ -36,6 +36,16 @@ class WorkerBoundaryTest(unittest.TestCase):
         self.assertNotIn("paddleocr", monitor.casefold())
         self.assertNotIn("patchright", executor.casefold())
 
+    def test_game_executor_build_copies_bundled_ocr_models(self):
+        build_script = (
+            WORKER_ROOT.parent / "scripts" / "build-worker-role.ps1"
+        ).read_text("utf-8")
+        self.assertIn('Join-Path $DistributionDirectory "ocr_models"', build_script)
+        self.assertIn("Assert-OcrModelDirectory", build_script)
+        self.assertIn("PP-OCRv5_mobile_det", build_script)
+        self.assertIn("korean_PP-OCRv5_mobile_rec", build_script)
+        self.assertIn("en_PP-OCRv5_mobile_rec", build_script)
+
 
 if __name__ == "__main__":
     unittest.main()

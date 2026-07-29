@@ -90,12 +90,16 @@ Worker 会保持在线并持续轮询；绑定设备通过 UDP 身份校验并�
 
 - 检测：`PP-OCRv5_mobile_det`
 - 韩文识别：`korean_PP-OCRv5_mobile_rec`
+- 英文识别：`en_PP-OCRv5_mobile_rec`
 - Windows CPU 下关闭 oneDNN/MKLDNN，避免 Paddle 3.3.1 推理异常
 
-首次运行会下载官方模型到 PaddleX 缓存。韩文 OCR 默认要求最低词块置信度不低于
-90，文本相似度不低于 0.90；可通过 `LINEAGE_OCR_MIN_CONFIDENCE` 和
-`LINEAGE_REGION_TEXT_SIMILARITY` 向上调整。游戏画面截图默认最多等待 5 秒，
-可通过 `LINEAGE_CAPTURE_TIMEOUT_SECONDS` 调大（最低为 1 秒）。
+游戏执行端打包时会在构建机下载并校验上述模型，再复制到安装包的 `ocr_models`
+目录。部署时该目录必须与 EXE 放在一起，程序会直接读取本地模型，不再在游戏机上
+重复下载。可用 `LINEAGE_OCR_MODEL_DIR` 显式指定其他完整模型目录。韩文 OCR 默认
+要求最低词块置信度不低于 90，文本相似度不低于 0.90；可通过
+`LINEAGE_OCR_MIN_CONFIDENCE` 和 `LINEAGE_REGION_TEXT_SIMILARITY` 向上调整。
+游戏画面截图默认最多等待 5 秒，可通过 `LINEAGE_CAPTURE_TIMEOUT_SECONDS`
+调大（最低为 1 秒）。
 
 ## 独立打包
 

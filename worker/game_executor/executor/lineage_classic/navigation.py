@@ -92,19 +92,15 @@ class StepWaitProfile:
 
 
 STEP_WAIT_PROFILES = {
-    # 画面切换的首次等待控制在 2～5 秒，之后通过多次检测吸收加载波动。
-    "screen": StepWaitProfile("画面切换", 1.0, 1.0, 4.0, 1.0),
-    # 菜单展开、按钮出现等局部 UI 变化保持更短。
-    "panel": StepWaitProfile("面板操作", 0.5, 0.5, 2.0, 0.5),
-    # OCR/模板识别只等待短暂渲染，不重复叠加长随机等待。
-    "recognition": StepWaitProfile("图像识别", 0.3, 0.2, 1.2, 0.5),
-    # 选服后同样先等待 2～5 秒，再保留完整的多次状态检测。
+    # 除选服加载外，每个动作均直接在 0.5～1.5 秒内均匀随机首次等待。
+    "screen": StepWaitProfile("画面切换", 0.0, 0.5, 1.5, 0.5),
+    "panel": StepWaitProfile("面板操作", 0.0, 0.5, 1.5, 0.4),
+    "recognition": StepWaitProfile("图像识别", 0.0, 0.5, 1.5, 0.3),
+    # 点击目标大区后服务器需要加载，保留 2～5 秒的长等待例外。
     "server_connect": StepWaitProfile("服务器连接", 1.0, 1.0, 4.0, 1.0),
-    # 拖拽和键盘输入保持短暂停顿，避免显得机械，同时不拖慢多物品订单。
-    "item_drag": StepWaitProfile("物品拖拽", 0.2, 0.3, 1.2, 0.4),
-    "input": StepWaitProfile("数量输入", 0.3, 0.4, 1.5, 0.4),
-    # 最终交易结果需要比普通按钮更谨慎地确认。
-    "final_verify": StepWaitProfile("结果验证", 1.0, 1.0, 4.0, 0.5),
+    "item_drag": StepWaitProfile("物品拖拽", 0.0, 0.5, 1.5, 0.3),
+    "input": StepWaitProfile("数量输入", 0.0, 0.5, 1.5, 0.3),
+    "final_verify": StepWaitProfile("结果验证", 0.0, 0.5, 1.5, 0.4),
 }
 
 
@@ -1565,7 +1561,6 @@ class LineageSessionNavigator:
         predicate: Callable[[], object],
         *,
         profile: str,
-        fixed_wait: Optional[float] = None,
         probe_interval: Optional[float] = None,
         retry_wait_range: Optional[tuple[float, float]] = None,
     ):
@@ -1573,16 +1568,16 @@ class LineageSessionNavigator:
         timing = STEP_WAIT_PROFILES.get(profile)
         if timing is None:
             raise ValueError(f"未知步骤等待类型: {profile}")
-        fixed_seconds = max(0.0, float(
-            timing.fixed_wait if fixed_wait is None else fixed_wait
-        ))
+        fixed_seconds = max(0.0, float(timing.fixed_wait))
+        random_min = timing.random_min
+        random_max = timing.random_max
         random_seconds = float(self.random_uniform(
-            timing.random_min,
-            timing.random_max,
+            random_min,
+            random_max,
         ))
         random_seconds = min(
-            timing.random_max,
-            max(timing.random_min, random_seconds),
+            random_max,
+            max(random_min, random_seconds),
         )
         total_wait = fixed_seconds + random_seconds
         max_attempts = STEP_VERIFY_ATTEMPTS
@@ -1650,14 +1645,12 @@ class LineageSessionNavigator:
         step_name: str,
         *,
         profile: str,
-        fixed_wait: Optional[float] = None,
     ) -> None:
         """没有可靠视觉锚点的动作仍执行统一等待并记录一次完成检测。"""
         self.wait_for_step(
             step_name,
             lambda: True,
             profile=profile,
-            fixed_wait=fixed_wait,
         )
 
     def _is_in_game(self) -> bool:
@@ -1899,7 +1892,6 @@ class LineageSessionNavigator:
                     Ui.SERVER_PAGINATION_REGION,
                 ),
                 profile="recognition",
-                fixed_wait=0.5,
             )
             source = "OCR 定位"
         if point is None:
@@ -1918,7 +1910,6 @@ class LineageSessionNavigator:
         self.wait_after_step(
             f"切换到服务器列表第 {page} 页",
             profile="panel",
-            fixed_wait=1.0,
         )
 
     def _select_server(self, target: TargetRegion) -> None:
@@ -2014,7 +2005,6 @@ class LineageSessionNavigator:
             "角色登录后进入游戏主界面",
             self._is_in_game,
             profile="screen",
-            fixed_wait=1.0,
         ):
             raise NavigationError("角色登录后未进入游戏")
 
@@ -2215,7 +2205,6 @@ class LineageSessionNavigator:
             "激活并确认游戏客户区可操作",
             client_ready,
             profile="screen",
-            fixed_wait=1.0,
         ):
             raise NavigationError(
                 f"激活游戏窗口后连续 {STEP_VERIFY_ATTEMPTS} 次"
