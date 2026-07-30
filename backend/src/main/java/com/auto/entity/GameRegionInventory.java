@@ -26,7 +26,7 @@ public class GameRegionInventory {
 
     private Integer itemId;
 
-    private Integer stock = 0;
+    private Long stock = 0L;
 
     private BigDecimal purchasePrice = BigDecimal.ZERO;
 

@@ -39,9 +39,9 @@
           >
             <el-table-column v-if="!filterRegionId" prop="region_name" label="大区" width="82" show-overflow-tooltip />
             <el-table-column prop="item_name" label="物品名称" min-width="120" show-overflow-tooltip />
-            <el-table-column label="库存" width="60" align="center">
+            <el-table-column label="库存" width="180" align="right" header-align="center">
               <template #default="{ row }">
-                <span :class="row.stock > 0 ? 'stock-positive' : 'stock-zero'">{{ row.stock }}</span>
+                <span class="stock-number" :class="row.stock > 0 ? 'stock-positive' : 'stock-zero'">{{ row.stock }}</span>
               </template>
             </el-table-column>
             <el-table-column label="进货均价" width="84" align="right">
@@ -83,7 +83,7 @@
               </div>
               <div class="info-item">
                 <span class="info-label">库存</span>
-                <span class="info-value" :class="currentRow.stock > 0 ? 'stock-positive' : 'stock-zero'">{{ currentRow.stock }}</span>
+                <span class="info-value stock-number" :class="currentRow.stock > 0 ? 'stock-positive' : 'stock-zero'">{{ currentRow.stock }}</span>
               </div>
               <div class="info-item">
                 <span class="info-label">进货均价</span>
@@ -759,6 +759,11 @@ onMounted(() => {
 /* 库存样式 */
 .stock-positive { color: #67c23a; font-weight: bold; font-size: 15px; }
 .stock-zero { color: #f56c6c; font-weight: bold; font-size: 15px; }
+.stock-number {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 
 /* 均价预览 */
 .calc-price { color: #409eff; font-weight: bold; }

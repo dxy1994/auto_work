@@ -83,7 +83,7 @@ public class GameRegionController {
             inv.setGameId(region.getGameId());
             inv.setRegionId(region.getId());
             inv.setItemId(item.getId());
-            inv.setStock(0);
+            inv.setStock(0L);
             inventoryService.save(inv);
             shopPriceService.initForInventory(inv.getId());
         }

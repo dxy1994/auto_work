@@ -159,7 +159,7 @@ public class GameItemController {
             inv.setGameId(item.getGameId());
             inv.setRegionId(region.getId());
             inv.setItemId(item.getId());
-            inv.setStock(0);
+            inv.setStock(0L);
             inventoryService.save(inv);
             shopPriceService.initForInventory(inv.getId());
         }

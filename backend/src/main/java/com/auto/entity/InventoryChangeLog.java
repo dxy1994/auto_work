@@ -29,11 +29,11 @@ public class InventoryChangeLog {
     /** stock_in / stock_out / price_update / fluctuation_update / system_sync / initialization */
     private String changeType;
 
-    private Integer stockBefore;
+    private Long stockBefore;
 
-    private Integer stockAfter;
+    private Long stockAfter;
 
-    private Integer stockDelta;
+    private Long stockDelta;
 
     /** 入库单价（仅入库时记录） */
     private BigDecimal unitPrice;

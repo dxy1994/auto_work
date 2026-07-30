@@ -11,6 +11,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+IMAGE_CHAT_CLOSE_DELAY_MS = 10_000
 DEFAULT_ITEMMANIA_TARGET = {
     "input_selector": "#write_chat",
     "send_selector": "#send_btn",
@@ -121,7 +122,7 @@ async def _do_send_chat_locked(
     target: dict,
     messages: list,
 ) -> dict:
-    """打开客户会话并按消息顺序发送，每张图片和每段文字均等待完成。"""
+    """打开客户会话并按消息顺序发送；含图片时保留页面 10 秒再关闭。"""
     try:
         target = _normalize_target(target, messages)
         messages = _normalize_messages(messages)
@@ -133,6 +134,7 @@ async def _do_send_chat_locked(
 
     page = None
     chat_url = target["url"]
+    has_images = any(message["image_urls"] for message in messages)
     try:
         page = await session.new_page()
         session.track_transient_page(page)
@@ -189,6 +191,14 @@ async def _do_send_chat_locked(
         try:
             if page:
                 try:
+                    if has_images:
+                        try:
+                            await page.wait_for_timeout(
+                                IMAGE_CHAT_CLOSE_DELAY_MS
+                            )
+                        except Exception:
+                            # 页面可能被平台提前关闭，不能让等待失败覆盖发送结果。
+                            pass
                     await page.close()
                 finally:
                     session.untrack_transient_page(page)

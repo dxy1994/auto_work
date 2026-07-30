@@ -21,7 +21,7 @@ public class InventoryChangeLogServiceImpl extends ServiceImpl<InventoryChangeLo
     }
 
     @Override
-    public InventoryChangeLog logStockIn(GameRegionInventory inv, int quantity, BigDecimal unitPrice,
+    public InventoryChangeLog logStockIn(GameRegionInventory inv, long quantity, BigDecimal unitPrice,
                                          BigDecimal avgBefore, BigDecimal avgAfter, String operator) {
         InventoryChangeLog log = new InventoryChangeLog();
         log.setInventoryId(inv.getId());
@@ -42,7 +42,7 @@ public class InventoryChangeLogServiceImpl extends ServiceImpl<InventoryChangeLo
     }
 
     @Override
-    public InventoryChangeLog logStockOut(GameRegionInventory inv, int quantity, String reason, String operator) {
+    public InventoryChangeLog logStockOut(GameRegionInventory inv, long quantity, String reason, String operator) {
         InventoryChangeLog log = new InventoryChangeLog();
         log.setInventoryId(inv.getId());
         log.setGameId(inv.getGameId());

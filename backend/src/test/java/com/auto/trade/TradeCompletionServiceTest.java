@@ -42,7 +42,7 @@ class TradeCompletionServiceTest {
         inventory.setId(11);
         inventory.setRegionId(3);
         inventory.setItemId(8);
-        inventory.setStock(10);
+        inventory.setStock(10L);
 
         when(detailService.findByOrderId(42)).thenReturn(List.of(detail));
         when(inventoryService.findByRegionIdAndItemId(3, 8)).thenReturn(inventory);
@@ -50,14 +50,14 @@ class TradeCompletionServiceTest {
         service.complete(order);
 
         assertEquals("completed", detail.getStatus());
-        assertEquals(7, inventory.getStock());
+        assertEquals(7L, inventory.getStock());
         assertNotNull(order.getCompletedAt());
         assertNotNull(order.getGameDeliveredAt());
         assertNull(order.getLastErrorCode());
         verify(detailService).updateById(detail);
         verify(inventoryService).updateById(inventory);
         verify(changeLogService).logStockOut(
-                inventory, 3, "auto_trade:order=42", "system");
+                inventory, 3L, "auto_trade:order=42", "system");
     }
 
     @Test
@@ -82,7 +82,7 @@ class TradeCompletionServiceTest {
         inventory.setId(11);
         inventory.setRegionId(3);
         inventory.setItemId(8);
-        inventory.setStock(1);
+        inventory.setStock(1L);
 
         when(detailService.findByOrderId(42)).thenReturn(List.of(detail));
         when(inventoryService.findByRegionIdAndItemId(3, 8)).thenReturn(inventory);
@@ -90,13 +90,13 @@ class TradeCompletionServiceTest {
         service.gameDelivered(order);
 
         assertEquals("processing", detail.getStatus());
-        assertEquals(1, inventory.getStock());
+        assertEquals(1L, inventory.getStock());
         assertNotNull(order.getGameDeliveredAt());
         assertNull(order.getLastErrorCode());
         assertNull(order.getLastErrorMessage());
         verify(detailService).updateById(detail);
         verify(inventoryService, never()).updateById(inventory);
         verify(changeLogService, never()).logStockOut(
-                inventory, 3, "auto_trade:order=42", "system");
+                inventory, 3L, "auto_trade:order=42", "system");
     }
 }

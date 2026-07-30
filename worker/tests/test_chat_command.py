@@ -88,8 +88,8 @@ class ChatCommandTest(unittest.TestCase):
             async def goto(self, url, **_kwargs):
                 events.append(f"goto:{url}")
 
-            async def wait_for_timeout(self, _milliseconds):
-                return None
+            async def wait_for_timeout(self, milliseconds):
+                events.append(f"wait:{milliseconds}")
 
             def locator(self, selector):
                 return FakeLocator(selector)
@@ -151,6 +151,7 @@ class ChatCommandTest(unittest.TestCase):
             "type:second",
             "click:#send",
         ], relevant)
+        self.assertLess(events.index("wait:10000"), events.index("close"))
         self.assertEqual(["close", "untrack", "end"], events[-3:])
 
     def test_sender_rejects_images_without_a_file_selector(self):
@@ -207,8 +208,8 @@ class ChatCommandTest(unittest.TestCase):
             async def goto(self, url, **_kwargs):
                 events.append(f"goto:{self.name}:{url}")
 
-            async def wait_for_timeout(self, _milliseconds):
-                return None
+            async def wait_for_timeout(self, milliseconds):
+                events.append(f"wait:{self.name}:{milliseconds}")
 
             def locator(self, selector):
                 return FakeLocator(selector)
@@ -270,6 +271,10 @@ class ChatCommandTest(unittest.TestCase):
         self.assertTrue(result["chat_sent"])
         self.assertTrue(result["chat_closed"])
         self.assertTrue(result["delivery_confirmed"])
+        self.assertLess(
+            events.index("wait:chat:10000"),
+            events.index("close:chat"),
+        )
         self.assertLess(
             events.index("close:chat"),
             events.index("goto:detail:https://www.itemmania.com/order/42"),

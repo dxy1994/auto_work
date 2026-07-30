@@ -169,7 +169,7 @@ public class GameRegionInventoryController {
     public Map<String, Object> stockIn(@RequestBody Map<String, Object> payload) {
         Integer inventoryId = toInt(payload.get("inventory_id"));
         if (inventoryId == null) throw ApiException.badRequest("inventory_id 不能为空");
-        Integer quantity = toInt(payload.get("quantity"));
+        Long quantity = toLong(payload.get("quantity"));
         if (quantity == null || quantity <= 0) throw ApiException.badRequest("入库数量必须大于 0");
         BigDecimal unitPrice = toBigDecimal(payload.get("unit_price"));
         if (unitPrice == null || unitPrice.signum() < 0) throw ApiException.badRequest("入库单价不能为空且不能为负数");
@@ -178,11 +178,16 @@ public class GameRegionInventoryController {
         if (inv == null) throw ApiException.notFound("库存记录不存在");
 
         // 记录旧值
-        int oldStock = inv.getStock();
+        long oldStock = inv.getStock() != null ? inv.getStock() : 0L;
         BigDecimal oldAvg = inv.getPurchasePrice() != null ? inv.getPurchasePrice() : BigDecimal.ZERO;
 
         // 计算新库存和加权均价
-        int newStock = oldStock + quantity;
+        long newStock;
+        try {
+            newStock = Math.addExact(oldStock, quantity);
+        } catch (ArithmeticException e) {
+            throw ApiException.badRequest("入库后库存数量超出 long 类型范围");
+        }
         BigDecimal totalOldCost = oldAvg.multiply(BigDecimal.valueOf(oldStock));
         BigDecimal totalNewCost = unitPrice.multiply(BigDecimal.valueOf(quantity));
         BigDecimal newAvg = totalOldCost.add(totalNewCost)
@@ -205,7 +210,7 @@ public class GameRegionInventoryController {
     public Map<String, Object> stockOut(@RequestBody Map<String, Object> payload) {
         Integer inventoryId = toInt(payload.get("inventory_id"));
         if (inventoryId == null) throw ApiException.badRequest("inventory_id 不能为空");
-        Integer quantity = toInt(payload.get("quantity"));
+        Long quantity = toLong(payload.get("quantity"));
         if (quantity == null || quantity <= 0) throw ApiException.badRequest("出库数量必须大于 0");
         String reason = payload.get("reason") instanceof String s && !s.isBlank() ? s.trim() : null;
         if (reason == null) throw ApiException.badRequest("出库原因不能为空");
@@ -216,7 +221,7 @@ public class GameRegionInventoryController {
             throw ApiException.badRequest("库存不足，当前库存: " + inv.getStock() + "，出库数量: " + quantity);
         }
 
-        int newStock = inv.getStock() - quantity;
+        long newStock = inv.getStock() - quantity;
         inv.setStock(newStock);
         // 出库均价不变
         inventoryService.updateById(inv);
@@ -311,6 +316,27 @@ public class GameRegionInventoryController {
                 return Integer.parseInt(s.trim());
             } catch (NumberFormatException e) {
                 throw ApiException.badRequest("无效的数字: " + s);
+            }
+        }
+        throw ApiException.badRequest("无效的数字类型");
+    }
+
+    private Long toLong(Object value) {
+        if (value == null) return null;
+        if (value instanceof Boolean) return null;
+        if (value instanceof Number n) {
+            try {
+                return new BigDecimal(n.toString()).longValueExact();
+            } catch (ArithmeticException | NumberFormatException e) {
+                throw ApiException.badRequest("无效的长整数: " + value);
+            }
+        }
+        if (value instanceof String s) {
+            if (s.isBlank()) return null;
+            try {
+                return Long.parseLong(s.trim());
+            } catch (NumberFormatException e) {
+                throw ApiException.badRequest("无效的长整数: " + s);
             }
         }
         throw ApiException.badRequest("无效的数字类型");

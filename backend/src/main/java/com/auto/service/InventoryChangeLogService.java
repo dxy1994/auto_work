@@ -13,11 +13,11 @@ public interface InventoryChangeLogService extends IService<InventoryChangeLog> 
     List<InventoryChangeLog> findByInventoryId(Integer inventoryId);
 
     /** 记录入库日志。 */
-    InventoryChangeLog logStockIn(GameRegionInventory inv, int quantity, BigDecimal unitPrice,
+    InventoryChangeLog logStockIn(GameRegionInventory inv, long quantity, BigDecimal unitPrice,
                                   BigDecimal avgBefore, BigDecimal avgAfter, String operator);
 
     /** 记录出库日志（reason 必填）。 */
-    InventoryChangeLog logStockOut(GameRegionInventory inv, int quantity, String reason, String operator);
+    InventoryChangeLog logStockOut(GameRegionInventory inv, long quantity, String reason, String operator);
 
     /** 记录风控参数变更日志。 */
     InventoryChangeLog logFluctuationUpdate(GameRegionInventory inv, String field, String oldVal,

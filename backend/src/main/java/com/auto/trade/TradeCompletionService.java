@@ -60,7 +60,7 @@ public class TradeCompletionService {
             detailService.updateById(detail);
 
             Integer itemId = detail.getItemId();
-            int quantity = detail.getQuantity() != null ? detail.getQuantity() : 0;
+            long quantity = detail.getQuantity() != null ? detail.getQuantity().longValue() : 0L;
             if (itemId == null || quantity <= 0) {
                 reconciliationErrors.add("明细" + detail.getId() + "缺少有效物品或数量");
                 continue;
