@@ -20,9 +20,38 @@
       </el-table-column>
       <el-table-column prop="label" label="账号标签" min-width="120" />
       <el-table-column prop="username" label="用户名" min-width="150" />
-      <el-table-column prop="password_display" label="密码" width="100">
-        <template #default>
-          <span style="color:#909399">******</span>
+      <el-table-column label="密码" min-width="210">
+        <template #default="{ row }">
+          <div class="password-cell">
+            <span
+              class="password-value"
+              :class="{ masked: !hasRevealedPassword(row.id) }"
+              :title="hasRevealedPassword(row.id) ? revealedPasswords[row.id] : '密码已隐藏'"
+            >
+              {{ hasRevealedPassword(row.id) ? revealedPasswords[row.id] : '••••••••' }}
+            </span>
+            <el-button
+              link
+              type="primary"
+              :loading="passwordLoading[row.id]"
+              :title="hasRevealedPassword(row.id) ? '隐藏密码' : '查看密码'"
+              @click.stop="togglePassword(row)"
+            >
+              <el-icon>
+                <Hide v-if="hasRevealedPassword(row.id)" />
+                <View v-else />
+              </el-icon>
+            </el-button>
+            <el-button
+              link
+              type="primary"
+              :loading="passwordLoading[row.id]"
+              title="复制密码"
+              @click.stop="copyPassword(row)"
+            >
+              <el-icon><CopyDocument /></el-icon>
+            </el-button>
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="默认" width="80" align="center">
@@ -107,7 +136,10 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getAccounts, createAccount, updateAccount, deleteAccount, getAllWebsites, orderCheck, getOrderCheckStatus, cancelOrderCheck } from '../api'
+import {
+  getAccounts, getAccountPassword, createAccount, updateAccount, deleteAccount,
+  getAllWebsites, orderCheck, getOrderCheckStatus, cancelOrderCheck,
+} from '../api'
 
 const allWebsites = ref([])
 const list = ref([])
@@ -120,6 +152,8 @@ const submitting = ref(false)
 const isEdit = ref(false)
 const editId = ref(null)
 const formRef = ref(null)
+const revealedPasswords = ref({})
+const passwordLoading = reactive({})
 
 const orderCheckingId = ref(null)
 const cancellingId = ref(null)
@@ -170,11 +204,81 @@ function websiteName(id) {
 }
 
 async function fetchList() {
+  clearRevealedPasswords()
   const params = { page: page.value, page_size: pageSize }
   if (filterWebsite.value) params.website_id = filterWebsite.value
   const res = await getAccounts(params)
   list.value = res.items
   total.value = res.total
+}
+
+function hasRevealedPassword(accountId) {
+  return Object.prototype.hasOwnProperty.call(revealedPasswords.value, accountId)
+}
+
+function clearRevealedPasswords() {
+  revealedPasswords.value = {}
+}
+
+async function loadPassword(accountId) {
+  passwordLoading[accountId] = true
+  try {
+    const result = await getAccountPassword(accountId)
+    const password = String(result?.password ?? '')
+    if (!password) throw new Error('账号密码为空')
+    return password
+  } finally {
+    delete passwordLoading[accountId]
+  }
+}
+
+async function togglePassword(row) {
+  if (hasRevealedPassword(row.id)) {
+    const nextPasswords = { ...revealedPasswords.value }
+    delete nextPasswords[row.id]
+    revealedPasswords.value = nextPasswords
+    return
+  }
+  try {
+    const password = await loadPassword(row.id)
+    revealedPasswords.value = {
+      ...revealedPasswords.value,
+      [row.id]: password,
+    }
+  } catch (e) {
+    ElMessage.error('查看密码失败: ' + e.message)
+  }
+}
+
+async function writeClipboard(text) {
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    if (!document.execCommand('copy')) throw new Error('浏览器拒绝复制')
+  } finally {
+    textarea.remove()
+  }
+}
+
+async function copyPassword(row) {
+  try {
+    const password = hasRevealedPassword(row.id)
+      ? revealedPasswords.value[row.id]
+      : await loadPassword(row.id)
+    await writeClipboard(password)
+    ElMessage.success('密码已复制')
+  } catch (e) {
+    ElMessage.error('复制密码失败: ' + e.message)
+  }
 }
 
 async function fetchAllWebsites() {
@@ -281,6 +385,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  clearRevealedPasswords()
   if (statusPollTimer) {
     clearInterval(statusPollTimer)
     statusPollTimer = null
@@ -291,5 +396,20 @@ onUnmounted(() => {
 <style scoped>
 .toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; }
 .toolbar .el-button { margin-left: auto; }
+.password-cell { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.password-value {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  color: #303133;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: normal;
+  word-break: break-all;
+}
+.password-value.masked { color: #909399; letter-spacing: 2px; white-space: nowrap; }
+.password-cell .el-button { flex-shrink: 0; margin-left: 0; padding: 4px; }
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 </style>

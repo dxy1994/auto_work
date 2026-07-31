@@ -7,7 +7,9 @@ import com.auto.service.PlatformAccountService;
 import com.auto.service.CryptoService;
 import com.auto.service.GameRegionInventoryShopPriceService;
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -49,6 +51,17 @@ public class PlatformAccountController {
         PlatformAccount a = platformAccountService.getById(id);
         if (a == null) throw ApiException.notFound("账号不存在");
         return a;
+    }
+
+    /** 按需解密单个账号密码；禁止浏览器和中间缓存保存明文响应。 */
+    @GetMapping("/{id}/password")
+    public ResponseEntity<Map<String, String>> revealPassword(@PathVariable Integer id) {
+        PlatformAccount account = platformAccountService.getById(id);
+        if (account == null) throw ApiException.notFound("账号不存在");
+        String password = crypto.decrypt(account.getPassword());
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(Map.of("password", password));
     }
 
     @PostMapping

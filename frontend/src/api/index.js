@@ -46,6 +46,7 @@ export const getCategories = () => request.get('/platforms/categories')
 // ── 账号管理 ──────────────────────────────────────────────
 export const getAccounts = (params) => request.get('/platform-accounts', { params })
 export const getAccount = (id) => request.get(`/platform-accounts/${id}`)
+export const getAccountPassword = (id) => request.get(`/platform-accounts/${id}/password`)
 export const createAccount = (data) => request.post('/platform-accounts', data)
 export const updateAccount = (id, data) => request.put(`/platform-accounts/${id}`, data)
 export const deleteAccount = (id) => request.delete(`/platform-accounts/${id}`)
