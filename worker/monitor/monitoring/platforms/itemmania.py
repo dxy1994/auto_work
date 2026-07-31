@@ -11,6 +11,7 @@ import re
 import time
 from decimal import Decimal
 from typing import List, Optional
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from monitor.monitoring.base import BaseOrderMonitor
 from monitor.monitoring.extraction import OrderExtractionResult
@@ -34,6 +35,7 @@ REFRESH_RESULT_TIMEOUT_SECONDS = 15.0
 REFRESH_PAGE_MAX_ACTIONS = 30
 RELOGIN_MAX_ATTEMPTS = 3
 RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
+MAX_SALES_PRODUCT_PAGES = 1000
 
 # ── 韩文状态 → 英文映射 ──
 STATUS_MAP = {
@@ -51,6 +53,28 @@ def _parse_ko_number(text: str) -> int:
     if text.isdigit():
         return int(text)
     return int(_parse_ko_units(text))
+
+
+def _compact_text(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _parse_sales_product_row_payload(payload: dict) -> dict:
+    product_id = _compact_text(payload.get("platform_product_id"))
+    if not re.fullmatch(r"\d+", product_id):
+        raise ValueError("未提取到有效的 ItemMania 商品 ID")
+    return {
+        "platform_product_id": product_id,
+        "platform_item_type": _compact_text(
+            payload.get("platform_item_type")),
+        "game_name": _compact_text(payload.get("game_name")),
+        "region_name": _compact_text(payload.get("region_name")),
+        "title": _compact_text(payload.get("title")),
+        "quantity_text": _compact_text(payload.get("quantity_text")),
+        "price_text": _compact_text(payload.get("price_text")),
+        "platform_registered_at": _compact_text(
+            payload.get("platform_registered_at")),
+    }
 
 
 async def _read_document_time_origin(page) -> Optional[float]:
@@ -337,6 +361,12 @@ class ManiaRefreshWorker(PageWorker):
         interval = 40
 
         await self._ensure_refresh_page_ready(wait_timeout)
+        try:
+            await self._sync_sales_products(wait_timeout)
+        except Exception as e:
+            print(f"[{self._log_tag}] 初始销售商品快照同步失败: {e}")
+            if self.page_failure_requires_rebuild(e):
+                raise
         print(f"[{self._log_tag}] 刷新就绪 (间隔={interval}s)")
         actions_on_page = 0
 
@@ -350,6 +380,7 @@ class ManiaRefreshWorker(PageWorker):
                 try:
                     result = await self._do_refresh(wait_timeout)
                     self._last_refresh = datetime.datetime.now()
+                    await self._sync_sales_products(wait_timeout)
                     actions_on_page += 1
                     if result == "coupon_required":
                         message = (
@@ -369,7 +400,7 @@ class ManiaRefreshWorker(PageWorker):
                         await self._ensure_refresh_page_ready(wait_timeout)
                         actions_on_page = 0
                 except Exception as e:
-                    print(f"[{self._log_tag}] 刷新异常: {e}")
+                    print(f"[{self._log_tag}] 刷新或销售商品快照同步异常: {e}")
                     if self.page_failure_requires_rebuild(e):
                         raise RuntimeError(
                             "上架页已不可用，需要重建标签"
@@ -428,6 +459,155 @@ class ManiaRefreshWorker(PageWorker):
         else:
             print(f"[{self._log_tag}] 无可刷新的商品")
         return "nothing_to_refresh"
+
+    async def _sync_sales_products(self, timeout: int) -> dict:
+        first = await self._crawl_sales_products_once(timeout)
+        second = await self._crawl_sales_products_once(timeout)
+        if first != second:
+            raise RuntimeError(
+                "ItemMania 两次商品列表快照不一致，"
+                "停止同步以避免误删")
+
+        products = list(first.values())
+        result = await asyncio.to_thread(
+            self._monitor.reporter.sync_sales_products_snapshot,
+            self._monitor.account_id,
+            "itemmania",
+            products,
+        )
+        if not result.get("success"):
+            raise RuntimeError(
+                result.get("error") or "总控未确认销售商品快照")
+        print(
+            f"[{self._log_tag}] 销售商品快照已同步: "
+            f"total={result.get('received_count', len(products))}, "
+            f"inserted={result.get('inserted_count', 0)}, "
+            f"updated={result.get('updated_count', 0)}, "
+            f"unchanged={result.get('unchanged_count', 0)}, "
+            f"deleted={result.get('deleted_count', 0)}"
+        )
+        return result
+
+    async def _crawl_sales_products_once(
+            self, timeout: int) -> dict:
+        await self._goto_refresh_page(
+            SELL_REGIST_URL,
+            timeout,
+            reason="销售商品快照-返回第一页",
+        )
+        products = {}
+        visited_urls = set()
+
+        for page_index in range(1, MAX_SALES_PRODUCT_PAGES + 1):
+            current_url = self.page.url
+            if current_url in visited_urls:
+                raise RuntimeError(
+                    f"ItemMania 商品分页出现循环: {current_url}")
+            visited_urls.add(current_url)
+
+            page_products = await self._extract_sales_products_page()
+            for product in page_products:
+                product_id = product["platform_product_id"]
+                if product_id in products:
+                    raise RuntimeError(
+                        f"ItemMania 快照出现重复商品 ID: {product_id}")
+                products[product_id] = product
+
+            next_url = await self._next_sales_product_page_url()
+            if not next_url:
+                return dict(sorted(products.items()))
+            await self._goto_refresh_page(
+                next_url,
+                timeout,
+                reason=f"销售商品快照-第{page_index + 1}页",
+            )
+
+        raise RuntimeError(
+            f"ItemMania 商品分页超过 {MAX_SALES_PRODUCT_PAGES} 页")
+
+    async def _next_sales_product_page_url(self) -> str:
+        next_link = self.page.locator(".cpnt.next a").first
+        if await next_link.count() > 0:
+            href = await next_link.get_attribute("href") or ""
+            if href:
+                return urljoin(self.page.url, href)
+
+        hrefs = await self.page.locator(
+            'a[href*="page="]').evaluate_all("""
+            elements => elements.map(
+                element => element.getAttribute('href') || ''
+            )
+        """)
+        current_page = int(parse_qs(
+            urlparse(self.page.url).query).get("page", ["1"])[0] or "1")
+        candidates = []
+        for href in hrefs:
+            match = re.search(r"[?&]page=(\d+)(?:&|$)", href)
+            if match and int(match.group(1)) > current_page:
+                candidates.append((int(match.group(1)), href))
+        if not candidates:
+            return ""
+        _, href = min(candidates)
+        return urljoin(self.page.url, href)
+
+    async def _extract_sales_products_page(self) -> List[dict]:
+        snapshot = await self.page.locator(
+            REFRESH_ROW_SELECTOR).evaluate_all("""
+            rows => ({
+                total_rows: rows.length,
+                empty_rows: rows.filter(
+                    row => row.querySelector('.empty_item')
+                ).length,
+                products: rows
+                    .filter(row => !row.querySelector('.empty_item'))
+                    .map(row => {
+                    const cells = Array.from(row.cells || []);
+                    return {
+                        platform_product_id: (
+                            row.querySelector(
+                                'input[name="check[]"]'
+                            )?.value || ''
+                        ),
+                        game_name: (
+                            cells[0]?.querySelector('strong')
+                                ?.innerText || ''
+                        ),
+                        region_name: (
+                            cells[0]?.querySelector('.f_gray')
+                                ?.innerText || ''
+                        ),
+                        platform_item_type:
+                            cells[1]?.innerText || '',
+                        quantity_text: (
+                            cells[2]?.querySelector(
+                                '.sub_trade_title'
+                            )?.innerText || ''
+                        ),
+                        title: (
+                            cells[2]?.querySelector('.trade_title')
+                                ?.innerText || ''
+                        ),
+                        price_text: cells[3]?.innerText || '',
+                        platform_registered_at: (
+                            cells[4]?.querySelector('p.f_gray')
+                                ?.innerText || ''
+                        )
+                    };
+                    })
+            })
+        """)
+        payloads = snapshot.get("products", [])
+        if not payloads and (
+                snapshot.get("total_rows", 0) == 0
+                or snapshot.get("empty_rows", 0)
+                != snapshot.get("total_rows", 0)):
+            raise RuntimeError(
+                "ItemMania 上架表格没有商品行或明确空状态，"
+                "停止同步以避免误删")
+        return [
+            _parse_sales_product_row_payload(payload)
+            for payload in payloads
+        ]
 
     async def _wait_refresh_result(
             self, previous_origin: Optional[float], timeout: int) -> str:

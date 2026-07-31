@@ -52,6 +52,10 @@ export const updateAccount = (id, data) => request.put(`/platform-accounts/${id}
 export const deleteAccount = (id) => request.delete(`/platform-accounts/${id}`)
 export const getAllAccounts = () => request.get('/platform-accounts/all')
 
+// ── 平台当前在售商品 ──────────────────────────────────────
+export const getPlatformSalesProducts = (params) =>
+  request.get('/platform-sales-products', { params })
+
 // ── 订单查询与提醒 ────────────────────────────────────────
 export const orderCheck = (accountId) =>
   request.post('/automation/order-check', null, {

@@ -55,6 +55,12 @@ const routes = [
     meta: { title: '订单管理' },
   },
   {
+    path: '/platform-sales-products',
+    name: 'PlatformSalesProductList',
+    component: () => import('../views/PlatformSalesProductList.vue'),
+    meta: { title: '平台在售商品' },
+  },
+  {
     path: '/mk-devices',
     name: 'MouseKeyboardDeviceList',
     component: () => import('../views/MouseKeyboardDeviceList.vue'),

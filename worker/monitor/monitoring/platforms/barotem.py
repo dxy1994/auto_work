@@ -1,121 +1,1096 @@
 """
-Barotem 订单监控子类（Async 多页面并行架构）。
+Barotem 订单监控（Async 多页面并行架构）。
 
-特性：
-  - 通过侧栏 DOM 检测订单数量
-  - 登录后弹窗检测
-  - 单 Worker 模式
+Worker 分工：
+  - BarotemOrderWorker：固定在销售中页面，刷新、提取并上报订单
+  - BarotemRefreshWorker：固定在上架列表，轮换商品分类并执行「끌어올리기」
 """
+
 import asyncio
+import datetime
 import re
-from typing import List, Tuple
+import time
+from decimal import Decimal
+from typing import List, Optional
+from urllib.parse import urlencode, urlparse, parse_qs
 
-from monitor.monitoring.base import BaseOrderMonitor
-from monitor.monitoring.worker import PageWorker
 from monitor.browser.audio import play_alert_audio_async
+from monitor.monitoring.base import BaseOrderMonitor
+from monitor.monitoring.extraction import OrderExtractionResult
+from monitor.monitoring.worker import PageWorker
+from monitor.orders.adapters import adapter_for, parse_korean_amount
 
 
-class BarotemDetectionWorker(PageWorker):
-    """Barotem 订单检测 Worker。"""
+SELL_LIST_URL = "https://www.barotem.com/mypage/sellingproduct/sell"
+ORDER_LIST_URL = "https://www.barotem.com/mypage/sellview/4"
+
+ORDER_CONTENT_SELECTOR = ".product_background .product_contents"
+ORDER_CARD_SELECTOR = ".product_contents .product_wrap"
+REFRESH_CONTENT_SELECTOR = ".product_background .product_contents"
+REFRESH_CARD_SELECTOR = ".product_contents .product_wrap"
+REFRESH_BUTTON_SELECTOR = '[onclick^="reregister("]'
+REFRESH_CONFIRM_SELECTOR = ".common_alert_check"
+
+PRODUCT_TYPES = ("money", "item", "id", "etc", "gift")
+PRODUCT_PAGE_SIZE = 500
+MIN_COMMIT_TIMEOUT_MS = 15000
+MIN_READY_TIMEOUT_MS = 20000
+COMMIT_GRACE_SECONDS = 3.0
+REFRESH_RESULT_TIMEOUT_SECONDS = 15.0
+REFRESH_PAGE_MAX_ACTIONS = 30
+RELOGIN_MAX_ATTEMPTS = 3
+RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
+
+
+def _compact_text(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _parse_buyer_character(onclick: str) -> str:
+    """从 dealinfo(userid, character, order, ...) 中读取买家角色名。"""
+    match = re.search(r"\bdealinfo\s*\((?P<args>.*)\)\s*;?\s*$",
+                      str(onclick or ""), re.DOTALL)
+    if not match:
+        return ""
+    quoted = re.findall(r"""(['"])(.*?)\1""", match.group("args"),
+                        re.DOTALL)
+    return _compact_text(quoted[1][1]) if len(quoted) >= 2 else ""
+
+
+def _parse_order_card_payload(payload: dict) -> Optional[dict]:
+    """把浏览器一次性读取的 Barotem 订单卡片转成平台原始订单。"""
+    order_no = _compact_text(payload.get("order_no"))
+    if not re.fullmatch(r"\d+-\d+", order_no):
+        raise ValueError("未提取到 Barotem 完整交易号")
+
+    game_name = _compact_text(payload.get("game_name"))
+    server = _compact_text(payload.get("server")).rstrip("/").strip()
+    title = _compact_text(payload.get("title"))
+    amount = _compact_text(payload.get("amount"))
+    buyer = _parse_buyer_character(payload.get("buyer_onclick", ""))
+    if not game_name or not server:
+        raise ValueError("未提取到游戏或区服")
+    if not title:
+        raise ValueError("未提取到商品标题")
+    if not amount:
+        raise ValueError("未提取到交易数量")
+    if not buyer:
+        raise ValueError("未提取到买家角色名")
+
+    mode = _compact_text(payload.get("mode"))
+    if mode == "4":
+        status = "trading"
+    elif mode == "5":
+        status = "completed"
+    else:
+        status = _compact_text(payload.get("status")) or "trading"
+
+    return {
+        "order_no": order_no,
+        "deal_id": order_no,
+        "game_name": game_name,
+        "server_code": server,
+        "item_type": _compact_text(payload.get("item_type")) or "unknown",
+        "item_name": title,
+        "amount": amount,
+        "price": _compact_text(payload.get("price")),
+        "buyer_character": buyer,
+        "platform_order_time": _compact_text(payload.get("order_time")),
+        "status": status,
+        "state": status,
+    }
+
+
+def _parse_refresh_product_id(onclick: str) -> str:
+    match = re.search(r"\breregister\s*\(\s*['\"]?(\d+)",
+                      str(onclick or ""))
+    return match.group(1) if match else ""
+
+
+def _parse_sales_product_card_payload(
+        payload: dict, item_type: str) -> dict:
+    """把 Barotem 在售商品卡片转成快照协议字段。"""
+    product_id = _compact_text(payload.get("platform_product_id"))
+    if not re.fullmatch(r"\d+", product_id):
+        raise ValueError("未提取到有效的 Barotem 商品 ID")
+    return {
+        "platform_product_id": product_id,
+        "platform_item_type": _compact_text(item_type),
+        "game_name": _compact_text(payload.get("game_name")),
+        "region_name": _compact_text(
+            payload.get("region_name")).rstrip("/").strip(),
+        "title": _compact_text(payload.get("title")),
+        "quantity_text": _compact_text(payload.get("quantity_text")),
+        "price_text": _compact_text(payload.get("price_text")),
+        "platform_registered_at": _compact_text(
+            payload.get("platform_registered_at")),
+    }
+
+
+def _product_list_url(item_type: str, page: int = 1) -> str:
+    query = urlencode({
+        "mode": "0",
+        "itemtype": item_type,
+        "page": str(page),
+        "orderby": "reg_date",
+        "limit": str(PRODUCT_PAGE_SIZE),
+    })
+    return f"{SELL_LIST_URL}?{query}"
+
+
+def _order_list_url(item_type: str) -> str:
+    query = urlencode({
+        "mode": "4",
+        "itemtype": item_type,
+        "page": "1",
+        "orderby": "reg_date",
+        "limit": "500",
+    })
+    return f"{ORDER_LIST_URL}?{query}"
+
+
+async def _read_document_time_origin(page) -> Optional[float]:
+    try:
+        return float(await page.evaluate("performance.timeOrigin"))
+    except Exception:
+        return None
+
+
+async def _wait_for_document_change(
+        page, previous_origin: Optional[float]) -> bool:
+    if previous_origin is None:
+        return False
+    deadline = asyncio.get_running_loop().time() + COMMIT_GRACE_SECONDS
+    while asyncio.get_running_loop().time() < deadline:
+        current_origin = await _read_document_time_origin(page)
+        if current_origin is not None and current_origin != previous_origin:
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+class _BarotemWorker(PageWorker):
+    """Barotem 两个 Worker 共用的导航和登录恢复逻辑。"""
+
+    def __init__(self, session, stop_event, monitor: 'BarotemMonitor',
+                 name: str):
+        super().__init__(session, stop_event, name=name)
+        self._monitor = monitor
+        self._relogin_failures = 0
+        self._next_relogin_at = 0.0
+        self._relogin_disabled = False
+        self._last_relogin_wait_log_at = 0.0
+
+    async def _login_required(self) -> bool:
+        if self._session.is_login_page(self.page.url):
+            return True
+        return await self._monitor.post_login_check(self.page)
+
+    async def _recover_login_if_needed(
+            self, target_url: str, ready_selector: str,
+            wait_timeout: int, reason: str) -> Optional[bool]:
+        """None=无需恢复，True=已恢复，False=退避或等待人工处理。"""
+        if not await self._login_required():
+            if self._relogin_failures or self._relogin_disabled:
+                print(f"[{self._log_tag}] 已恢复业务页面，清除重新登录退避状态")
+                self._relogin_failures = 0
+                self._next_relogin_at = 0.0
+                self._relogin_disabled = False
+            return None
+
+        now = time.monotonic()
+        if self._relogin_disabled:
+            if now - self._last_relogin_wait_log_at >= 60:
+                print(f"[{self._log_tag}] 自动重新登录已暂停，等待人工登录或重启监控")
+                self._last_relogin_wait_log_at = now
+            return False
+        if now < self._next_relogin_at:
+            if now - self._last_relogin_wait_log_at >= 15:
+                remaining = max(1, int(self._next_relogin_at - now))
+                print(f"[{self._log_tag}] 自动重新登录退避中，"
+                      f"{remaining} 秒后再试")
+                self._last_relogin_wait_log_at = now
+            return False
+
+        print(f"[{self._log_tag}] 检测到 Barotem 登录失效"
+              f"（{reason}），当前页面={self.page.url}")
+        result = await self._session.relogin(self.page)
+        if result.get("status") != "success":
+            self._relogin_failures += 1
+            message = result.get("message", "未知原因")
+            if self._relogin_failures >= RELOGIN_MAX_ATTEMPTS:
+                self._relogin_disabled = True
+                print(f"[{self._log_tag}] Barotem 自动重新登录连续失败 "
+                      f"{self._relogin_failures} 次，已暂停: {message}")
+                await play_alert_audio_async(
+                    text=(f"barotem账号{self._session.account_id}"
+                          "连续登录失败，已暂停自动登录，请检查凭证")
+                )
+                return False
+
+            backoff_index = min(
+                self._relogin_failures - 1,
+                len(RELOGIN_BACKOFF_SECONDS) - 1,
+            )
+            backoff_seconds = RELOGIN_BACKOFF_SECONDS[backoff_index]
+            self._next_relogin_at = time.monotonic() + backoff_seconds
+            self._last_relogin_wait_log_at = 0.0
+            print(f"[{self._log_tag}] Barotem 自动重新登录失败"
+                  f"（第 {self._relogin_failures}/{RELOGIN_MAX_ATTEMPTS} 次）: "
+                  f"{message}；{int(backoff_seconds)} 秒后再试")
+            return False
+
+        self._relogin_failures = 0
+        self._next_relogin_at = 0.0
+        self._relogin_disabled = False
+        ready = await self._goto_business_page(
+            target_url, ready_selector, wait_timeout,
+            reason="重新登录后返回业务页",
+        )
+        if not ready:
+            raise RuntimeError(
+                "Barotem 重新登录成功，但业务页仍要求登录")
+        print(f"[{self._log_tag}] Barotem 自动重新登录并恢复业务页成功")
+        return True
+
+    async def _wait_business_area(
+            self, selector: str, wait_timeout: int) -> bool:
+        ready_timeout = max(wait_timeout, MIN_READY_TIMEOUT_MS)
+        try:
+            await self.page.wait_for_selector(
+                selector,
+                state="attached",
+                timeout=ready_timeout,
+            )
+            return True
+        except Exception as exc:
+            print(f"[{self._log_tag}] 等待业务区域超时"
+                  f"（{ready_timeout}ms, selector={selector}）: {exc}")
+            return False
+
+    async def _goto_business_page(
+            self, url: str, ready_selector: str,
+            wait_timeout: int, reason: str):
+        print(f"[{self._log_tag}] [页面导航] {reason}: {url}")
+        previous_origin = await _read_document_time_origin(self.page)
+        committed = False
+        try:
+            await self.page.goto(
+                url,
+                wait_until="commit",
+                timeout=max(wait_timeout, MIN_COMMIT_TIMEOUT_MS),
+            )
+            committed = True
+        except Exception as exc:
+            if self.page.is_closed():
+                raise
+            print(f"[{self._log_tag}] [页面导航] 提交阶段异常: {exc}；"
+                  "短暂复核新文档是否已经提交")
+            committed = await _wait_for_document_change(
+                self.page, previous_origin)
+
+        if committed and await self._login_required():
+            return False
+        if committed and await self._wait_business_area(
+                ready_selector, wait_timeout):
+            return True
+        raise RuntimeError(f"Barotem 页面导航后关键区域未就绪: {url}")
+
+    async def _reload_business_page(
+            self, target_url: str, ready_selector: str,
+            wait_timeout: int, reason: str):
+        previous_origin = await _read_document_time_origin(self.page)
+        committed = False
+        navigation_error = None
+        try:
+            await self.page.reload(
+                wait_until="commit",
+                timeout=max(wait_timeout, MIN_COMMIT_TIMEOUT_MS),
+            )
+            committed = True
+        except Exception as exc:
+            if self.page.is_closed():
+                raise
+            navigation_error = exc
+            print(f"[{self._log_tag}] [{reason}] reload 提交阶段异常: "
+                  f"{exc}；复核新文档是否已经提交")
+            committed = await _wait_for_document_change(
+                self.page, previous_origin)
+
+        if committed and await self._login_required():
+            return False
+        if committed and await self._wait_business_area(
+                ready_selector, wait_timeout):
+            return True
+
+        print(f"[{self._log_tag}] [{reason}] 无法确认最新页面，执行一次受控导航")
+        try:
+            return await self._goto_business_page(
+                target_url, ready_selector, wait_timeout,
+                reason=f"{reason}-受控恢复",
+            )
+        except Exception as exc:
+            if navigation_error is not None:
+                raise RuntimeError(
+                    f"Barotem {reason}和受控恢复均失败"
+                ) from navigation_error
+            raise exc
+
+
+class BarotemOrderWorker(_BarotemWorker):
+    """订单 Worker：固定在 판매중 页面，定时刷新并提取订单。"""
 
     def __init__(self, session, stop_event, monitor: 'BarotemMonitor'):
-        super().__init__(session, stop_event, name="BarotemDetect")
-        self._monitor = monitor
+        super().__init__(
+            session, stop_event, monitor, name="BarotemOrder")
 
     async def run(self):
         cfg = self._monitor.get_order_cfg()
-        my_page_url = cfg.get("my_page_url", "https://www.barotem.com/mypage")
-        wait_timeout = cfg.get("wait_timeout", 10000)
         refresh_interval = cfg.get("refresh_interval", 3)
-
-        await self._navigate(my_page_url, "检测页")
-        await self._wait_page_stable()
-
-        print(f"[{self._log_tag}] 检测循环开始 (interval={refresh_interval}s)")
+        wait_timeout = cfg.get("wait_timeout", 10000)
+        print(f"[{self._log_tag}] 订单监控循环开始 "
+              f"(interval={refresh_interval}s)")
         check_round = 0
 
         while not self.stopped:
-            await self._session.chat_sender_pause.wait()
             check_round += 1
             self._touch()
+            if self._page_crashed:
+                raise RuntimeError("订单页渲染进程已崩溃")
+            if not await self._ensure_order_page_ready(wait_timeout):
+                await asyncio.sleep(refresh_interval)
+                continue
             try:
-                need_relogin = await self._monitor.post_login_check(self.page)
-                if need_relogin:
-                    print(f"[{self._log_tag}] 检测到登录弹窗，复用 _do_login 重新登录")
-                    lr = await self._session._do_login()
-                    if lr["status"] != "success":
-                        raise Exception(f"重新登录失败: {lr['message']}")
-                    await self._navigate(my_page_url, "重登录后返回")
-                    await self._wait_page_stable()
-                    continue
+                reported = await self._collect_all_order_categories(
+                    wait_timeout)
+                if reported:
+                    print(f"[{self._log_tag}] 第{check_round}轮: "
+                          f"上报 {reported} 个订单")
+            except Exception as exc:
+                print(f"[{self._log_tag}] 第{check_round}轮异常: {exc}")
 
-                detected, count, alert_text = await self._detect()
-                if detected:
-                    print(f"[{self._log_tag}] "
-                          f"第{check_round}轮: {alert_text}")
-                    tag = self._monitor.tag
-                    acct = self._monitor.account_id
-                    await play_alert_audio_async(
-                        text=f"{tag}账号{acct}: {alert_text}")
-                elif check_round % 10 == 1:
-                    print(f"[{self._log_tag}] 第{check_round}轮: 无订单")
-            except Exception as e:
-                print(f"[{self._log_tag}] 第{check_round}轮异常: {e}")
-                if not self.stopped:
-                    await self._safe_reload_or_navigate(my_page_url,
-                                                        wait_timeout)
-
+            await self._reload_order_page(wait_timeout)
             await asyncio.sleep(refresh_interval)
 
-    async def _detect(self) -> Tuple[bool, int, str]:
-        """通过侧栏计数徽章检测订单。"""
-        sel = ("body > main > div.mypage_container > nav > div > "
-               "ul:nth-child(1) > li:nth-child(2) > a > span")
+    async def _collect_all_order_categories(
+            self, wait_timeout: int) -> int:
+        """按页面计数依次采集所有非空分类，避免只监控默认“账号”分类。"""
+        available_types = await self._available_order_types()
+        if not available_types:
+            return await self._monitor._collect_and_report_orders(self.page)
+
+        reported = 0
+        for item_type in available_types:
+            query = parse_qs(urlparse(self.page.url).query)
+            current_type = query.get("itemtype", [""])[0]
+            current_limit = query.get("limit", [""])[0]
+            if current_type != item_type or current_limit != "500":
+                ready = await self._goto_business_page(
+                    _order_list_url(item_type),
+                    ORDER_CONTENT_SELECTOR,
+                    wait_timeout,
+                    reason=f"采集订单分类-{item_type}",
+                )
+                recovery = await self._recover_login_if_needed(
+                    _order_list_url(item_type),
+                    ORDER_CONTENT_SELECTOR,
+                    wait_timeout,
+                    reason=f"进入订单分类-{item_type}",
+                )
+                if recovery is False:
+                    break
+                if recovery is None and not ready:
+                    raise RuntimeError(
+                        f"订单分类 {item_type} 导航后仍要求登录")
+            reported += await self._monitor._collect_and_report_orders(
+                self.page)
+        return reported
+
+    async def _available_order_types(self) -> List[str]:
+        values = await self.page.locator("[data-item]").evaluate_all("""
+            elements => elements.map(element => ({
+                itemType: element.getAttribute('data-item') || '',
+                text: (element.innerText || '').trim()
+            }))
+        """)
+        available = []
+        for value in values:
+            item_type = _compact_text(value.get("itemType"))
+            count_match = re.findall(r"\d+", str(value.get("text") or ""))
+            count = int(count_match[-1]) if count_match else 0
+            if item_type in PRODUCT_TYPES and count > 0:
+                available.append(item_type)
+        return available
+
+    async def _ensure_order_page_ready(self, wait_timeout: int) -> bool:
+        recovery = await self._recover_login_if_needed(
+            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
+            wait_timeout, reason="订单检测前",
+        )
+        if recovery is not None:
+            return recovery
+
+        if "/mypage/sellview/4" not in self.page.url:
+            ready = await self._goto_business_page(
+                ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
+                wait_timeout, reason="初始化订单页",
+            )
+            recovery = await self._recover_login_if_needed(
+                ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
+                wait_timeout, reason="进入订单页时",
+            )
+            if recovery is not None:
+                return recovery
+            if not ready:
+                raise RuntimeError("订单页导航后仍要求登录")
+
+        if await self._wait_business_area(
+                ORDER_CONTENT_SELECTOR, wait_timeout):
+            return True
+        ready = await self._goto_business_page(
+            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
+            wait_timeout, reason="恢复订单页",
+        )
+        if ready:
+            return True
+        recovery = await self._recover_login_if_needed(
+            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
+            wait_timeout, reason="恢复订单页时",
+        )
+        return bool(recovery)
+
+    async def _reload_order_page(self, wait_timeout: int):
+        recovery = await self._recover_login_if_needed(
+            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
+            wait_timeout, reason="刷新订单页前",
+        )
+        if recovery is not None:
+            return
+        ready = await self._reload_business_page(
+            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
+            wait_timeout, reason="订单页刷新",
+        )
+        recovery = await self._recover_login_if_needed(
+            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
+            wait_timeout, reason="刷新订单页后",
+        )
+        if recovery is None and not ready:
+            raise RuntimeError("订单页刷新后仍要求登录")
+
+
+class BarotemRefreshWorker(_BarotemWorker):
+    """商品刷新 Worker：轮换有商品的分类并点击「끌어올리기」。"""
+
+    def __init__(self, session, stop_event, monitor: 'BarotemMonitor'):
+        super().__init__(
+            session, stop_event, monitor, name="BarotemRefresh")
+        self._last_refresh = datetime.datetime.now()
+        self._product_type_index = 0
+
+    async def run(self):
+        wait_timeout = self._monitor.get_order_cfg().get(
+            "wait_timeout", 10000)
+        interval = 40
+        await self._ensure_refresh_page_ready(wait_timeout)
         try:
-            await self.page.wait_for_selector(sel, timeout=10000)
-        except Exception:
-            return (False, 0, "")
-        text = await self.page.text_content(sel) or "0"
-        nums = re.findall(r'\d+', text)
-        count = int(nums[0]) if nums else 0
-        if count > 0:
-            print(f"[{self._log_tag}] 检测到订单: count={count}")
-        return (count > 0, count, f"检测到 {count} 个订单！")
+            await self._sync_sales_products(wait_timeout)
+        except Exception as exc:
+            print(f"[{self._log_tag}] 初始销售商品快照同步失败: {exc}")
+            if self.page_failure_requires_rebuild(exc):
+                raise
+        print(f"[{self._log_tag}] 商品顶帖就绪 (间隔={interval}s)")
+        actions_on_page = 0
+
+        while not self.stopped:
+            self._touch()
+            if self._page_crashed:
+                raise RuntimeError("上架页渲染进程已崩溃")
+            elapsed = (
+                datetime.datetime.now() - self._last_refresh
+            ).total_seconds()
+            if elapsed >= interval:
+                try:
+                    result = await self._do_refresh(wait_timeout)
+                    self._last_refresh = datetime.datetime.now()
+                    await self._sync_sales_products(wait_timeout)
+                    if result == "refreshed":
+                        actions_on_page += 1
+                    if actions_on_page >= REFRESH_PAGE_MAX_ACTIONS:
+                        await self.recycle_page(
+                            f"上架页已执行 {actions_on_page} 次顶帖，"
+                            "主动释放页面内存",
+                        )
+                        await self._ensure_refresh_page_ready(wait_timeout)
+                        actions_on_page = 0
+                except Exception as exc:
+                    print(f"[{self._log_tag}] 商品顶帖或快照同步异常: {exc}")
+                    if self.page_failure_requires_rebuild(exc):
+                        raise RuntimeError(
+                            "上架页已不可用，需要重建标签"
+                        ) from exc
+            await asyncio.sleep(5)
+
+    async def _do_refresh(self, timeout: int) -> str:
+        await self._prepare_refresh_action_page(timeout)
+        available_types = await self._available_product_types()
+        if not available_types:
+            print(f"[{self._log_tag}] 当前没有可顶帖的上架商品")
+            return "nothing_to_refresh"
+
+        item_type = available_types[
+            self._product_type_index % len(available_types)]
+        self._product_type_index += 1
+        target_url = _product_list_url(item_type)
+        query = parse_qs(urlparse(self.page.url).query)
+        current_type = query.get("itemtype", [""])[0]
+        current_limit = query.get("limit", [""])[0]
+        if current_type != item_type or current_limit != "500":
+            ready = await self._goto_business_page(
+                target_url, REFRESH_CONTENT_SELECTOR, timeout,
+                reason=f"切换商品分类-{item_type}",
+            )
+            if not ready:
+                recovery = await self._recover_login_if_needed(
+                    target_url, REFRESH_CONTENT_SELECTOR,
+                    timeout, reason=f"切换商品分类-{item_type}",
+                )
+                if not recovery:
+                    raise RuntimeError("切换商品分类时登录恢复失败")
+
+        cards = self.page.locator(REFRESH_CARD_SELECTOR)
+        card_count = await cards.count()
+        if card_count == 0:
+            print(f"[{self._log_tag}] 分类 {item_type} 当前无上架商品")
+            return "nothing_to_refresh"
+
+        target_card = cards.nth(card_count - 1)
+        button = target_card.locator(REFRESH_BUTTON_SELECTOR).first
+        if await button.count() == 0:
+            print(f"[{self._log_tag}] 最旧商品没有 끌어올리기 按钮")
+            return "nothing_to_refresh"
+        onclick = await button.get_attribute("onclick") or ""
+        product_id = _parse_refresh_product_id(onclick)
+        if not product_id:
+            raise RuntimeError("顶帖按钮缺少有效商品编号")
+
+        print(f"[{self._log_tag}] 顶帖商品: "
+              f"type={item_type}, product_id={product_id}")
+        await button.click(timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
+        confirm = self.page.locator(
+            f"{REFRESH_CONFIRM_SELECTOR}:visible").last
+        await confirm.wait_for(
+            state="visible",
+            timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS),
+        )
+        await confirm.click(timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
+        return await self._wait_refresh_result(product_id, timeout)
+
+    async def _wait_refresh_result(
+            self, product_id: str, timeout: int) -> str:
+        deadline = time.monotonic() + max(
+            REFRESH_RESULT_TIMEOUT_SECONDS,
+            max(timeout, MIN_COMMIT_TIMEOUT_MS) / 1000,
+        )
+        success_confirm_clicked = False
+        while time.monotonic() < deadline:
+            if await self._login_required():
+                raise RuntimeError("商品顶帖后登录失效")
+
+            confirm = self.page.locator(
+                f"{REFRESH_CONFIRM_SELECTOR}:visible").last
+            if not success_confirm_clicked and await confirm.count() > 0:
+                try:
+                    title = self.page.locator(
+                        "#commonAlert .common_alert_wrap h2").last
+                    title_text = (
+                        await title.inner_text()
+                        if await title.count() > 0 else ""
+                    )
+                    # 首个弹窗是“是否顶帖”的确认。只有 AJAX 返回的第二个
+                    # 结果弹窗才能再次点击，避免网络较慢时重复提交。
+                    is_result_dialog = (
+                        "해당 물품에 끌어올리기를" not in title_text
+                    )
+                    if is_result_dialog and await confirm.is_visible():
+                        await confirm.click(timeout=2000)
+                        success_confirm_clicked = True
+                except Exception:
+                    pass
+
+            card = self.page.locator(
+                f'#product_title_input_{product_id}')
+            if success_confirm_clicked and await card.count() > 0:
+                print(f"[{self._log_tag}] 商品顶帖提交成功: {product_id}")
+                return "refreshed"
+            if self.page.is_closed():
+                raise RuntimeError("商品顶帖结果检查时页面已关闭")
+            await asyncio.sleep(0.25)
+
+        raise RuntimeError(
+            f"商品顶帖后未确认到有效结果: product_id={product_id}")
+
+    async def _available_product_types(self) -> List[str]:
+        counts = await self._product_category_counts()
+        return [
+            item_type for item_type in PRODUCT_TYPES
+            if counts[item_type] > 0
+        ]
+
+    async def _product_category_counts(self) -> dict:
+        values = await self.page.locator("[data-item]").evaluate_all("""
+            elements => elements.map(element => ({
+                itemType: element.getAttribute('data-item') || '',
+                text: (element.innerText || '').trim()
+            }))
+        """)
+        counts = {}
+        for value in values:
+            item_type = _compact_text(value.get("itemType"))
+            count_match = re.findall(r"\d+", str(value.get("text") or ""))
+            count = int(count_match[-1]) if count_match else 0
+            if item_type in PRODUCT_TYPES:
+                counts[item_type] = count
+        missing = [value for value in PRODUCT_TYPES if value not in counts]
+        if missing:
+            raise RuntimeError(
+                f"商品分类计数不完整，停止快照同步: {missing}")
+        return counts
+
+    async def _sync_sales_products(self, timeout: int) -> dict:
+        first = await self._collect_sales_products_snapshot(timeout)
+        second = await self._collect_sales_products_snapshot(timeout)
+        first_by_id = {
+            product["platform_product_id"]: product
+            for product in first
+        }
+        second_by_id = {
+            product["platform_product_id"]: product
+            for product in second
+        }
+        if first_by_id != second_by_id:
+            raise RuntimeError(
+                "Barotem 两次商品列表快照不一致，"
+                "停止同步以避免误删")
+        products = list(second_by_id.values())
+        result = await asyncio.to_thread(
+            self._monitor.reporter.sync_sales_products_snapshot,
+            self._monitor.account_id,
+            "barotem",
+            products,
+        )
+        if not result.get("success"):
+            raise RuntimeError(
+                result.get("error") or "总控未确认销售商品快照")
+        print(
+            f"[{self._log_tag}] 销售商品快照已同步: "
+            f"total={result.get('received_count', len(products))}, "
+            f"inserted={result.get('inserted_count', 0)}, "
+            f"updated={result.get('updated_count', 0)}, "
+            f"unchanged={result.get('unchanged_count', 0)}, "
+            f"deleted={result.get('deleted_count', 0)}"
+        )
+        return result
+
+    async def _collect_sales_products_snapshot(
+            self, timeout: int) -> List[dict]:
+        """
+        抓取所有分类和分页。只有数量与页面计数完全一致时才返回，
+        从而保证后端可以安全物理删除本轮缺失的商品。
+        """
+        await self._prepare_refresh_action_page(timeout)
+        counts = await self._product_category_counts()
+        products = []
+        seen_product_ids = set()
+
+        for item_type in PRODUCT_TYPES:
+            total = counts[item_type]
+            if total == 0:
+                continue
+            page_count = (total + PRODUCT_PAGE_SIZE - 1) // PRODUCT_PAGE_SIZE
+            collected_for_type = 0
+
+            for page_number in range(1, page_count + 1):
+                target_url = _product_list_url(item_type, page_number)
+                query = parse_qs(urlparse(self.page.url).query)
+                current_type = query.get("itemtype", [""])[0]
+                current_page = query.get("page", [""])[0]
+                current_limit = query.get("limit", [""])[0]
+                if (
+                    current_type != item_type
+                    or current_page != str(page_number)
+                    or current_limit != str(PRODUCT_PAGE_SIZE)
+                ):
+                    ready = await self._goto_business_page(
+                        target_url,
+                        REFRESH_CONTENT_SELECTOR,
+                        timeout,
+                        reason=(
+                            f"抓取销售商品-{item_type}-"
+                            f"第{page_number}页"
+                        ),
+                    )
+                    if not ready:
+                        recovery = await self._recover_login_if_needed(
+                            target_url,
+                            REFRESH_CONTENT_SELECTOR,
+                            timeout,
+                            reason=(
+                                f"抓取销售商品-{item_type}-"
+                                f"第{page_number}页"
+                            ),
+                        )
+                        if not recovery:
+                            raise RuntimeError(
+                                "抓取销售商品时登录恢复失败")
+
+                page_products = await self._extract_sales_products_page(
+                    item_type)
+                expected = min(
+                    PRODUCT_PAGE_SIZE,
+                    total - collected_for_type,
+                )
+                if len(page_products) != expected:
+                    raise RuntimeError(
+                        f"商品分类 {item_type} 第 {page_number} 页"
+                        f"数量不一致: expected={expected}, "
+                        f"actual={len(page_products)}；"
+                        "停止完整快照同步以避免误删"
+                    )
+                for product in page_products:
+                    product_id = product["platform_product_id"]
+                    if product_id in seen_product_ids:
+                        raise RuntimeError(
+                            f"完整快照出现重复商品 ID: {product_id}")
+                    seen_product_ids.add(product_id)
+                    products.append(product)
+                collected_for_type += len(page_products)
+
+            if collected_for_type != total:
+                raise RuntimeError(
+                    f"商品分类 {item_type} 抓取不完整: "
+                    f"expected={total}, actual={collected_for_type}")
+
+        expected_total = sum(counts.values())
+        if len(products) != expected_total:
+            raise RuntimeError(
+                f"销售商品完整快照数量不一致: "
+                f"expected={expected_total}, actual={len(products)}")
+        return products
+
+    async def _extract_sales_products_page(
+            self, item_type: str) -> List[dict]:
+        payloads = await self.page.locator(
+            REFRESH_CARD_SELECTOR).evaluate_all("""
+            cards => cards.map(card => {
+                const heading = card.querySelector(
+                    '.product_detail_info h4'
+                );
+                const game = heading
+                    ? heading.querySelector('span')
+                    : null;
+                const region = heading
+                    ? Array.from(heading.childNodes)
+                        .filter(node => node.nodeType === 3)
+                        .map(node => node.textContent || '')
+                        .join(' ')
+                    : '';
+                const priceGroups = Array.from(
+                    card.querySelectorAll(
+                        '.product_detail_price > div'
+                    )
+                );
+                const groupValue = group => {
+                    if (!group) return '';
+                    const values = Array.from(
+                        group.querySelectorAll('h4')
+                    );
+                    return values.length
+                        ? (values[values.length - 1].innerText || '')
+                        : '';
+                };
+                const checkbox = card.querySelector(
+                    'input.product_checkbox'
+                );
+                return {
+                    platform_product_id: checkbox
+                        ? (checkbox.value || '')
+                        : '',
+                    game_name: game
+                        ? (game.innerText || '')
+                        : '',
+                    region_name: region,
+                    title: (
+                        card.querySelector(
+                            '.product_detail_info p'
+                        )?.innerText || ''
+                    ),
+                    quantity_text: groupValue(priceGroups[0]),
+                    price_text: groupValue(priceGroups[1]),
+                    platform_registered_at: (
+                        card.querySelector(
+                            '.product_title time'
+                        )?.innerText || ''
+                    )
+                };
+            })
+        """)
+        return [
+            _parse_sales_product_card_payload(payload, item_type)
+            for payload in payloads
+        ]
+
+    async def _prepare_refresh_action_page(self, timeout: int):
+        recovery = await self._recover_login_if_needed(
+            SELL_LIST_URL, REFRESH_CONTENT_SELECTOR,
+            timeout, reason="刷新上架页前",
+        )
+        if recovery is not None:
+            if not recovery:
+                raise RuntimeError("Barotem 登录恢复正在退避")
+            return
+
+        if SELL_LIST_URL not in self.page.url:
+            ready = await self._goto_business_page(
+                _product_list_url("money"),
+                REFRESH_CONTENT_SELECTOR, timeout,
+                reason="恢复上架页",
+            )
+            if not ready:
+                recovery = await self._recover_login_if_needed(
+                    _product_list_url("money"),
+                    REFRESH_CONTENT_SELECTOR,
+                    timeout, reason="恢复上架页",
+                )
+                if not recovery:
+                    raise RuntimeError("恢复上架页时登录恢复失败")
+            return
+
+        target_url = self.page.url
+        ready = await self._reload_business_page(
+            target_url, REFRESH_CONTENT_SELECTOR,
+            timeout, reason="上架页刷新",
+        )
+        if not ready:
+            recovery = await self._recover_login_if_needed(
+                target_url, REFRESH_CONTENT_SELECTOR,
+                timeout, reason="刷新上架页后",
+            )
+            if not recovery:
+                raise RuntimeError("刷新上架页时登录恢复失败")
+
+    async def _ensure_refresh_page_ready(self, timeout: int):
+        if (
+            SELL_LIST_URL in self.page.url
+            and await self._wait_business_area(
+                REFRESH_CONTENT_SELECTOR, timeout)
+        ):
+            return
+        ready = await self._goto_business_page(
+            _product_list_url("money"),
+            REFRESH_CONTENT_SELECTOR, timeout,
+            reason="初始化上架页",
+        )
+        if not ready:
+            recovery = await self._recover_login_if_needed(
+                _product_list_url("money"),
+                REFRESH_CONTENT_SELECTOR,
+                timeout, reason="初始化上架页",
+            )
+            if not recovery:
+                raise RuntimeError("初始化上架页时登录恢复失败")
 
 
 class BarotemMonitor(BaseOrderMonitor):
     """Barotem 站点订单监控。"""
 
-    tag = "arotem"
+    tag = "barotem"
 
     def get_order_cfg(self) -> dict:
         return {
-            "my_page_url": "https://www.barotem.com/mypage",
-            "my_page_selector": "",
+            "my_page_url": ORDER_LIST_URL,
+            "my_page_selector": ORDER_CONTENT_SELECTOR,
             "wait_timeout": 10000,
             "refresh_interval": 3,
             "max_retries": 999,
         }
 
     def _get_workers(self) -> List[PageWorker]:
+        if not self._session:
+            raise RuntimeError("BrowserSession 未初始化")
         return [
-            BarotemDetectionWorker(self._session, self.stop_event, self),
+            BarotemOrderWorker(
+                self._session, self.stop_event, self),
+            BarotemRefreshWorker(
+                self._session, self.stop_event, self),
         ]
 
     def _is_target_page(self, url: str) -> bool:
-        return "barotem.com/mypage" in url
+        return (
+            SELL_LIST_URL in url
+            or "/mypage/sellview/" in url
+        )
+
+    def _is_on_collect_page(self, page) -> bool:
+        return "/mypage/sellview/4" in page.url
+
+    async def _extract_orders_from_table(
+            self, page) -> OrderExtractionResult:
+        content = page.locator(ORDER_CONTENT_SELECTOR).first
+        if await content.count() == 0:
+            return OrderExtractionResult.failure(
+                f"未找到 {ORDER_CONTENT_SELECTOR} 订单区域")
+
+        cards = page.locator(ORDER_CARD_SELECTOR)
+        card_count = await cards.count()
+        if card_count == 0:
+            if await content.locator(".product_empty").count() > 0:
+                return OrderExtractionResult.success([])
+            return OrderExtractionResult.failure(
+                "订单区域存在，但未找到订单卡片或空列表标记")
+
+        query = parse_qs(urlparse(page.url).query)
+        mode_match = re.search(r"/mypage/sellview/(\d+)", page.url)
+        mode = mode_match.group(1) if mode_match else ""
+        item_type = query.get("itemtype", ["unknown"])[0]
+        orders = []
+        failed_rows = 0
+        seen_order_ids = set()
+
+        for index in range(card_count):
+            try:
+                payload = await cards.nth(index).evaluate("""
+                    card => {
+                        const heading = card.querySelector(
+                            '.product_detail_info h4'
+                        );
+                        const game = heading
+                            ? heading.querySelector('span')
+                            : null;
+                        const server = heading
+                            ? Array.from(heading.childNodes)
+                                .filter(node => node.nodeType === 3)
+                                .map(node => node.textContent || '')
+                                .join(' ')
+                            : '';
+                        const priceGroups = Array.from(
+                            card.querySelectorAll(
+                                '.product_detail_price > div'
+                            )
+                        );
+                        const groupValue = group => {
+                            if (!group) return '';
+                            const values = Array.from(
+                                group.querySelectorAll('h4')
+                            );
+                            return values.length
+                                ? (values[values.length - 1].innerText || '')
+                                : '';
+                        };
+                        const checkbox = card.querySelector(
+                            'input.product_checkbox'
+                        );
+                        const buyer = card.querySelector(
+                            '[onclick^="dealinfo("]'
+                        );
+                        return {
+                            order_no: checkbox
+                                ? (checkbox.value || '')
+                                : '',
+                            game_name: game
+                                ? (game.innerText || '')
+                                : '',
+                            server,
+                            title: (
+                                card.querySelector(
+                                    '.product_detail_info p'
+                                )?.innerText || ''
+                            ),
+                            amount: groupValue(priceGroups[0]),
+                            price: groupValue(priceGroups[1]),
+                            buyer_onclick: buyer
+                                ? (buyer.getAttribute('onclick') || '')
+                                : '',
+                            order_time: (
+                                card.querySelector(
+                                    '.product_title time'
+                                )?.innerText || ''
+                            ),
+                            status: (
+                                card.querySelector(
+                                    '.product_title h4'
+                                )?.className || ''
+                            )
+                        };
+                    }
+                """)
+                payload["mode"] = mode
+                payload["item_type"] = item_type
+                parsed = _parse_order_card_payload(payload)
+                if parsed and parsed["order_no"] not in seen_order_ids:
+                    orders.append(parsed)
+                    seen_order_ids.add(parsed["order_no"])
+            except Exception as exc:
+                failed_rows += 1
+                print(f"[{self._log_tag}] 订单卡片 #{index} "
+                      f"提取失败: {exc}")
+
+        if card_count > 0 and failed_rows == card_count:
+            return OrderExtractionResult.failure(
+                f"订单区域有 {card_count} 张卡片，但全部解析失败")
+        return OrderExtractionResult.success(orders)
+
+    async def _build_normalized_order(
+            self, page, order_data: dict):
+        del page
+        if not order_data.get("buyer_character"):
+            print(f"[{self._log_tag}] 订单 "
+                  f"{order_data.get('order_no', '?')} "
+                  "未提取到买家角色名，停止上报")
+            return None
+
+        try:
+            quantity_value = parse_korean_amount(
+                order_data.get("amount", ""))
+        except ValueError as exc:
+            print(f"[{self._log_tag}] 订单 "
+                  f"{order_data.get('order_no', '?')} "
+                  f"数量解析失败: {exc}")
+            return None
+
+        try:
+            platform_price = parse_korean_amount(
+                order_data.get("price", "").replace("원", ""))
+        except ValueError:
+            platform_price = Decimal("0")
+
+        adapter = adapter_for("barotem")
+        normalized = adapter.normalize(
+            order_data,
+            platform_order_time=order_data.get(
+                "platform_order_time", ""),
+            platform_price=platform_price,
+            platform_item_type=order_data.get("item_type", ""),
+            product_title=order_data.get("item_name", ""),
+            quantity=int(quantity_value),
+            sale_quantity=int(quantity_value),
+        )
+        if normalized is None:
+            print(f"[{self._log_tag}] 适配器拒绝订单 "
+                  f"{order_data.get('order_no', '?')}: "
+                  f"{adapter.last_reject_reason}")
+        return normalized
 
     async def post_login_check(self, page) -> bool:
-        """检测登录提示弹窗。"""
+        """检测 Barotem 在业务页内显示的登录提示弹窗。"""
         try:
-            alert_el = await page.query_selector("div.common_alert_check")
-            if alert_el:
-                onclick = await alert_el.get_attribute("onclick") or ""
+            checks = page.locator(
+                "#common_alert_check, .common_alert_check")
+            for index in range(await checks.count()):
+                check = checks.nth(index)
+                onclick = await check.get_attribute("onclick") or ""
                 if "/auth/login" in onclick:
-                    print(f"[{self._log_tag}] 检测到登录弹窗，需重新登录")
+                    print(f"[{self._log_tag}] 检测到登录弹窗，需要重新登录")
                     return True
-                else:
-                    print(f"[{self._log_tag}] 弹窗为非登录提示，忽略")
         except Exception:
             pass
         return False

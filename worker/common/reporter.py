@@ -10,6 +10,7 @@ from typing import Optional
 from common.protocol import (
     task_status_msg, task_result_msg, task_event_msg,
     check_orders_msg, order_detected_msg,
+    sales_products_snapshot_msg,
     trade_offer_decision_msg, trade_status_msg, trade_buyer_review_msg,
     trade_game_screenshot_msg,
     greeting_result_msg,
@@ -30,6 +31,8 @@ class Reporter:
         self._order_check_results: dict = {}
         self._trade_screenshot_events: dict = {}
         self._trade_screenshot_results: dict = {}
+        self._sales_product_sync_events: dict = {}
+        self._sales_product_sync_results: dict = {}
 
     def set_client(self, client):
         """WebSocket 重连后切换发送通道，同时保留正在运行任务的 Reporter 引用。"""
@@ -90,6 +93,45 @@ class Reporter:
     def report_order_detected(self, account_id, order):
         self._client.send_threadsafe(
             order_detected_msg(account_id, order.to_wire()))
+
+    def sync_sales_products_snapshot(
+            self, account_id, platform, products, timeout=15):
+        """发送完整在售商品快照并等待总控事务提交回执。"""
+        request_id = str(uuid.uuid4())
+        event = threading.Event()
+        with self._lock:
+            self._sales_product_sync_events[request_id] = event
+        try:
+            self._client.send_threadsafe(
+                sales_products_snapshot_msg(
+                    account_id, platform, products, request_id))
+            if not event.wait(timeout):
+                return {
+                    "success": False,
+                    "error": "销售商品快照同步回执超时",
+                }
+            with self._lock:
+                return self._sales_product_sync_results.pop(
+                    request_id,
+                    {
+                        "success": False,
+                        "error": "销售商品快照同步回执缺失",
+                    },
+                )
+        finally:
+            with self._lock:
+                self._sales_product_sync_events.pop(request_id, None)
+                self._sales_product_sync_results.pop(request_id, None)
+
+    def deliver_sales_products_snapshot_result(
+            self, request_id, result):
+        with self._lock:
+            event = self._sales_product_sync_events.get(request_id)
+            if event is not None:
+                self._sales_product_sync_results[request_id] = dict(
+                    result or {})
+        if event:
+            event.set()
 
     def report_greeting_result(self, order_id, success, message=""):
         self._client.send_threadsafe(

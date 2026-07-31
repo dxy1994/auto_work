@@ -16,6 +16,7 @@ import re
 import time
 from decimal import Decimal
 from typing import List, Optional
+from urllib.parse import urljoin
 
 from monitor.browser.audio import play_alert_audio_async
 from monitor.monitoring.base import BaseOrderMonitor
@@ -39,6 +40,9 @@ REFRESH_BUTTON_SELECTOR = 'a.drag_top[title="끌올"]'
 LAST_PAGE_SELECTOR = (
     '#NavigationPanel a:has(img[alt="마지막 페이지"])'
 )
+NEXT_PAGE_SELECTOR = (
+    '#NavigationPanel a:has(img[alt="다음 페이지"])'
+)
 
 MIN_COMMIT_TIMEOUT_MS = 15000
 MIN_READY_TIMEOUT_MS = 20000
@@ -47,10 +51,35 @@ REFRESH_RESULT_TIMEOUT_SECONDS = 15.0
 REFRESH_PAGE_MAX_ACTIONS = 30
 RELOGIN_MAX_ATTEMPTS = 3
 RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
+MAX_SALES_PRODUCT_PAGES = 1000
 
 
 def _compact_text(value) -> str:
     return " ".join(str(value or "").split())
+
+
+def _parse_sales_product_row_payload(payload: dict) -> dict:
+    product_id = _compact_text(payload.get("platform_product_id"))
+    if not re.fullmatch(r"\d+", product_id):
+        raise ValueError("未提取到有效的 ItemBay 商品 ID")
+
+    game_region = _compact_text(payload.get("game_region"))
+    game_name = ""
+    region_name = ""
+    if " - " in game_region:
+        game_name, region_name = game_region.rsplit(" - ", 1)
+    return {
+        "platform_product_id": product_id,
+        "platform_item_type": _compact_text(
+            payload.get("platform_item_type")),
+        "game_name": _compact_text(game_name),
+        "region_name": _compact_text(region_name),
+        "title": _compact_text(payload.get("title")),
+        "quantity_text": _compact_text(payload.get("quantity_text")),
+        "price_text": _compact_text(payload.get("price_text")),
+        "platform_registered_at": _compact_text(
+            payload.get("platform_registered_at")),
+    }
 
 
 def _parse_refresh_action(onclick: str) -> Optional[dict]:
@@ -492,6 +521,12 @@ class ItembayRefreshWorker(PageWorker):
             "wait_timeout", 10000)
         interval = 40
         await self._ensure_refresh_page_ready(wait_timeout)
+        try:
+            await self._sync_sales_products(wait_timeout)
+        except Exception as exc:
+            print(f"[{self._log_tag}] 初始销售商品快照同步失败: {exc}")
+            if self.page_failure_requires_rebuild(exc):
+                raise
         print(f"[{self._log_tag}] 刷新就绪 (间隔={interval}s)")
         actions_on_page = 0
 
@@ -506,6 +541,7 @@ class ItembayRefreshWorker(PageWorker):
                 try:
                     result = await self._do_refresh(wait_timeout)
                     self._last_refresh = datetime.datetime.now()
+                    await self._sync_sales_products(wait_timeout)
                     actions_on_page += 1
                     if result == "refresh_count_exhausted":
                         if not self._refresh_exhaustion_alerted:
@@ -527,7 +563,7 @@ class ItembayRefreshWorker(PageWorker):
                         await self._ensure_refresh_page_ready(wait_timeout)
                         actions_on_page = 0
                 except Exception as exc:
-                    print(f"[{self._log_tag}] 刷新异常: {exc}")
+                    print(f"[{self._log_tag}] 刷新或销售商品快照同步异常: {exc}")
                     if self.page_failure_requires_rebuild(exc):
                         raise RuntimeError(
                             "上架页已不可用，需要重建标签"
@@ -581,6 +617,138 @@ class ItembayRefreshWorker(PageWorker):
         await target.click(
             timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
         return await self._wait_refresh_result(previous_origin, timeout)
+
+    async def _sync_sales_products(self, timeout: int) -> dict:
+        first = await self._crawl_sales_products_once(timeout)
+        second = await self._crawl_sales_products_once(timeout)
+        if first != second:
+            raise RuntimeError(
+                "ItemBay 两次商品列表快照不一致，"
+                "停止同步以避免误删")
+
+        products = list(first.values())
+        result = await asyncio.to_thread(
+            self._monitor.reporter.sync_sales_products_snapshot,
+            self._monitor.account_id,
+            "itembay",
+            products,
+        )
+        if not result.get("success"):
+            raise RuntimeError(
+                result.get("error") or "总控未确认销售商品快照")
+        print(
+            f"[{self._log_tag}] 销售商品快照已同步: "
+            f"total={result.get('received_count', len(products))}, "
+            f"inserted={result.get('inserted_count', 0)}, "
+            f"updated={result.get('updated_count', 0)}, "
+            f"unchanged={result.get('unchanged_count', 0)}, "
+            f"deleted={result.get('deleted_count', 0)}"
+        )
+        return result
+
+    async def _crawl_sales_products_once(
+            self, timeout: int) -> dict:
+        await self._goto_refresh_page(
+            SELL_LIST_URL,
+            timeout,
+            reason="销售商品快照-返回第一页",
+        )
+        products = {}
+        visited_urls = set()
+
+        for page_index in range(1, MAX_SALES_PRODUCT_PAGES + 1):
+            current_url = self.page.url
+            if current_url in visited_urls:
+                raise RuntimeError(
+                    f"ItemBay 商品分页出现循环: {current_url}")
+            visited_urls.add(current_url)
+
+            page_products = await self._extract_sales_products_page()
+            for product in page_products:
+                product_id = product["platform_product_id"]
+                if product_id in products:
+                    raise RuntimeError(
+                        f"ItemBay 快照出现重复商品 ID: {product_id}")
+                products[product_id] = product
+
+            next_link = self.page.locator(NEXT_PAGE_SELECTOR).first
+            if await next_link.count() == 0:
+                return dict(sorted(products.items()))
+            next_url = await next_link.get_attribute("href") or ""
+            if not next_url:
+                raise RuntimeError("ItemBay 下一页链接缺少 href")
+            next_url = urljoin(self.page.url, next_url)
+            await self._goto_refresh_page(
+                next_url,
+                timeout,
+                reason=f"销售商品快照-第{page_index + 1}页",
+            )
+
+        raise RuntimeError(
+            f"ItemBay 商品分页超过 {MAX_SALES_PRODUCT_PAGES} 页")
+
+    async def _extract_sales_products_page(self) -> List[dict]:
+        snapshot = await self.page.locator(
+            REFRESH_ROW_SELECTOR).evaluate_all("""
+            rows => ({
+                total_rows: rows.length,
+                empty_rows: rows.filter(row => (
+                    !row.querySelector(
+                        'input[name="chkRemove"], a, button'
+                    )
+                    && row.querySelector('td[colspan]')
+                    && (row.innerText || '').trim()
+                )).length,
+                products: rows
+                    .filter(row => row.querySelector(
+                        'input[name="chkRemove"]'
+                    ))
+                    .map(row => ({
+                    platform_product_id: (
+                        row.querySelector(
+                            'input[name="chkRemove"]'
+                        )?.value || ''
+                    ),
+                    platform_item_type: (
+                        row.querySelector('.lt1_sort')
+                            ?.innerText || ''
+                    ),
+                    title: (
+                        row.querySelector(
+                            '.lt1_subject a[title]'
+                        )?.getAttribute('title') || ''
+                    ),
+                    game_region: (
+                        row.querySelector('.lt1_subject font')
+                            ?.innerText || ''
+                    ),
+                    quantity_text: (
+                        row.querySelector('.lt1_qty')
+                            ?.innerText || ''
+                    ),
+                    price_text: (
+                        row.querySelector('.lt1_price')
+                            ?.innerText || ''
+                    ),
+                    platform_registered_at: (
+                        row.querySelector('.gray_05')
+                            ?.innerText || ''
+                    )
+                    }))
+            })
+        """)
+        payloads = snapshot.get("products", [])
+        if not payloads and (
+                snapshot.get("total_rows", 0) == 0
+                or snapshot.get("empty_rows", 0)
+                != snapshot.get("total_rows", 0)):
+            raise RuntimeError(
+                "ItemBay 上架表格没有商品行或明确空状态，"
+                "停止同步以避免误删")
+        return [
+            _parse_sales_product_row_payload(payload)
+            for payload in payloads
+        ]
 
     async def _wait_refresh_result(
             self, previous_origin: Optional[float], timeout: int) -> str:

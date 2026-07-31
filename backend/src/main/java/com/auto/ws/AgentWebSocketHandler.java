@@ -6,8 +6,11 @@ import com.auto.trade.ChatDispatchService;
 import com.auto.trade.DeliveryConfirmationService;
 import com.auto.trade.TradeDispatchCoordinator;
 import com.auto.trade.MarketplaceOrderIngestionService;
+import com.auto.trade.MarketplaceSalesProductSyncService;
 import com.auto.trade.GreetingDispatchService;
 import com.auto.trade.OrderDetectedMessage;
+import com.auto.trade.SalesProductsSnapshotMessage;
+import com.auto.trade.SalesProductsSyncResult;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +42,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final TradeDispatchCoordinator tradeCoordinator;
     private final MarketplaceOrderIngestionService orderIngestionService;
+    private final MarketplaceSalesProductSyncService salesProductSyncService;
     private final GreetingDispatchService greetingDispatchService;
     private final ChatDispatchService chatDispatchService;
     private final DeliveryConfirmationService deliveryConfirmationService;
@@ -49,6 +53,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             ObjectMapper objectMapper,
             TradeDispatchCoordinator tradeCoordinator,
             MarketplaceOrderIngestionService orderIngestionService,
+            MarketplaceSalesProductSyncService salesProductSyncService,
             GreetingDispatchService greetingDispatchService,
             ChatDispatchService chatDispatchService,
             DeliveryConfirmationService deliveryConfirmationService,
@@ -57,6 +62,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         this.objectMapper = objectMapper;
         this.tradeCoordinator = tradeCoordinator;
         this.orderIngestionService = orderIngestionService;
+        this.salesProductSyncService = salesProductSyncService;
         this.greetingDispatchService = greetingDispatchService;
         this.chatDispatchService = chatDispatchService;
         this.deliveryConfirmationService = deliveryConfirmationService;
@@ -111,6 +117,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                 case "trade_game_screenshot" -> handleTradeGameScreenshot(session, raw);
                 case "order_detected" -> handleOrderDetected(session, raw);
                 case "check_orders" -> handleCheckOrders(session, raw);
+                case "sales_products_snapshot" ->
+                        handleSalesProductsSnapshot(session, raw);
                 case "greeting_result" -> handleGreetingResult(raw);
                 case "chat_result" -> handleChatResult(session, raw);
                 default -> log.info("[Agent] 未知上行消息类型: {}", type);
@@ -368,6 +376,60 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                     orderId,
                     Boolean.TRUE.equals(raw.get("success")),
                     str(raw.get("message")));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleSalesProductsSnapshot(
+            WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(
+                machineId, session)) {
+            log.warn("[SalesProduct] 忽略非当前机器会话的商品快照 machine_id={}",
+                    machineId);
+            return;
+        }
+
+        String requestId = str(raw.get("request_id"));
+        Integer accountId = asInt(raw.get("account_id"));
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("type", "sales_products_snapshot_result");
+        response.put("request_id", requestId);
+        try {
+            Object snapshot = raw.get("snapshot");
+            if (requestId == null || requestId.isBlank()
+                    || accountId == null
+                    || !(snapshot instanceof Map<?, ?>)) {
+                throw new IllegalArgumentException("商品快照字段不完整");
+            }
+            SalesProductsSnapshotMessage message =
+                    objectMapper.convertValue(
+                            (Map<String, Object>) snapshot,
+                            SalesProductsSnapshotMessage.class);
+            SalesProductsSyncResult result =
+                    salesProductSyncService.sync(accountId, message);
+            response.put("success", true);
+            response.put("received_count", result.receivedCount());
+            response.put("inserted_count", result.insertedCount());
+            response.put("updated_count", result.updatedCount());
+            response.put("unchanged_count", result.unchangedCount());
+            response.put("deleted_count", result.deletedCount());
+            response.put("error", null);
+        } catch (Exception e) {
+            response.put("success", false);
+            response.put("error", e.getMessage());
+            log.warn("[SalesProduct] 商品完整快照同步失败 machine_id={} "
+                            + "account_id={}: {}",
+                    machineId, accountId, e.getMessage());
+        }
+        try {
+            synchronized (session) {
+                session.sendMessage(new TextMessage(
+                        objectMapper.writeValueAsString(response)));
+            }
+        } catch (Exception e) {
+            log.warn("[SalesProduct] 商品快照回执发送失败: {}",
+                    e.getMessage());
         }
     }
 

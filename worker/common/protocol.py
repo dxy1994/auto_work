@@ -18,6 +18,7 @@ TYPE_TASK_RESULT = "task_result"
 TYPE_TASK_EVENT = "task_event"
 TYPE_CHECK_ORDERS = "check_orders"
 TYPE_ORDER_DETECTED = "order_detected"
+TYPE_SALES_PRODUCTS_SNAPSHOT = "sales_products_snapshot"
 TYPE_TRADE_OFFER_DECISION = "trade_offer_decision"
 TYPE_TRADE_STATUS = "trade_status"
 TYPE_TRADE_BUYER_REVIEW = "trade_buyer_review"
@@ -30,6 +31,7 @@ TYPE_REGISTERED = "registered"
 TYPE_ORDER_CHECK = "order_check"
 TYPE_CANCEL = "cancel"
 TYPE_ORDERS_CHECK_RESULT = "orders_check_result"
+TYPE_SALES_PRODUCTS_SNAPSHOT_RESULT = "sales_products_snapshot_result"
 TYPE_GREETING = "greeting"
 TYPE_CHAT = "chat"
 TYPE_TRADE_OFFER = "trade_offer"
@@ -98,6 +100,20 @@ def order_detected_msg(account_id: int, order_wire: dict) -> dict:
         "type": TYPE_ORDER_DETECTED,
         "account_id": account_id,
         "order": order_wire,
+    }
+
+
+def sales_products_snapshot_msg(
+        account_id: int, platform: str,
+        products: list, request_id: str) -> dict:
+    return {
+        "type": TYPE_SALES_PRODUCTS_SNAPSHOT,
+        "request_id": request_id,
+        "account_id": account_id,
+        "snapshot": {
+            "platform": platform,
+            "products": list(products),
+        },
     }
 
 

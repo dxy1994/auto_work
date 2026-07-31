@@ -73,6 +73,10 @@
             <span>订单管理</span>
             <span v-if="manualAlerts.total" class="menu-alert-count">{{ manualAlerts.total }}</span>
           </el-menu-item>
+          <el-menu-item index="/platform-sales-products">
+            <el-icon><ShoppingBag /></el-icon>
+            <span>在售商品</span>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="device">

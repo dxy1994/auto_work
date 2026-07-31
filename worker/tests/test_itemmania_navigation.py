@@ -343,6 +343,7 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
             is_closed=MagicMock(return_value=False),
         )
         worker._ensure_refresh_page_ready = AsyncMock()
+        worker._sync_sales_products = AsyncMock()
         worker._do_refresh = AsyncMock(
             side_effect=RuntimeError("Page crashed: Out of Memory")
         )

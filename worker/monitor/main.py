@@ -178,6 +178,10 @@ async def _dispatch_message(msg, ctx: AppContext):
         reporter.deliver_orders_check_result(
             msg.get("request_id"), msg.get("existing_ids", []))
 
+    elif mtype == "sales_products_snapshot_result":
+        reporter.deliver_sales_products_snapshot_result(
+            msg.get("request_id"), msg)
+
     elif mtype in {"chat", "greeting"}:
         # 聊天指令：优先路由到持有订单来源账号会话的活跃 Monitor。
         account_id = msg.get("account_id")

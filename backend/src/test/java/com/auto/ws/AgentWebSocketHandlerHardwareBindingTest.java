@@ -42,6 +42,7 @@ class AgentWebSocketHandlerHardwareBindingTest {
                 objectMapper,
                 mock(TradeDispatchCoordinator.class),
                 mock(MarketplaceOrderIngestionService.class),
+                mock(com.auto.trade.MarketplaceSalesProductSyncService.class),
                 mock(GreetingDispatchService.class),
                 mock(ChatDispatchService.class),
                 mock(DeliveryConfirmationService.class),

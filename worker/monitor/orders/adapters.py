@@ -164,10 +164,12 @@ class ItemmaniaAdapter(_Adapter):
 
 class BarotemAdapter(_Adapter):
     platform = "barotem"
+    ready_statuses = frozenset(("paid", "ready", "trading"))
     fields = {
         "order_no": "deal_id", "region": "server_code",
         "title": "item_name", "amount": "amount",
         "buyer": "buyer_character", "status": "status",
+        "game_name": "game_name",
     }
 
 
