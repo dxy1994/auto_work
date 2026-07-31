@@ -173,6 +173,7 @@ class BarotemAdapter(_Adapter):
 
 class ItembayAdapter(_Adapter):
     platform = "itembay"
+    ready_statuses = frozenset(("paid", "ready", "trading"))
     fields = {
         "order_no": "item_order_no", "region": "server_id",
         "title": "title", "amount": "trade_amount",
