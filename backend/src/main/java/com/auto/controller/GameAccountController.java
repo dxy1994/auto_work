@@ -75,7 +75,6 @@ public class GameAccountController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public GameAccount create(@RequestBody GameAccount payload) {
-        requireRegions(payload.getRegionIds());
         payload.setId(null);
         if (payload.getPassword() != null && !payload.getPassword().isEmpty()) {
             payload.setPassword(crypto.encrypt(payload.getPassword()));

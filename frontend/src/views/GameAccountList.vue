@@ -182,11 +182,11 @@
             <el-option v-for="g in gameList" :key="g.id" :label="g.name" :value="g.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="!isEdit" label="所属大区" prop="region_ids">
+        <el-form-item v-if="!isEdit" label="所属大区">
           <el-select v-model="form.region_ids" placeholder="选择大区(可多选)" clearable multiple collapse-tags style="width:100%">
             <el-option v-for="r in formRegionList" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
-          <div class="form-region-hint">只显示尚未被其他游戏账号绑定的大区</div>
+          <div class="form-region-hint">可暂不选择，创建后再通过“关联大区”设置；候选项会排除其他账号已绑定的大区</div>
         </el-form-item>
         <el-form-item label="账号名" prop="account_name">
           <el-input v-model="form.account_name" />
@@ -263,7 +263,7 @@
             <span class="region-picker-card-icon"><el-icon><Location /></el-icon></span>
             <span class="region-picker-card-copy">
               <strong>{{ region.name }}</strong>
-              <small>排序 {{ region.sort_order ?? '-' }} · 大区 ID #{{ region.id }}</small>
+              <small>排序 {{ region.sort_order ?? '-' }} · 编码 {{ region.code || '未设置' }}</small>
             </span>
             <span class="region-picker-check">
               <el-icon v-if="linkedRegionIds.includes(region.id)"><Check /></el-icon>
@@ -413,7 +413,6 @@ const submitting = ref(false)
 const formRef = ref(null)
 const rules = {
   game_id: [{ required: true, message: '请选择游戏', trigger: 'change' }],
-  region_ids: [{ required: true, type: 'array', min: 1, message: '请至少选择一个大区', trigger: 'change' }],
   account_name: [{ required: true, message: '请输入账号名', trigger: 'blur' }],
   account_no: [{ required: true, message: '请输入账号', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
