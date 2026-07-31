@@ -174,8 +174,9 @@ class ChatCommandTest(unittest.TestCase):
         events = []
 
         class FakeLocator:
-            def __init__(self, selector):
+            def __init__(self, selector, page):
                 self.selector = selector
+                self.page = page
 
             @property
             def first(self):
@@ -186,9 +187,11 @@ class ChatCommandTest(unittest.TestCase):
 
             async def click(self, **_kwargs):
                 events.append(f"click:{self.selector}")
+                if self.selector == "#delivery-confirm":
+                    self.page.status_text = "인계완료"
 
             async def inner_text(self):
-                return "인계완료"
+                return self.page.status_text
 
             async def count(self):
                 return 1
@@ -204,6 +207,7 @@ class ChatCommandTest(unittest.TestCase):
             def __init__(self, name):
                 self.name = name
                 self.keyboard = FakeKeyboard()
+                self.status_text = "판매중" if name == "detail" else ""
 
             async def goto(self, url, **_kwargs):
                 events.append(f"goto:{self.name}:{url}")
@@ -212,7 +216,7 @@ class ChatCommandTest(unittest.TestCase):
                 events.append(f"wait:{self.name}:{milliseconds}")
 
             def locator(self, selector):
-                return FakeLocator(selector)
+                return FakeLocator(selector, self)
 
             def on(self, _event, _callback):
                 return None
@@ -281,6 +285,105 @@ class ChatCommandTest(unittest.TestCase):
         )
         self.assertIn("click:#trade_btn", events)
         self.assertIn("click:#delivery-confirm", events)
+
+    def test_delivery_confirmation_accepts_itemmania_stage_five_without_button(self):
+        events = []
+
+        class StageLocator:
+            def __init__(self, index=None):
+                self.index = index
+
+            @property
+            def first(self):
+                return StageLocator(0)
+
+            async def wait_for(self, **_kwargs):
+                return None
+
+            async def count(self):
+                return 5
+
+            def nth(self, index):
+                return StageLocator(index)
+
+            async def get_attribute(self, name):
+                if name == "class":
+                    return "caution active" if self.index == 4 else "caution"
+                return None
+
+            async def inner_text(self):
+                return "판매완료" if self.index == 4 else ""
+
+        class MissingButtonLocator:
+            @property
+            def first(self):
+                return self
+
+            async def wait_for(self, **_kwargs):
+                raise AssertionError("已完成订单不应再查找交付按钮")
+
+        class FakePage:
+            async def goto(self, url, **_kwargs):
+                events.append(f"goto:{url}")
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            def locator(self, selector):
+                if selector == ".caution_list .caution":
+                    return StageLocator()
+                return MissingButtonLocator()
+
+            def on(self, _event, _callback):
+                return None
+
+            async def close(self):
+                events.append("close")
+
+        class FakeSession:
+            def begin_transient_operation(self):
+                return True
+
+            async def new_page(self):
+                return FakePage()
+
+            def track_transient_page(self, _page):
+                return None
+
+            def untrack_transient_page(self, _page):
+                return None
+
+            def end_transient_operation(self):
+                return None
+
+        result = asyncio.run(sender._do_confirm_delivery(
+            FakeSession(),
+            {
+                "type": "confirm_delivery",
+                "detail_url": "https://www.itemmania.com/order/63",
+                "open_confirm_selector": "#trade_btn",
+                "confirm_selector": "#delivery-confirm",
+                "success_selector": ".caution_list .caution.active p",
+                "success_texts": ["인계완료", "판매완료"],
+                "stage_selector": ".caution_list .caution",
+                "pending_stage": 3,
+            },
+        ))
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["already_completed"])
+        self.assertEqual(5, result["website_stage"])
+        self.assertEqual("판매완료", result["website_status"])
+        self.assertIn("第 3 阶段", result["message"])
+        self.assertEqual(["goto:https://www.itemmania.com/order/63", "close"], events)
+
+    def test_itemmania_delivery_stages_after_three_are_complete(self):
+        action = {"pending_stage": 3}
+
+        self.assertFalse(sender._delivery_stage_is_complete(None, action))
+        self.assertFalse(sender._delivery_stage_is_complete(3, action))
+        self.assertTrue(sender._delivery_stage_is_complete(4, action))
+        self.assertTrue(sender._delivery_stage_is_complete(5, action))
 
 
 if __name__ == "__main__":

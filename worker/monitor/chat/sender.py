@@ -276,6 +276,38 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
         )
         await page.wait_for_timeout(1000)
 
+        # Itemmania 在订单进入第 4/5 阶段后会移除交付按钮。先检查阶段，
+        # 避免网站其实已经完成，却因为找不到 #trade_btn 被判为失败。
+        current_stage, current_status = await _try_read_delivery_stage(
+            page, normalized, timeout=3000
+        )
+        if current_stage is None:
+            current_status = await _try_read_delivery_status_text(
+                page, normalized, timeout=3000
+            )
+        if (
+            _delivery_stage_is_complete(current_stage, normalized)
+            or _delivery_status_text_is_complete(current_status, normalized)
+        ):
+            if current_stage is None:
+                status_description = f"当前状态：{current_status}"
+            else:
+                status_description = (
+                    f"当前第 {current_stage} 阶段：{current_status or '未知'}"
+                )
+            return {
+                "success": True,
+                "message": (
+                    "截图已发送，网站订单已离开第 "
+                    f"{normalized['pending_stage']} 阶段"
+                    f"（{status_description}），"
+                    "按已完成处理"
+                ),
+                "website_stage": current_stage,
+                "website_status": current_status,
+                "already_completed": True,
+            }
+
         open_confirm = page.locator(
             normalized["open_confirm_selector"]
         ).first
@@ -293,6 +325,31 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
             wait_until="domcontentloaded",
             timeout=15000,
         )
+        current_stage, current_status = await _try_read_delivery_stage(
+            page, normalized, timeout=10000
+        )
+        if current_stage is not None:
+            if not _delivery_stage_is_complete(current_stage, normalized):
+                return {
+                    "success": False,
+                    "message": (
+                        "网站商品交付状态未更新，仍在第 "
+                        f"{current_stage} 阶段：{current_status or '未知'}"
+                    ),
+                    "website_stage": current_stage,
+                    "website_status": current_status,
+                }
+            return {
+                "success": True,
+                "message": (
+                    "截图已发送，聊天页已关闭，网站订单已进入第 "
+                    f"{current_stage} 阶段：{current_status or '未知'}"
+                ),
+                "website_stage": current_stage,
+                "website_status": current_status,
+                "already_completed": False,
+            }
+
         status = page.locator(normalized["success_selector"]).first
         await status.wait_for(state="visible", timeout=10000)
         status_text = (await status.inner_text()).strip()
@@ -319,6 +376,55 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
                     session.untrack_transient_page(page)
         finally:
             session.end_transient_operation()
+
+
+async def _try_read_delivery_stage(
+        page, normalized: dict, timeout: int) -> tuple[Optional[int], str]:
+    """读取当前激活的交付阶段；页面无阶段状态条时交给文本规则继续判断。"""
+    selector = normalized.get("stage_selector")
+    if not selector:
+        return None, ""
+    try:
+        stages = page.locator(selector)
+        await stages.first.wait_for(state="visible", timeout=timeout)
+        for index in range(await stages.count()):
+            stage = stages.nth(index)
+            class_names = str(
+                await stage.get_attribute("class") or ""
+            ).split()
+            if "active" in class_names:
+                return index + 1, (await stage.inner_text()).strip()
+    except Exception:
+        return None, ""
+    return None, ""
+
+
+async def _try_read_delivery_status_text(
+        page, normalized: dict, timeout: int) -> str:
+    try:
+        status = page.locator(normalized["success_selector"]).first
+        await status.wait_for(state="visible", timeout=timeout)
+        return (await status.inner_text()).strip()
+    except Exception:
+        return ""
+
+
+def _delivery_stage_is_complete(
+        current_stage: Optional[int], normalized: dict) -> bool:
+    pending_stage = normalized.get("pending_stage")
+    return (
+        current_stage is not None
+        and pending_stage is not None
+        and current_stage > pending_stage
+    )
+
+
+def _delivery_status_text_is_complete(
+        status_text: str, normalized: dict) -> bool:
+    return bool(status_text) and any(
+        expected in status_text
+        for expected in normalized.get("success_texts", [])
+    )
 
 
 async def _send_image_via_chat(page, image_url: str, target: dict):
@@ -441,6 +547,21 @@ def _normalize_delivery_action(action: dict) -> dict:
     ]
     if not result["success_texts"]:
         raise ValueError("商品交付成功状态未配置")
+    result["stage_selector"] = str(
+        result.get("stage_selector") or ""
+    ).strip()
+    pending_stage = result.get("pending_stage")
+    if result["stage_selector"] or pending_stage is not None:
+        if not result["stage_selector"]:
+            raise ValueError("交付阶段选择器未配置")
+        try:
+            result["pending_stage"] = int(pending_stage)
+        except (TypeError, ValueError):
+            raise ValueError("待交付阶段编号无效") from None
+        if result["pending_stage"] <= 0:
+            raise ValueError("待交付阶段编号无效")
+    else:
+        result["pending_stage"] = None
     return result
 
 

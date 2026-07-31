@@ -89,6 +89,7 @@ class DeliveryConfirmationServiceTest {
         assertEquals(
                 "completed",
                 event.getAllValues().get(1).getToStatus());
+        assertEquals("ok", event.getAllValues().get(1).getMessage());
     }
 
     @Test

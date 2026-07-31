@@ -152,6 +152,8 @@ class ChatDispatchServiceTest {
         assertTrue(action.getValue().get("detail_url").toString()
                 .contains("sell_ing_view.html?id=IM-2026-42"));
         assertEquals("#trade_btn", action.getValue().get("open_confirm_selector"));
+        assertEquals(".caution_list .caution", action.getValue().get("stage_selector"));
+        assertEquals(3, action.getValue().get("pending_stage"));
     }
 
     @Test

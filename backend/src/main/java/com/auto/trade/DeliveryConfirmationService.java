@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -161,14 +162,23 @@ public class DeliveryConfirmationService {
 
         manualOrderStatusService.complete(orderId);
         orderService.updateLastError(orderId, null, null);
+        Map<String, Object> completionPayload = new LinkedHashMap<>();
+        completionPayload.put("request_id", requestId);
+        completionPayload.put("machine_id", machineId);
+        completionPayload.put("screenshot_path", order.getGameTradeScreenshot());
+        for (String key : new String[]{
+                "website_stage", "website_status", "already_completed"}) {
+            if (safeDetails.containsKey(key) && safeDetails.get(key) != null) {
+                completionPayload.put(key, safeDetails.get(key));
+            }
+        }
         appendEvent(
                 order,
                 "delivery_confirmation_completed",
-                "截图已发送，聊天页已关闭，网站商品交付已确认",
-                Map.of(
-                        "request_id", requestId,
-                        "machine_id", machineId,
-                        "screenshot_path", order.getGameTradeScreenshot()),
+                normalizeMessage(
+                        message,
+                        "截图已发送，聊天页已关闭，网站商品交付已确认"),
+                completionPayload,
                 "wait_web_confirm",
                 "completed");
     }

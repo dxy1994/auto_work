@@ -296,6 +296,8 @@ public class ChatDispatchService {
         String confirmSelector = configString(config, "confirm_selector");
         String successSelector = configString(config, "success_selector");
         List<String> successTexts = configStringList(config, "success_texts");
+        String stageSelector = configString(config, "stage_selector");
+        int pendingStage = configInt(config, "pending_stage", 0);
 
         if ("itemmania".equals(platformCode)) {
             if (urlTemplate.isBlank()) {
@@ -313,6 +315,12 @@ public class ChatDispatchService {
             }
             if (successTexts.isEmpty()) {
                 successTexts = List.of("인계완료", "판매완료");
+            }
+            if (stageSelector.isBlank()) {
+                stageSelector = ".caution_list .caution";
+            }
+            if (pendingStage <= 0) {
+                pendingStage = 3;
             }
         }
 
@@ -332,6 +340,9 @@ public class ChatDispatchService {
                 || successTexts.isEmpty()) {
             throw ApiException.badRequest("平台未完整配置商品交付确认选择器");
         }
+        if (stageSelector.isBlank() != (pendingStage <= 0)) {
+            throw ApiException.badRequest("平台交付阶段选择器与待交付阶段编号必须同时配置");
+        }
 
         String encodedOrderNo = URLEncoder.encode(orderNo, StandardCharsets.UTF_8);
         String detailUrl = urlTemplate
@@ -346,6 +357,10 @@ public class ChatDispatchService {
         action.put("confirm_selector", confirmSelector);
         action.put("success_selector", successSelector);
         action.put("success_texts", successTexts);
+        if (!stageSelector.isBlank()) {
+            action.put("stage_selector", stageSelector);
+            action.put("pending_stage", pendingStage);
+        }
         return action;
     }
 
@@ -548,6 +563,19 @@ public class ChatDispatchService {
     private boolean configBoolean(Map<?, ?> source, String key, boolean fallback) {
         Object value = source.get(key);
         return value instanceof Boolean booleanValue ? booleanValue : fallback;
+    }
+
+    private int configInt(Map<?, ?> source, String key, int fallback) {
+        Object value = source.get(key);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            String text = safe(value).strip();
+            return text.isBlank() ? fallback : Integer.parseInt(text);
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
     }
 
     private List<String> configStringList(Map<?, ?> source, String key) {
