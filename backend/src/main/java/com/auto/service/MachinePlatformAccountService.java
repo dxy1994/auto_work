@@ -7,6 +7,8 @@ import java.util.List;
 
 public interface MachinePlatformAccountService extends IService<MachinePlatformAccount> {
 
+    List<MachinePlatformAccount> findAllActive();
+
     List<MachinePlatformAccount> findByMachineIdActive(Integer machineId);
 
     List<MachinePlatformAccount> findByAccountIdActive(Integer accountId);

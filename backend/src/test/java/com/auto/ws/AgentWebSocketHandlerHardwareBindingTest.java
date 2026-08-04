@@ -6,6 +6,7 @@ import com.auto.trade.GreetingDispatchService;
 import com.auto.trade.ChatDispatchService;
 import com.auto.trade.DeliveryConfirmationService;
 import com.auto.trade.MarketplaceOrderIngestionService;
+import com.auto.trade.OrderMonitorAutoStartService;
 import com.auto.trade.TradeDispatchCoordinator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +30,7 @@ class AgentWebSocketHandlerHardwareBindingTest {
     private AgentRegistry registry;
     private WirelessHidDeviceManager wirelessHidDeviceManager;
     private ObjectMapper objectMapper;
+    private OrderMonitorAutoStartService orderMonitorAutoStartService;
     private AgentWebSocketHandler handler;
     private WebSocketSession session;
 
@@ -36,6 +38,7 @@ class AgentWebSocketHandlerHardwareBindingTest {
     void setUp() {
         registry = mock(AgentRegistry.class);
         wirelessHidDeviceManager = mock(WirelessHidDeviceManager.class);
+        orderMonitorAutoStartService = mock(OrderMonitorAutoStartService.class);
         objectMapper = new ObjectMapper();
         handler = new AgentWebSocketHandler(
                 registry,
@@ -46,7 +49,8 @@ class AgentWebSocketHandlerHardwareBindingTest {
                 mock(GreetingDispatchService.class),
                 mock(ChatDispatchService.class),
                 mock(DeliveryConfirmationService.class),
-                wirelessHidDeviceManager);
+                wirelessHidDeviceManager,
+                orderMonitorAutoStartService);
         session = mock(WebSocketSession.class);
         when(session.getAttributes()).thenReturn(new HashMap<>());
     }
@@ -97,5 +101,41 @@ class AgentWebSocketHandlerHardwareBindingTest {
         assertEquals(2, ((Number) binding.get("record_id")).intValue());
         assertEquals("AABBCCDDEEFF", binding.get("device_id"));
         assertEquals("192.168.1.32", binding.get("ip"));
+    }
+
+    @Test
+    void monitorRegistrationRestoresTasksBeforeStartingMissingBindings() throws Exception {
+        when(registry.handleRegister(org.mockito.ArgumentMatchers.anyMap())).thenReturn(7);
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"register","role":"monitor","mac":"AA:BB:CC:DD:EE:FF",
+                 "active_tasks":[{"account_id":4,"task_id":"order-4","status":"running"}]}
+                """));
+
+        verify(registry).restoreMonitorTasks(
+                org.mockito.ArgumentMatchers.eq(7),
+                org.mockito.ArgumentMatchers.argThat(value -> value instanceof java.util.List<?> list
+                        && list.size() == 1));
+        verify(orderMonitorAutoStartService).startBoundAccounts(
+                org.mockito.ArgumentMatchers.eq(7),
+                org.mockito.ArgumentMatchers.argThat(value -> value instanceof java.util.List<?> list
+                        && list.size() == 1));
+    }
+
+    @Test
+    void monitorHeartbeatContinuouslyReconcilesBindingsAndActualTasks() throws Exception {
+        session.getAttributes().put("machineId", 7);
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"heartbeat","runtime":{"role":"monitor","active_tasks":[]}}
+                """));
+
+        verify(registry).updateHeartbeat(
+                org.mockito.ArgumentMatchers.eq(7),
+                org.mockito.ArgumentMatchers.anyMap());
+        verify(orderMonitorAutoStartService).startBoundAccounts(
+                org.mockito.ArgumentMatchers.eq(7),
+                org.mockito.ArgumentMatchers.argThat(value -> value instanceof java.util.List<?> list
+                        && list.isEmpty()));
     }
 }

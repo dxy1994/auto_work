@@ -188,6 +188,54 @@ class ChatDispatchServiceTest {
     }
 
     @Test
+    void itemBayUsesLiveBayTalkDefaultsAndTransactionId() {
+        GameItemOrder order = itemBayOrder();
+        PlatformAccount account = new PlatformAccount();
+        account.setId(6);
+        account.setWebsiteId(2);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(8);
+        binding.setAccountId(6);
+
+        when(orderService.getById(43)).thenReturn(order);
+        when(accountService.getById(6)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(6))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(8)).thenReturn(8);
+        when(platformService.getById(2)).thenReturn(itemBay());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap()))
+                .thenReturn(true);
+
+        service.dispatchOrderChat(
+                43,
+                List.of(Map.of("type", "text", "content", "안녕하세요")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> target =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), target.capture());
+
+        assertEquals(
+                "https://www.itembay.com/ibmessenger/bayTalkChatTran"
+                        + "?iTranSeq=96370042",
+                target.getValue().get("url"));
+        assertEquals("#txtAreaMsgSend", target.getValue().get("input_selector"));
+        assertEquals("#btnSend", target.getValue().get("send_selector"));
+        assertEquals("#txtScreenShot", target.getValue().get("file_selector"));
+        assertEquals(
+                "#chat_container .list_message li.send",
+                target.getValue().get("sent_selector"));
+        assertEquals(true, target.getValue().get("upload_auto_send"));
+        assertEquals(800, target.getValue().get("max_text_length"));
+        assertEquals(5 * 1024 * 1024, target.getValue().get("max_image_bytes"));
+    }
+
+    @Test
     void manualChatResultOnlyAppendsAnEvent() {
         GameItemOrder order = itemManiaOrder();
         order.setDeliveryStatus("assigned");
@@ -223,6 +271,27 @@ class ChatDispatchServiceTest {
         platform.setId(1);
         platform.setName("ItemMania");
         platform.setUrl("https://www.itemmania.com/login");
+        platform.setIsActive(1);
+        platform.setLoginConfig(Map.of());
+        return platform;
+    }
+
+    private GameItemOrder itemBayOrder() {
+        GameItemOrder order = new GameItemOrder();
+        order.setId(43);
+        order.setWebsiteId(2);
+        order.setPlatformAccountId(6);
+        order.setSourceOrderNo("96370042");
+        order.setDeliveryStatus("greeting");
+        order.setStatus("pending");
+        return order;
+    }
+
+    private Platform itemBay() {
+        Platform platform = new Platform();
+        platform.setId(2);
+        platform.setName("ItemBay");
+        platform.setUrl("https://www.itembay.com/login");
         platform.setIsActive(1);
         platform.setLoginConfig(Map.of());
         return platform;

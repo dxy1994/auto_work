@@ -33,8 +33,8 @@ def send_chat(
     from monitor.browser.session import BrowserSession
 
     try:
-        normalized_target = _normalize_target(target, messages)
         normalized_messages = _normalize_messages(messages)
+        normalized_target = _normalize_target(target, normalized_messages)
     except ValueError as exc:
         return {"success": False, "message": str(exc)}
 
@@ -124,8 +124,8 @@ async def _do_send_chat_locked(
 ) -> dict:
     """打开客户会话并按消息顺序发送；含图片时保留页面 10 秒再关闭。"""
     try:
-        target = _normalize_target(target, messages)
         messages = _normalize_messages(messages)
+        target = _normalize_target(target, messages)
     except ValueError as exc:
         return {"success": False, "message": str(exc)}
 
@@ -157,6 +157,16 @@ async def _do_send_chat_locked(
                 "success": False,
                 "message": "客户聊天页面加载超时，未找到输入框或发送按钮",
             }
+        if not await _locator_is_enabled(input_box):
+            return {
+                "success": False,
+                "message": "客户聊天输入框当前不可用，可能已结束或被限制",
+            }
+        if not await _locator_is_enabled(send_button):
+            return {
+                "success": False,
+                "message": "客户聊天发送按钮当前不可用，可能已结束或被限制",
+            }
 
         image_base = _image_base_url()
         for index, message in enumerate(messages):
@@ -174,12 +184,23 @@ async def _do_send_chat_locked(
 
             content = message["content"]
             if content:
+                sent_before = await _sent_message_count(page, target)
                 await input_box.click()
                 await page.keyboard.type(content, delay=50)
                 await send_button.click(force=True, timeout=5000)
-                await page.wait_for_timeout(
-                    _positive_int(target.get("text_settle_ms"), 600)
-                )
+                if sent_before is None:
+                    await page.wait_for_timeout(
+                        _positive_int(target.get("text_settle_ms"), 600)
+                    )
+                elif not await _wait_for_sent_message(
+                        page, target, sent_before):
+                    return {
+                        "success": False,
+                        "message": (
+                            f"第 {index + 1} 条文字点击发送后"
+                            "未在会话中显示"
+                        ),
+                    }
 
         return {
             "success": True,
@@ -431,6 +452,11 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
     """下载一张图片，并通过平台配置的文件控件完成上传/发送。"""
     import requests
 
+    max_image_bytes = _positive_int(
+        target.get("max_image_bytes"), MAX_IMAGE_BYTES)
+    if max_image_bytes <= 0:
+        max_image_bytes = MAX_IMAGE_BYTES
+
     def _download():
         with requests.get(image_url, timeout=15, stream=True) as response:
             response.raise_for_status()
@@ -446,8 +472,9 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
                 if not chunk:
                     continue
                 total += len(chunk)
-                if total > MAX_IMAGE_BYTES:
-                    raise RuntimeError("图片超过 10MB")
+                if total > max_image_bytes:
+                    limit_mb = max_image_bytes / 1024 / 1024
+                    raise RuntimeError(f"图片超过 {limit_mb:g}MB")
                 chunks.append(chunk)
             if not chunks:
                 raise RuntimeError("下载到的图片为空")
@@ -460,6 +487,7 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
         temp_file.write(image_data)
         temp_file.close()
 
+        sent_before = await _sent_message_count(page, target)
         file_input = page.locator(target["file_selector"]).first
         if await file_input.count() == 0:
             raise RuntimeError("未找到聊天图片上传控件")
@@ -470,9 +498,12 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
             await upload_send.wait_for(timeout=5000)
             await upload_send.click(force=True, timeout=5000)
 
-        await page.wait_for_timeout(
-            _positive_int(target.get("image_settle_ms"), 2000)
-        )
+        if sent_before is None:
+            await page.wait_for_timeout(
+                _positive_int(target.get("image_settle_ms"), 2000)
+            )
+        elif not await _wait_for_sent_message(page, target, sent_before):
+            raise RuntimeError("图片选择后未在会话中显示")
         close_selector = str(target.get("upload_close_selector") or "").strip()
         if close_selector:
             close_button = page.locator(close_selector).first
@@ -520,7 +551,64 @@ def _normalize_target(target: dict, messages: list) -> dict:
         and not result["upload_send_selector"]
     ):
         raise ValueError("图片上传后发送按钮选择器未配置")
+    result["sent_selector"] = str(
+        result.get("sent_selector") or ""
+    ).strip()
+    if result["sent_selector"]:
+        result["sent_timeout_ms"] = max(
+            100,
+            _positive_int(result.get("sent_timeout_ms"), 10000),
+        )
+    max_text_length = _positive_int(
+        result.get("max_text_length"), 0)
+    if max_text_length > 0:
+        for index, message in enumerate(messages or []):
+            content = str(
+                message.get("content") or message.get("text") or ""
+            )
+            if len(content) > max_text_length:
+                raise ValueError(
+                    f"第 {index + 1} 条文字超过平台限制 "
+                    f"{max_text_length} 个字符"
+                )
+        result["max_text_length"] = max_text_length
+    max_image_bytes = _positive_int(
+        result.get("max_image_bytes"), 0)
+    if max_image_bytes > 0:
+        result["max_image_bytes"] = max_image_bytes
     return result
+
+
+async def _sent_message_count(page, target: dict) -> Optional[int]:
+    selector = str(target.get("sent_selector") or "").strip()
+    if not selector:
+        return None
+    return await page.locator(selector).count()
+
+
+async def _wait_for_sent_message(
+        page, target: dict, previous_count: int) -> bool:
+    selector = str(target.get("sent_selector") or "").strip()
+    if not selector:
+        return True
+    timeout_ms = max(
+        100,
+        _positive_int(target.get("sent_timeout_ms"), 10000),
+    )
+    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+    sent_items = page.locator(selector)
+    while asyncio.get_running_loop().time() < deadline:
+        if await sent_items.count() > previous_count:
+            return True
+        await page.wait_for_timeout(100)
+    return await sent_items.count() > previous_count
+
+
+async def _locator_is_enabled(locator) -> bool:
+    is_enabled = getattr(locator, "is_enabled", None)
+    if not callable(is_enabled):
+        return True
+    return bool(await is_enabled())
 
 
 def _normalize_delivery_action(action: dict) -> dict:

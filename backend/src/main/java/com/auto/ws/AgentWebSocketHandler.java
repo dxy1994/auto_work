@@ -9,6 +9,7 @@ import com.auto.trade.MarketplaceOrderIngestionService;
 import com.auto.trade.MarketplaceSalesProductSyncService;
 import com.auto.trade.GreetingDispatchService;
 import com.auto.trade.OrderDetectedMessage;
+import com.auto.trade.OrderMonitorAutoStartService;
 import com.auto.trade.SalesProductsSnapshotMessage;
 import com.auto.trade.SalesProductsSyncResult;
 import tools.jackson.databind.ObjectMapper;
@@ -47,6 +48,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
     private final ChatDispatchService chatDispatchService;
     private final DeliveryConfirmationService deliveryConfirmationService;
     private final WirelessHidDeviceManager wirelessHidDeviceManager;
+    private final OrderMonitorAutoStartService orderMonitorAutoStartService;
 
     public AgentWebSocketHandler(
             AgentRegistry registry,
@@ -57,7 +59,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             GreetingDispatchService greetingDispatchService,
             ChatDispatchService chatDispatchService,
             DeliveryConfirmationService deliveryConfirmationService,
-            WirelessHidDeviceManager wirelessHidDeviceManager) {
+            WirelessHidDeviceManager wirelessHidDeviceManager,
+            OrderMonitorAutoStartService orderMonitorAutoStartService) {
         this.registry = registry;
         this.objectMapper = objectMapper;
         this.tradeCoordinator = tradeCoordinator;
@@ -67,6 +70,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         this.chatDispatchService = chatDispatchService;
         this.deliveryConfirmationService = deliveryConfirmationService;
         this.wirelessHidDeviceManager = wirelessHidDeviceManager;
+        this.orderMonitorAutoStartService = orderMonitorAutoStartService;
     }
 
     @Override
@@ -93,6 +97,11 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                     Integer machineId = registry.handleRegister(raw);
                     session.getAttributes().put(ATTR_MACHINE_ID, machineId);
                     registry.bindAgent(machineId, session);
+                    boolean monitor = "monitor".equals(str(raw.get("role")));
+                    boolean hasTaskSnapshot = raw.get("active_tasks") instanceof List<?>;
+                    if (monitor && hasTaskSnapshot) {
+                        registry.restoreMonitorTasks(machineId, raw.get("active_tasks"));
+                    }
                     Map<String, Object> ack = new LinkedHashMap<>();
                     ack.put("type", "registered");
                     ack.put("machine_id", machineId);
@@ -100,6 +109,10 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                         appendHardwareBinding(ack, machineId, null);
                     }
                     session.sendMessage(new TextMessage(objectMapper.writeValueAsString(ack)));
+                    if (monitor && hasTaskSnapshot) {
+                        orderMonitorAutoStartService.startBoundAccounts(
+                                machineId, raw.get("active_tasks"));
+                    }
                     log.info("[Agent] 机器已注册并上线 machine_id={} mac={}", machineId, raw.get("mac"));
                 }
                 case "hardware_binding_request" -> handleHardwareBindingRequest(session, raw);
@@ -107,6 +120,10 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                     Integer machineId = machineId(session);
                     if (machineId != null) {
                         registry.updateHeartbeat(machineId, raw);
+                        Object monitorTasks = monitorTasksFromHeartbeat(raw);
+                        if (monitorTasks != null) {
+                            orderMonitorAutoStartService.startBoundAccounts(machineId, monitorTasks);
+                        }
                     }
                 }
                 case "task_status" -> registry.handleTaskStatus(raw, session);
@@ -180,6 +197,16 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         } catch (IllegalStateException e) {
             log.warn("[Trade] 忽略无效交易状态 machine_id={}: {}", machineId, e.getMessage());
         }
+    }
+
+    private Object monitorTasksFromHeartbeat(Map<String, Object> raw) {
+        Object runtimeObject = raw.get("runtime");
+        if (!(runtimeObject instanceof Map<?, ?> runtime)) {
+            return null;
+        }
+        Object activeTasks = runtime.get("active_tasks");
+        return "monitor".equals(str(runtime.get("role")))
+                && activeTasks instanceof List<?> ? activeTasks : null;
     }
 
     private void handleHardwareBindingRequest(

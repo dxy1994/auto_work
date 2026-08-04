@@ -185,6 +185,10 @@ public class AgentRegistry {
      * <p>这样后端重启或 Worker 重连后，任意浏览器查询到的都是同一份服务器状态，
      * 而不是只有发起监控的浏览器依赖本地乐观状态。</p>
      */
+    public void restoreMonitorTasks(int machineId, Object activeTasksObject) {
+        syncMonitorTasks(machineId, activeTasksObject);
+    }
+
     private void syncMonitorTasks(int machineId, Object activeTasksObject) {
         if (!(activeTasksObject instanceof List<?> activeTasks)) {
             return;
@@ -605,6 +609,40 @@ public class AgentRegistry {
 
     public TaskInfo getAccountTask(int accountId) {
         return accountTasks.get(accountId);
+    }
+
+    /** 返回某台 Monitor 当前上报的订单监控任务，用于启动时与数据库绑定做双向对账。 */
+    public Map<Integer, TaskInfo> getMachineOrderTasks(int machineId) {
+        Map<Integer, TaskInfo> result = new LinkedHashMap<>();
+        synchronized (taskLock) {
+            accountTasks.forEach((accountId, info) -> {
+                if (info != null && info.machineId == machineId) {
+                    result.put(accountId, info);
+                }
+            });
+        }
+        return result;
+    }
+
+    /** 停止指定机器上的订单监控，并同步更新后端任务镜像。 */
+    public boolean requestOrderCheckStop(
+            int machineId, int accountId, String stoppingMessage) {
+        synchronized (taskLock) {
+            TaskInfo info = accountTasks.get(accountId);
+            if (info != null && info.machineId == machineId && "stopping".equals(info.status)) {
+                return true;
+            }
+            if (!dispatchCancel(machineId, accountId)) {
+                return false;
+            }
+            // 同一账号可能已经在新机器建立了合法镜像；此时只停止旧机器的残留任务，
+            // 绝不能把新机器的任务误标记为 stopping。
+            if (info != null && info.machineId == machineId) {
+                info.status = "stopping";
+                info.message = stoppingMessage;
+            }
+            return true;
+        }
     }
 
     /** 读取镜像注册表：account_id 为 null 时返回全部运行中任务。 */

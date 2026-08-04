@@ -170,6 +170,174 @@ class ChatCommandTest(unittest.TestCase):
             "message": "聊天图片上传控件选择器未配置",
         }, result)
 
+    def test_itembay_sender_verifies_message_appears_in_chat(self):
+        events = []
+
+        class FakeLocator:
+            def __init__(self, page, selector):
+                self.page = page
+                self.selector = selector
+
+            @property
+            def first(self):
+                return self
+
+            async def wait_for(self, **_kwargs):
+                return None
+
+            async def is_enabled(self):
+                return True
+
+            async def count(self):
+                if self.selector == "#chat_container .list_message li.send":
+                    return self.page.sent_count
+                return 1
+
+            async def click(self, **_kwargs):
+                events.append(f"click:{self.selector}")
+                if self.selector == "#btnSend":
+                    self.page.sent_count += 1
+
+        class FakeKeyboard:
+            async def type(self, content, **_kwargs):
+                events.append(f"type:{content}")
+
+        class FakePage:
+            def __init__(self):
+                self.keyboard = FakeKeyboard()
+                self.sent_count = 0
+
+            async def goto(self, url, **_kwargs):
+                events.append(f"goto:{url}")
+
+            async def wait_for_timeout(self, milliseconds):
+                events.append(f"wait:{milliseconds}")
+
+            def locator(self, selector):
+                return FakeLocator(self, selector)
+
+            async def close(self):
+                events.append("close")
+
+        class FakeSession:
+            def __init__(self):
+                self.page = FakePage()
+
+            def begin_transient_operation(self):
+                return True
+
+            async def new_page(self):
+                return self.page
+
+            def track_transient_page(self, _page):
+                return None
+
+            def untrack_transient_page(self, _page):
+                return None
+
+            def end_transient_operation(self):
+                return None
+
+        session = FakeSession()
+        result = asyncio.run(sender._do_send_chat(
+            session,
+            {
+                "url": (
+                    "https://www.itembay.com/ibmessenger/"
+                    "bayTalkChatTran?iTranSeq=96370042"
+                ),
+                "input_selector": "#txtAreaMsgSend",
+                "send_selector": "#btnSend",
+                "file_selector": "#txtScreenShot",
+                "sent_selector": "#chat_container .list_message li.send",
+                "sent_timeout_ms": 1000,
+                "max_text_length": 800,
+                "max_image_bytes": 5 * 1024 * 1024,
+            },
+            [{"content": "안녕하세요", "image_urls": []}],
+        ))
+
+        self.assertTrue(result["success"])
+        self.assertIn("type:안녕하세요", events)
+        self.assertIn("click:#btnSend", events)
+        self.assertEqual(1, session.page.sent_count)
+
+    def test_itembay_sender_rejects_text_over_live_limit(self):
+        with self.assertRaisesRegex(ValueError, "800"):
+            sender._normalize_target(
+                {
+                    "url": (
+                        "https://www.itembay.com/ibmessenger/"
+                        "bayTalkChatTran?iTranSeq=96370042"
+                    ),
+                    "input_selector": "#txtAreaMsgSend",
+                    "send_selector": "#btnSend",
+                    "max_text_length": 800,
+                },
+                [{"content": "x" * 801, "image_urls": []}],
+            )
+
+    def test_itembay_image_selection_auto_sends_and_verifies_receipt(self):
+        class FakeResponse:
+            headers = {"Content-Type": "image/png"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, _chunk_size):
+                return iter((b"png-image",))
+
+        class FakeLocator:
+            def __init__(self, page, selector):
+                self.page = page
+                self.selector = selector
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                if self.selector == "#chat_container .list_message li.send":
+                    return self.page.sent_count
+                return 1
+
+            async def set_input_files(self, _path):
+                self.page.sent_count += 1
+
+        class FakePage:
+            def __init__(self):
+                self.sent_count = 0
+
+            def locator(self, selector):
+                return FakeLocator(self, selector)
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+        page = FakePage()
+        with patch("requests.get", return_value=FakeResponse()):
+            asyncio.run(sender._send_image_via_chat(
+                page,
+                "https://files.example.com/proof.png",
+                {
+                    "file_selector": "#txtScreenShot",
+                    "upload_auto_send": True,
+                    "sent_selector": (
+                        "#chat_container .list_message li.send"
+                    ),
+                    "sent_timeout_ms": 1000,
+                    "max_image_bytes": 5 * 1024 * 1024,
+                },
+            ))
+
+        self.assertEqual(1, page.sent_count)
+
     def test_delivery_confirmation_closes_chat_before_opening_order_detail(self):
         events = []
 

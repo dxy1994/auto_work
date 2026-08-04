@@ -14,6 +14,12 @@ public class MachinePlatformAccountServiceImpl extends ServiceImpl<MachinePlatfo
         implements MachinePlatformAccountService {
 
     @Override
+    public List<MachinePlatformAccount> findAllActive() {
+        return list(new LambdaQueryWrapper<MachinePlatformAccount>()
+                .eq(MachinePlatformAccount::getIsActive, 1));
+    }
+
+    @Override
     public List<MachinePlatformAccount> findByMachineIdActive(Integer machineId) {
         return list(new LambdaQueryWrapper<MachinePlatformAccount>()
                 .eq(MachinePlatformAccount::getMachineId, machineId)

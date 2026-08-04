@@ -5,13 +5,16 @@ import com.auto.common.PageRequests;
 import com.auto.entity.Machine;
 import com.auto.entity.MachinePlatformAccount;
 import com.auto.entity.MachineGameAccount;
+import com.auto.entity.PlatformAccount;
 import com.auto.service.MachinePlatformAccountService;
 import com.auto.service.MachineGameAccountService;
 import com.auto.service.MachineService;
 import com.auto.service.MouseKeyboardDeviceService;
+import com.auto.service.PlatformAccountService;
 import com.auto.service.VideoStreamDeviceService;
 import com.auto.ws.AgentRegistry;
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -28,18 +31,21 @@ public class MachineController {
     private final MachineService machineService;
     private final MachineGameAccountService machineGameService;
     private final MachinePlatformAccountService machineAccountService;
+    private final PlatformAccountService platformAccountService;
     private final MouseKeyboardDeviceService mkDeviceService;
     private final VideoStreamDeviceService vsDeviceService;
     private final AgentRegistry agentRegistry;
 
     public MachineController(MachineService machineService, MachineGameAccountService machineGameService,
                             MachinePlatformAccountService machineAccountService,
+                            PlatformAccountService platformAccountService,
                             MouseKeyboardDeviceService mkDeviceService,
                             VideoStreamDeviceService vsDeviceService,
                             AgentRegistry agentRegistry) {
         this.machineService = machineService;
         this.machineGameService = machineGameService;
         this.machineAccountService = machineAccountService;
+        this.platformAccountService = platformAccountService;
         this.mkDeviceService = mkDeviceService;
         this.vsDeviceService = vsDeviceService;
         this.agentRegistry = agentRegistry;
@@ -215,17 +221,74 @@ public class MachineController {
         return machineAccountService.findByMachineIdActive(machineId);
     }
 
+    /** 返回全部有效账号绑定及其所属机器，供关联界面展示占用状态。 */
+    @GetMapping("/platform-account-bindings")
+    public List<Map<String, Object>> listAccountBindings() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (MachinePlatformAccount binding : machineAccountService.findAllActive()) {
+            Machine machine = machineService.getById(binding.getMachineId());
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", binding.getId());
+            item.put("account_id", binding.getAccountId());
+            item.put("machine_id", binding.getMachineId());
+            item.put("machine_name", machine == null ? null : machine.getName());
+            item.put("machine_hostname", machine == null ? null : machine.getHostname());
+            item.put("machine_mac_address", machine == null ? null : machine.getMacAddress());
+            result.add(item);
+        }
+        return result;
+    }
+
     @PostMapping("/{machineId}/platform-accounts")
     @ResponseStatus(HttpStatus.CREATED)
     public MachinePlatformAccount addAccount(@PathVariable Integer machineId, @RequestBody MachinePlatformAccount payload) {
-        if (machineAccountService.findByMachineIdAndAccountId(machineId, payload.getAccountId()) != null) {
-            throw ApiException.badRequest("该账户已关联此机器");
+        Machine machine = machineService.getById(machineId);
+        if (machine == null) {
+            throw ApiException.notFound("机器不存在");
+        }
+        Integer accountId = payload.getAccountId();
+        if (accountId == null) {
+            throw ApiException.badRequest("请选择要关联的平台账户");
+        }
+        PlatformAccount account = platformAccountService.getById(accountId);
+        if (account == null || !Integer.valueOf(1).equals(account.getIsActive())) {
+            throw ApiException.badRequest("平台账户不存在或已停用");
+        }
+        List<MachinePlatformAccount> existing = machineAccountService.findByAccountIdActive(accountId);
+        if (!existing.isEmpty()) {
+            throw accountAlreadyBound(existing.get(0), machineId);
         }
         payload.setId(null);
         payload.setMachineId(machineId);
         payload.setIsActive(1);
-        machineAccountService.save(payload);
+        try {
+            machineAccountService.save(payload);
+        } catch (DataIntegrityViolationException race) {
+            List<MachinePlatformAccount> winner = machineAccountService.findByAccountIdActive(accountId);
+            if (!winner.isEmpty()) {
+                throw accountAlreadyBound(winner.get(0), machineId);
+            }
+            throw race;
+        }
         return payload;
+    }
+
+    private ApiException accountAlreadyBound(MachinePlatformAccount binding, Integer requestedMachineId) {
+        if (requestedMachineId.equals(binding.getMachineId())) {
+            return ApiException.conflict("该账户已关联当前机器");
+        }
+        Machine owner = machineService.getById(binding.getMachineId());
+        String ownerName = owner == null ? null : owner.getName();
+        if (ownerName == null || ownerName.isBlank()) {
+            ownerName = owner == null ? null : owner.getHostname();
+        }
+        if (ownerName == null || ownerName.isBlank()) {
+            ownerName = owner == null ? null : owner.getMacAddress();
+        }
+        if (ownerName == null || ownerName.isBlank()) {
+            ownerName = "机器 #" + binding.getMachineId();
+        }
+        return ApiException.conflict("该账户已关联机器「" + ownerName + "」，不能重复关联其他机器");
     }
 
     @DeleteMapping("/platform-accounts/{maId}")
@@ -234,5 +297,12 @@ public class MachineController {
         MachinePlatformAccount ma = machineAccountService.getById(maId);
         if (ma == null) throw ApiException.notFound("关联记录不存在");
         machineAccountService.removeById(maId);
+        AgentRegistry.TaskInfo task = agentRegistry.getAccountTask(ma.getAccountId());
+        if (task != null && task.machineId == ma.getMachineId()) {
+            agentRegistry.requestOrderCheckStop(
+                    ma.getMachineId(),
+                    ma.getAccountId(),
+                    "账号已从该机器解绑，正在停止监控...");
+        }
     }
 }

@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(WORKER_ROOT))
 
 from monitor.browser.session import BrowserSession  # noqa: E402
-from monitor.main import _heartbeat  # noqa: E402
+from monitor.main import _active_order_task_snapshot, _heartbeat  # noqa: E402
 from monitor.monitoring.worker import PageWorker  # noqa: E402
 
 
@@ -46,6 +46,33 @@ class MonitorBrowserLifecycleTest(unittest.TestCase):
             "status": "running",
             "start_time": 1234.5,
         }], payload["runtime"]["active_tasks"])
+
+    def test_registration_snapshot_reuses_running_tasks_after_reconnect(self):
+        task_manager = SimpleNamespace(snapshot=lambda: {
+            4: {
+                "task_id": "order-4",
+                "kind": "order_check",
+                "status": "running",
+                "start_time": 1234.5,
+            },
+            5: {
+                "task_id": "finished-5",
+                "kind": "order_check",
+                "status": "completed",
+                "start_time": 1200.0,
+            },
+        })
+
+        snapshot = _active_order_task_snapshot(
+            SimpleNamespace(task_manager=task_manager)
+        )
+
+        self.assertEqual([{
+            "account_id": 4,
+            "task_id": "order-4",
+            "status": "running",
+            "start_time": 1234.5,
+        }], snapshot)
 
     def test_websocket_disconnect_does_not_cancel_monitor_tasks(self):
         source = (WORKER_ROOT / "monitor" / "main.py").read_text(encoding="utf-8")
@@ -86,6 +113,17 @@ class MonitorBrowserLifecycleTest(unittest.TestCase):
         self.assertIn("async def reset_after_crash", session_source)
         self.assertIn("not self._session.is_alive()", monitor_source)
         self.assertIn("await self._session.reset_after_crash()", monitor_source)
+
+    def test_browser_launch_avoids_unsupported_automation_flag(self):
+        session_source = (
+            WORKER_ROOT / "monitor" / "browser" / "session.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            "--disable-blink-features=AutomationControlled",
+            session_source,
+        )
+        self.assertIn('"--restore-last-session"', session_source)
 
     def test_restored_tabs_are_kept_but_unusable_pages_are_replaced(self):
         session = BrowserSession(account_id=4)

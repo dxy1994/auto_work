@@ -125,6 +125,7 @@ export const removeMachineGame = (mgId) => request.delete(`/machines/game-accoun
 
 // ── 中控平台：机器关联账户 ────────────────────────────────
 export const getMachineAccounts = (machineId) => request.get(`/machines/${machineId}/platform-accounts`)
+export const getPlatformAccountBindings = () => request.get('/machines/platform-account-bindings')
 export const addMachineAccount = (machineId, data) => request.post(`/machines/${machineId}/platform-accounts`, data)
 export const removeMachineAccount = (maId) => request.delete(`/machines/platform-accounts/${maId}`)
 

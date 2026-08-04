@@ -169,7 +169,6 @@ class BrowserSession:
         self._playwright = await async_playwright().start()
         print(f"[BrowserSession:{self._account_id}] [2/5] playwright 已启动, 检测 channel...", flush=True)
         launch_args = [
-            "--disable-blink-features=AutomationControlled",
             "--restore-last-session",
         ]
 

@@ -49,6 +49,11 @@ public class ChatDispatchService {
     private static final String ITEMMANIA_DELIVERY_URL_TEMPLATE =
             "https://www.itemmania.com/myroom/sell/sell_ing_view.html"
                     + "?id={order_no}&type=sell";
+    private static final String ITEMBAY_URL_TEMPLATE =
+            "https://www.itembay.com/ibmessenger/bayTalkChatTran"
+                    + "?iTranSeq={order_no}";
+    private static final int ITEMBAY_MAX_TEXT_LENGTH = 800;
+    private static final int ITEMBAY_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
     private final GameItemOrderService orderService;
     private final PlatformAccountService accountService;
@@ -409,7 +414,11 @@ public class ChatDispatchService {
         String fileSelector = configString(chatConfig, "file_selector");
         String uploadSendSelector = configString(chatConfig, "upload_send_selector");
         String uploadCloseSelector = configString(chatConfig, "upload_close_selector");
+        String sentSelector = configString(chatConfig, "sent_selector");
         boolean uploadAutoSend = configBoolean(chatConfig, "upload_auto_send", true);
+        int sentTimeoutMs = configInt(chatConfig, "sent_timeout_ms", 0);
+        int maxTextLength = configInt(chatConfig, "max_text_length", 0);
+        int maxImageBytes = configInt(chatConfig, "max_image_bytes", 0);
 
         if ("itemmania".equals(platformCode)) {
             if (urlTemplate.isBlank()) urlTemplate = ITEMMANIA_URL_TEMPLATE;
@@ -421,6 +430,23 @@ public class ChatDispatchService {
             if (uploadCloseSelector.isBlank()) {
                 uploadCloseSelector = "#attach_layer .close";
             }
+        }
+        if ("itembay".equals(platformCode)) {
+            if (urlTemplate.isBlank()) urlTemplate = ITEMBAY_URL_TEMPLATE;
+            if (inputSelector.isBlank()) inputSelector = "#txtAreaMsgSend";
+            if (sendSelector.isBlank()) sendSelector = "#btnSend";
+            if (fileSelector.isBlank()) fileSelector = "#txtScreenShot";
+            if (sentSelector.isBlank()) {
+                sentSelector = "#chat_container .list_message li.send";
+            }
+            if (sentTimeoutMs <= 0) sentTimeoutMs = 10_000;
+            if (maxTextLength <= 0) {
+                maxTextLength = ITEMBAY_MAX_TEXT_LENGTH;
+            }
+            if (maxImageBytes <= 0) {
+                maxImageBytes = ITEMBAY_MAX_IMAGE_BYTES;
+            }
+            uploadAutoSend = true;
         }
         if (urlTemplate.isBlank()
                 || (!urlTemplate.contains("{order_no}")
@@ -437,6 +463,16 @@ public class ChatDispatchService {
         }
         if (hasImages && !uploadAutoSend && uploadSendSelector.isBlank()) {
             throw ApiException.badRequest("平台未配置图片上传后的发送按钮选择器");
+        }
+        if (maxTextLength > 0) {
+            for (int index = 0; index < messages.size(); index++) {
+                String content = safe(messages.get(index).content());
+                if (content.length() > maxTextLength) {
+                    throw ApiException.badRequest(
+                            "第 " + (index + 1) + " 条文字超过平台限制 "
+                                    + maxTextLength + " 个字符");
+                }
+            }
         }
 
         String encodedOrderNo = URLEncoder.encode(orderNo, StandardCharsets.UTF_8);
@@ -456,6 +492,16 @@ public class ChatDispatchService {
         }
         if (!uploadCloseSelector.isBlank()) {
             target.put("upload_close_selector", uploadCloseSelector);
+        }
+        if (!sentSelector.isBlank()) {
+            target.put("sent_selector", sentSelector);
+            target.put("sent_timeout_ms", sentTimeoutMs > 0 ? sentTimeoutMs : 10_000);
+        }
+        if (maxTextLength > 0) {
+            target.put("max_text_length", maxTextLength);
+        }
+        if (maxImageBytes > 0) {
+            target.put("max_image_bytes", maxImageBytes);
         }
         target.put("order_no", orderNo);
         return target;

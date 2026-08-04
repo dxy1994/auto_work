@@ -211,26 +211,29 @@ async def _dispatch_message(msg, ctx: AppContext):
 # 连接管理
 # ═══════════════════════════════════════════════════════════
 
+def _active_order_task_snapshot(ctx: AppContext):
+    task_snapshot = ctx.task_manager.snapshot()
+    return [
+        {
+            "account_id": account_id,
+            "task_id": info.get("task_id"),
+            "status": info.get("status"),
+            "start_time": info.get("start_time"),
+        }
+        for account_id, info in task_snapshot.items()
+        if info.get("kind") == "order_check"
+        and info.get("status") in {"running", "stopping"}
+    ]
+
+
 async def _heartbeat(client, ctx: AppContext):
     while True:
-        task_snapshot = ctx.task_manager.snapshot()
-        active_tasks = [
-            {
-                "account_id": account_id,
-                "task_id": info.get("task_id"),
-                "status": info.get("status"),
-                "start_time": info.get("start_time"),
-            }
-            for account_id, info in task_snapshot.items()
-            if info.get("kind") == "order_check"
-            and info.get("status") in {"running", "stopping"}
-        ]
         await client.send({
             "type": "heartbeat",
             "ip": config.get_machine_ip(getattr(client, "local_ip", None)),
             "runtime": {
                 "role": "monitor",
-                "active_tasks": active_tasks,
+                "active_tasks": _active_order_task_snapshot(ctx),
             },
         })
         await asyncio.sleep(config.HEARTBEAT_INTERVAL)
@@ -244,6 +247,7 @@ async def _connect_once(ctx: AppContext):
         client = AgentClient(ws, loop)
         info = config.get_machine_info(client.local_ip)
         info["role"] = "monitor"
+        info["active_tasks"] = _active_order_task_snapshot(ctx)
         try:
             reporter = ctx.reporter
             reporter.set_client(client)

@@ -351,12 +351,24 @@
 
     <!-- 关联账户抽屉 -->
     <el-drawer v-model="accountsDrawerVisible" :title="`关联账户 - ${currentMachine?.name || currentMachine?.mac_address || ''}`" size="550px" destroy-on-close>
-      <div class="games-toolbar">
-        <el-select v-model="newAccountId" placeholder="选择账户" style="width: 280px" filterable>
-          <el-option v-for="a in allAccounts" :key="a.id" :label="`${websiteNameMap[a.website_id] || ''} - ${a.label} (${a.username})`" :value="a.id" />
+      <div class="games-toolbar account-binding-toolbar">
+        <el-select v-model="newAccountId" placeholder="选择账户" style="width: 410px" filterable>
+          <el-option
+            v-for="a in allAccounts"
+            :key="a.id"
+            :label="accountOptionLabel(a)"
+            :value="a.id"
+            :disabled="Boolean(accountBindingMap[a.id])"
+          >
+            <span>{{ accountBaseLabel(a) }}</span>
+            <span v-if="accountBindingMap[a.id]" class="account-binding-owner">
+              已关联：{{ bindingMachineLabel(accountBindingMap[a.id]) }}
+            </span>
+          </el-option>
         </el-select>
         <el-button type="primary" size="small" @click="handleAddAccount" :disabled="!newAccountId">添加</el-button>
       </div>
+      <div class="account-binding-tip">已关联账户不可重复分配，灰色项右侧显示当前所属机器。</div>
       <el-table :data="machineAccounts" border stripe size="small" row-key="id">
         <el-table-column label="网站" min-width="100">
           <template #default="{ row }">{{ websiteNameMap[row.website_id] || row.website_id }}</template>
@@ -385,7 +397,7 @@ import { ElMessage } from 'element-plus'
 import {
   getMachines, getMachineSession, createMachine, updateMachine, deleteMachine,
   getMachineGames, addMachineGame, updateMachineGame, removeMachineGame,
-  getMachineAccounts, addMachineAccount, removeMachineAccount,
+  getMachineAccounts, getPlatformAccountBindings, addMachineAccount, removeMachineAccount,
   getAllGames, getAllRegions, getAllAccounts, getAllWebsites,
   getAllMkDevices, getAllVsDevices, getAllGameAccounts,
 } from '../api'
@@ -666,10 +678,36 @@ async function handleUpdateGameCfg() {
 // ── 关联账户 ──
 const accountsDrawerVisible = ref(false)
 const machineAccounts = ref([])
+const accountBindings = ref([])
 const newAccountId = ref(null)
+const accountBindingMap = computed(() => Object.fromEntries(
+  accountBindings.value.map(binding => [binding.account_id, binding]),
+))
+
+function accountBaseLabel(account) {
+  return `${websiteNameMap.value[account.website_id] || ''} - ${account.label} (${account.username})`
+}
+function bindingMachineLabel(binding) {
+  return binding.machine_name
+    || binding.machine_hostname
+    || binding.machine_mac_address
+    || `机器 #${binding.machine_id}`
+}
+function accountOptionLabel(account) {
+  const binding = accountBindingMap.value[account.id]
+  return binding
+    ? `${accountBaseLabel(account)}（已关联：${bindingMachineLabel(binding)}）`
+    : accountBaseLabel(account)
+}
 
 async function openAccountsDrawer(machine) {
-  currentMachine.value = machine; accountsDrawerVisible.value = true; await fetchMachineAccounts()
+  currentMachine.value = machine
+  newAccountId.value = null
+  accountsDrawerVisible.value = true
+  await Promise.all([fetchMachineAccounts(), fetchAccountBindings()])
+}
+async function fetchAccountBindings() {
+  accountBindings.value = await getPlatformAccountBindings()
 }
 async function fetchMachineAccounts() {
   if (!currentMachine.value) return
@@ -683,11 +721,17 @@ async function fetchMachineAccounts() {
 async function handleAddAccount() {
   try {
     await addMachineAccount(currentMachine.value.id, { account_id: newAccountId.value })
-    ElMessage.success('已添加'); newAccountId.value = null; fetchMachineAccounts()
+    ElMessage.success('已添加')
+    newAccountId.value = null
+    await Promise.all([fetchMachineAccounts(), fetchAccountBindings()])
   } catch (e) { ElMessage.error(e.message) }
 }
 async function handleRemoveAccount(maId) {
-  try { await removeMachineAccount(maId); ElMessage.success('已移除'); fetchMachineAccounts() }
+  try {
+    await removeMachineAccount(maId)
+    ElMessage.success('已移除')
+    await Promise.all([fetchMachineAccounts(), fetchAccountBindings()])
+  }
   catch (e) { ElMessage.error(e.message) }
 }
 
@@ -727,6 +771,20 @@ onBeforeUnmount(stopSessionRefresh)
   box-shadow: 0 1px 2px rgba(31, 45, 61, .04);
 }
 .toolbar .el-button { margin-left: auto; }
+.account-binding-toolbar {
+  align-items: center;
+}
+.account-binding-owner {
+  float: right;
+  margin-left: 18px;
+  color: #909399;
+  font-size: 12px;
+}
+.account-binding-tip {
+  margin: -4px 0 12px;
+  color: #909399;
+  font-size: 12px;
+}
 .split-layout {
   flex: 1;
   display: grid;
