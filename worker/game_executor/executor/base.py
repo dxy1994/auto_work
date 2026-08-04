@@ -37,8 +37,8 @@ class BaseGameExecutor(ABC):
                 - region_code: 游戏客户端使用的大区代码/名称
                 - region_sort_order: 大区在客户端服务器列表中的固定排序号
                 - region_select_page: 大区在客户端服务器列表中的页码，从 1 开始
-                - region_select_x: 可选，大区在 800x600 客户区中的点击 X 坐标
-                - region_select_y: 可选，大区在 800x600 客户区中的点击 Y 坐标
+                - region_select_x: 可选，大区在 1280x960 客户区中的点击 X 坐标
+                - region_select_y: 可选，大区在 1280x960 客户区中的点击 Y 坐标
                 - buyer_character: 买家角色名
                 - asset_type: 资产类型
                 - asset_amount: 资产数量

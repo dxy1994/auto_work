@@ -16,6 +16,56 @@ from game_executor.executor.lineage_classic.player_name_ocr import (
 
 
 class PlayerNameOcrTest(unittest.TestCase):
+    def test_all_english_letters_use_ten_pixel_advance_at_1280x960(self):
+        letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+        self.assertEqual(
+            {10},
+            {estimated_character_width(char) for char in letters},
+        )
+
+    def test_real_trade_panel_border_noise_is_not_used_as_name_start(self):
+        image = np.zeros((35, 160, 3), dtype=np.uint8)
+        image[2:5, 4] = (220, 220, 220)
+        image[2:4, 6:9] = (220, 220, 220)
+        cv2.rectangle(image, (17, 13), (24, 25), (220, 220, 220), 1)
+
+        segments = segment_expected_name(image, "ABC")
+
+        self.assertEqual(
+            [("A", 17, 27), ("B", 27, 37), ("C", 37, 47)],
+            [
+                (segment.expected, segment.left, segment.right)
+                for segment in segments
+            ],
+        )
+
+    def test_korean_to_english_transition_uses_trade_panel_cell_origin(self):
+        image = np.zeros((35, 140, 3), dtype=np.uint8)
+        image[2:17, 4] = (220, 220, 220)
+        image[2:4, 6:9] = (220, 220, 220)
+        cv2.rectangle(image, (19, 8), (73, 25), (220, 220, 220), 1)
+
+        segments = segment_expected_name(image, "꼬망임DL")
+
+        self.assertEqual(
+            [
+                ("꼬망임", 17, 77, 19, 77),
+                ("D", 77, 87, 75, 87),
+                ("L", 87, 97, 85, 97),
+            ],
+            [
+                (
+                    segment.expected,
+                    segment.left,
+                    segment.right,
+                    segment.crop_left,
+                    segment.crop_right,
+                )
+                for segment in segments
+            ],
+        )
+
     def test_mixed_name_is_split_into_continuous_script_runs(self):
         runs = split_expected_name("TT석사TT")
 
@@ -46,7 +96,7 @@ class PlayerNameOcrTest(unittest.TestCase):
         self.assertEqual(5, len(segments))
         self.assertLessEqual(segments[0].left, 5)
         self.assertLess(segments[0].right, segments[2].left)
-        self.assertEqual(55, segments[-1].right)
+        self.assertEqual(85, segments[-1].right)
 
     def test_two_column_lowercase_r_is_not_skipped_as_border_noise(self):
         image = np.zeros((22, 80, 3), dtype=np.uint8)
@@ -59,30 +109,53 @@ class PlayerNameOcrTest(unittest.TestCase):
         segments = segment_expected_name(image, "ru")
 
         self.assertEqual(
-            [("r", 12, 17), ("u", 17, 23)],
+            [("r", 10, 20), ("u", 20, 30)],
             [
                 (segment.expected, segment.left, segment.right)
                 for segment in segments
             ],
         )
 
+    def test_repeated_uppercase_t_does_not_overlap_previous_glyph(self):
+        image = np.zeros((22, 60, 3), dtype=np.uint8)
+        cv2.rectangle(image, (5, 4), (24, 18), (220, 220, 220), 1)
+
+        segments = segment_expected_name(image, "TT")
+
+        self.assertEqual(
+            [
+                ("T", 5, 15, 3, 17),
+                ("T", 15, 25, 15, 27),
+            ],
+            [
+                (
+                    segment.expected,
+                    segment.left,
+                    segment.right,
+                    segment.crop_left,
+                    segment.crop_right,
+                )
+                for segment in segments
+            ],
+        )
+
     def test_mixed_vwxyz_korean_name_uses_proportional_widths(self):
-        image = np.zeros((22, 120, 3), dtype=np.uint8)
+        image = np.zeros((22, 160, 3), dtype=np.uint8)
         cv2.rectangle(image, (5, 4), (78, 18), (220, 220, 220), 1)
 
         segments = segment_expected_name(image, "VWXYZ사라YOU")
 
         self.assertEqual(
             [
-                ("V", 5, 11),
-                ("W", 11, 17),
-                ("X", 17, 23),
-                ("Y", 23, 29),
-                ("Z", 29, 35),
-                ("사라", 35, 61),
-                ("Y", 61, 67),
-                ("O", 67, 73),
-                ("U", 73, 79),
+                ("V", 5, 15),
+                ("W", 15, 25),
+                ("X", 25, 35),
+                ("Y", 35, 45),
+                ("Z", 45, 55),
+                ("사라", 55, 95),
+                ("Y", 95, 105),
+                ("O", 105, 115),
+                ("U", 115, 125),
             ],
             [
                 (segment.expected, segment.left, segment.right)
@@ -91,7 +164,7 @@ class PlayerNameOcrTest(unittest.TestCase):
         )
 
     def test_calibrated_uppercase_name_uses_exact_configured_boundaries(self):
-        image = np.zeros((22, 120, 3), dtype=np.uint8)
+        image = np.zeros((22, 160, 3), dtype=np.uint8)
         # 两个孤立亮点模拟弹窗边框噪声，姓名从 X=12 开始。
         image[5, 5] = (220, 220, 220)
         image[5, 6] = (220, 220, 220)
@@ -112,33 +185,33 @@ class PlayerNameOcrTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                (12, 18), (18, 24), (24, 30), (30, 37),
-                (37, 43), (43, 49), (49, 55), (55, 63),
-                (63, 68), (68, 74), (74, 80), (80, 86),
+                (12, 22), (22, 32), (32, 42), (42, 52),
+                (52, 62), (62, 72), (72, 82), (82, 92),
+                (92, 102), (102, 112), (112, 122), (122, 132),
             ],
             [(segment.left, segment.right) for segment in segments],
         )
 
     def test_calibrated_lowercase_name_uses_exact_configured_boundaries(self):
-        image = np.zeros((22, 120, 3), dtype=np.uint8)
+        image = np.zeros((22, 160, 3), dtype=np.uint8)
         cv2.rectangle(image, (11, 4), (84, 18), (220, 220, 220), 1)
 
         segments = segment_expected_name(image, "abcdfjeghikl")
 
         self.assertEqual(
             [
-                ("a", 11, 17),
-                ("b", 17, 23),
-                ("c", 23, 29),
-                ("d", 29, 35),
-                ("f", 35, 41),
-                ("j", 41, 47),
-                ("e", 47, 53),
-                ("g", 53, 60),
-                ("h", 60, 68),
-                ("i", 68, 73),
-                ("k", 73, 80),
-                ("l", 80, 85),
+                ("a", 11, 21),
+                ("b", 21, 31),
+                ("c", 31, 41),
+                ("d", 41, 51),
+                ("f", 51, 61),
+                ("j", 61, 71),
+                ("e", 71, 81),
+                ("g", 81, 91),
+                ("h", 91, 101),
+                ("i", 101, 111),
+                ("k", 111, 121),
+                ("l", 121, 131),
             ],
             [
                 (segment.expected, segment.left, segment.right)
@@ -154,18 +227,18 @@ class PlayerNameOcrTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                ("m", 11, 17, 10, 17),
-                ("n", 17, 23, 16, 22),
-                ("o", 23, 29, 21, 28),
-                ("p", 29, 35, 28, 35),
-                ("q", 35, 42, 34, 42),
-                ("l", 42, 47, 41, 46),
-                ("s", 47, 53, 46, 53),
-                ("t", 53, 61, 54, 60),
-                ("y", 61, 67, 60, 67),
-                ("v", 67, 73, 66, 73),
-                ("w", 73, 79, 72, 79),
-                ("x", 79, 85, 78, 85),
+                ("m", 11, 21, 9, 21),
+                ("n", 21, 31, 19, 29),
+                ("o", 31, 41, 28, 39),
+                ("p", 41, 51, 39, 51),
+                ("q", 51, 61, 49, 61),
+                ("l", 61, 71, 59, 69),
+                ("s", 71, 81, 69, 81),
+                ("t", 81, 91, 83, 89),
+                ("y", 91, 101, 89, 101),
+                ("v", 101, 111, 99, 111),
+                ("w", 111, 121, 109, 121),
+                ("x", 121, 131, 119, 131),
             ],
             [
                 (
@@ -179,7 +252,7 @@ class PlayerNameOcrTest(unittest.TestCase):
             ],
         )
 
-    def test_mixed_korean_lokl_name_uses_calibrated_pair_spacing_and_crops(self):
+    def test_mixed_korean_lokl_name_uses_fixed_english_spacing_and_crops(self):
         image = np.zeros((22, 140, 3), dtype=np.uint8)
         image[5, 4] = (220, 220, 220)
         image[6, 5] = (220, 220, 220)
@@ -189,11 +262,11 @@ class PlayerNameOcrTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                ("킹차노스", 12, 64, 12, 64),
-                ("l", 64, 68, 63, 67),
-                ("o", 68, 74, 66, 73),
-                ("k", 74, 79, 73, 79),
-                ("L", 79, 85, 78, 85),
+                ("킹차노스", 12, 92, 12, 92),
+                ("l", 92, 102, 90, 100),
+                ("o", 102, 112, 99, 110),
+                ("k", 112, 122, 110, 122),
+                ("L", 122, 132, 120, 132),
             ],
             [
                 (
@@ -207,7 +280,7 @@ class PlayerNameOcrTest(unittest.TestCase):
             ],
         )
 
-    def test_mixed_name_applies_calibrated_character_pair_spacing(self):
+    def test_mixed_name_keeps_fixed_english_spacing_across_script_runs(self):
         image = np.zeros((22, 140, 3), dtype=np.uint8)
         image[5, 4] = (220, 220, 220)
         image[6, 5] = (220, 220, 220)
@@ -217,14 +290,14 @@ class PlayerNameOcrTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                ("r", 12, 17),
-                ("u", 17, 23),
-                ("y", 23, 29),
-                ("z", 29, 35),
-                ("호랑", 35, 61),
-                ("H", 61, 67),
-                ("M", 67, 73),
-                ("n", 73, 79),
+                ("r", 10, 20),
+                ("u", 20, 30),
+                ("y", 30, 40),
+                ("z", 40, 50),
+                ("호랑", 50, 90),
+                ("H", 90, 100),
+                ("M", 100, 110),
+                ("n", 110, 120),
             ],
             [
                 (segment.expected, segment.left, segment.right)
@@ -232,14 +305,14 @@ class PlayerNameOcrTest(unittest.TestCase):
             ],
         )
 
-    def test_unconfigured_korean_syllables_default_to_thirteen_pixels(self):
+    def test_all_korean_syllables_use_twenty_pixel_advance_at_1280x960(self):
         image = np.zeros((22, 80, 3), dtype=np.uint8)
         cv2.rectangle(image, (5, 4), (43, 18), (220, 220, 220), 1)
 
         segments = segment_expected_name(image, "한글명")
 
         self.assertEqual(
-            [("한글명", 5, 44)],
+            [("한글명", 5, 65)],
             [
                 (segment.expected, segment.left, segment.right)
                 for segment in segments
@@ -297,6 +370,32 @@ class PlayerNameOcrTest(unittest.TestCase):
         self.assertEqual("석사", result.visual_observed)
         self.assertTrue(result.verified)
         self.assertEqual("segmented_exact", result.strategy)
+
+    def test_korean_dot_font_equivalents_are_expected_position_scoped(self):
+        image = np.zeros((22, 140, 3), dtype=np.uint8)
+        cv2.rectangle(image, (5, 4), (104, 18), (220, 220, 220), 1)
+
+        def recognize(_image, language):
+            self.assertEqual("korean", language)
+            return "이풍리방니", 95.6
+
+        result = recognize_expected_player_name(
+            image,
+            "이뚱리빵니",
+            recognizer=recognize,
+        )
+        unrelated = recognize_expected_player_name(
+            image,
+            "이뚱리숙니",
+            recognizer=recognize,
+        )
+
+        self.assertEqual("이뚱리빵니", result.text)
+        self.assertEqual("이풍리방니", result.visual_observed)
+        self.assertTrue(result.verified)
+        self.assertTrue(result.runs[0].high_risk_equivalent)
+        self.assertEqual("segmented_high_risk_equivalent", result.strategy)
+        self.assertFalse(unrelated.verified)
 
     def test_unsupported_name_characters_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "不支持"):
@@ -431,6 +530,34 @@ class PlayerNameOcrTest(unittest.TestCase):
 
         self.assertEqual("iCjsTxL", result.text)
         self.assertEqual("!(;$+*[", result.visual_observed)
+        self.assertTrue(result.verified)
+        self.assertTrue(all(run.high_risk_equivalent for run in result.runs))
+        self.assertEqual("segmented_high_risk_equivalent", result.strategy)
+
+    def test_1280_pixel_font_visual_equivalents_are_expected_position_scoped(self):
+        image = np.zeros((35, 100, 3), dtype=np.uint8)
+        cv2.rectangle(image, (5, 8), (64, 25), (220, 220, 220), 1)
+        answers = iter(
+            [("D", 91.0)] * 4
+            + [("b", 92.0)] * 4
+            + [("3", 93.0)] * 4
+            + [("b", 94.0)] * 4
+            + [("u", 95.0)] * 4
+            + [("2", 96.0)] * 4
+        )
+
+        def recognize(_image, language):
+            self.assertEqual("english", language)
+            return next(answers)
+
+        result = recognize_expected_player_name(
+            image,
+            "begoVZ",
+            recognizer=recognize,
+        )
+
+        self.assertEqual("begoVZ", result.text)
+        self.assertEqual("Db3bu2", result.visual_observed)
         self.assertTrue(result.verified)
         self.assertTrue(all(run.high_risk_equivalent for run in result.runs))
         self.assertEqual("segmented_high_risk_equivalent", result.strategy)

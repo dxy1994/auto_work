@@ -141,15 +141,15 @@
           <el-form-item label="选区坐标">
             <div class="coordinate-inputs">
               <el-form-item prop="select_x">
-                <el-input-number v-model="regionForm.select_x" :min="0" :max="799" :step="1" placeholder="X" />
+                <el-input-number v-model="regionForm.select_x" :min="0" :max="1279" :step="1" placeholder="X" />
               </el-form-item>
               <span>×</span>
               <el-form-item prop="select_y">
-                <el-input-number v-model="regionForm.select_y" :min="0" :max="599" :step="1" placeholder="Y" />
+                <el-input-number v-model="regionForm.select_y" :min="0" :max="959" :step="1" placeholder="Y" />
               </el-form-item>
             </div>
           </el-form-item>
-          <el-alert title="页码从 1 开始；工作机会先进入对应页，再使用配置坐标或 OCR 选择大区" type="info" :closable="false" show-icon />
+          <el-alert title="坐标按 1280×960 游戏客户区填写；页码从 1 开始，工作机会先进入对应页，再使用配置坐标或 OCR 选择大区" type="info" :closable="false" show-icon />
           <el-form-item v-if="regionIsEdit" label="排序">
             <el-input-number v-model="regionForm.sort_order" :min="0" :max="999" />
           </el-form-item>

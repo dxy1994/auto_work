@@ -1,73 +1,28 @@
-"""天堂经典版 800x600 客户区中的玩家名字体宽度配置。"""
+"""天堂经典版 1280x960 客户区中的玩家名字体宽度配置。"""
 
 from types import MappingProxyType
 
 
-# 这里记录的是“字符前进宽度”：当前字符单元起点到下一个字符单元起点，
-# 包含字形右侧的固定字间距，不是明亮像素本身的包围盒宽度。
-#
-# 大写 A-Z 以及小写 a-x 已使用 2026-07-23 的实际交易请求截图标定；
-# 其余小写字符先按同一套像素字体的字形结构配置，后续拿到对应样本时
-# 只需调整此表。
-ENGLISH_ADVANCE_WIDTHS = MappingProxyType({
-    "A": 6,
-    "B": 6,
-    "C": 6,
-    "D": 7,
-    "E": 6,
-    "F": 6,
-    "G": 6,
-    "H": 8,
-    "I": 5,
-    "J": 6,
-    "K": 6,
-    "L": 6,
-    "M": 7,
-    "N": 6,
-    "O": 6,
-    "P": 6,
-    "Q": 7,
-    "R": 6,
-    "S": 6,
-    "T": 6,
-    "U": 6,
-    "V": 6,
-    "W": 6,
-    "X": 6,
-    "Y": 6,
-    "Z": 6,
-    "a": 6,
-    "b": 6,
-    "c": 6,
-    "d": 6,
-    "e": 6,
-    "f": 6,
-    "g": 7,
-    "h": 8,
-    "i": 5,
-    "j": 6,
-    "k": 7,
-    "l": 5,
-    "m": 6,
-    "n": 6,
-    "o": 6,
-    "p": 6,
-    "q": 7,
-    "r": 5,
-    "s": 6,
-    "t": 5,
-    "u": 6,
-    "v": 6,
-    "w": 6,
-    "x": 6,
-    "y": 6,
-    "z": 6,
-})
+# 现有标定表来自原 800x600 客户区；1280x960 的游戏 UI 按 1.6 倍等比渲染。
+FONT_RENDER_SCALE = 1.6
 
-DEFAULT_ENGLISH_ADVANCE_WIDTH = 6
-# 韩文字体暂按每个音节 13px 前进；连续韩文会整段交给韩文 OCR，
-# 再仅保留识别结果中的韩文字符与订单姓名的韩文段比较。
-KOREAN_ADVANCE_WIDTH = 13
+
+def _scale_metric(value: int) -> int:
+    return int(round(value * FONT_RENDER_SCALE))
+
+
+# 2026-07-31 的五组 1280x960 实机交易请求覆盖了 A-Z/a-z。投影结果显示
+# 所有英文字母都使用固定 10px 字符单元；字形本身虽然有宽窄差异，但下一个
+# 字符的起点始终向右移动 10px。
+ENGLISH_ADVANCE_WIDTH = 10
+ENGLISH_ADVANCE_WIDTHS = MappingProxyType({
+    char: ENGLISH_ADVANCE_WIDTH
+    for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+})
+DEFAULT_ENGLISH_ADVANCE_WIDTH = ENGLISH_ADVANCE_WIDTH
+# 2026-07-31 的两组纯韩文实机交易请求显示，每个韩文音节使用固定 20px
+# 字符单元；连续韩文会整段交给韩文 OCR，再与订单姓名的韩文段比较。
+KOREAN_ADVANCE_WIDTH = 20
 KOREAN_ADVANCE_WIDTHS = MappingProxyType({
 
 })
@@ -104,8 +59,12 @@ ENGLISH_OCR_HIGH_RISK_EQUIVALENTS = MappingProxyType({
     # 天堂角色名不允许数字，因此 0/1/9 只能来自 OCR 的视觉误判。
     "C": frozenset({"c", "("}),
     "c": frozenset({"c", "("}),
+    # 1280x960 点阵字形的 b/e/o 在单字 OCR 中可能分别呈现为 D/b/b；
+    # 仅当订单对应位置明确期望该字母时才接受，不能做全局替换。
+    "b": frozenset({"b", "d"}),
+    "e": frozenset({"e", "b"}),
     "O": frozenset({"o", "0"}),
-    "o": frozenset({"o", "0"}),
+    "o": frozenset({"o", "0", "b"}),
     # 细竖线字形会在 I/i/l、数字 1、感叹号与竖线之间波动。
     "I": frozenset({"i", "l", "1", "!", "|"}),
     "i": frozenset({"i", "l", "1", "!", "|"}),
@@ -116,7 +75,7 @@ ENGLISH_OCR_HIGH_RISK_EQUIVALENTS = MappingProxyType({
     # L 的横竖笔画容易被识别成左方括号或下划线。
     "L": frozenset({"l", "[", "_"}),
     # 小写 g 的下伸部在游戏点阵字体中经常被识别为数字 9。
-    "g": frozenset({"g", "9"}),
+    "g": frozenset({"g", "9", "3"}),
     # 下列点阵字母的主体很小，英文模型可能只保留成相似标点。
     "r": frozenset({"r", ",", "."}),
     "S": frozenset({"s", "$"}),
@@ -125,8 +84,18 @@ ENGLISH_OCR_HIGH_RISK_EQUIVALENTS = MappingProxyType({
     "t": frozenset({"t", "+"}),
     "X": frozenset({"x", "*"}),
     "x": frozenset({"x", "*"}),
-    "Z": frozenset({"z", ":", ";"}),
+    # 大写 V/Z 的 1280x960 实机样本会稳定落到 u/2。
+    "V": frozenset({"v", "u"}),
+    "Z": frozenset({"z", ":", ";", "2"}),
     "z": frozenset({"z", ":", ";"}),
+})
+
+# 1280x960 的韩文点阵字在 OCR 模型中存在少量稳定的视觉混淆。规则只在订单
+# 对应位置明确期望左侧音节时单向启用，不会改写整段 OCR 文本。
+KOREAN_OCR_HIGH_RISK_EQUIVALENTS = MappingProxyType({
+    "샤": frozenset({"사"}),
+    "뚱": frozenset({"풍"}),
+    "빵": frozenset({"방"}),
 })
 
 # 只保留上表明确配置过的 OCR 标点结果。订单昵称本身仍只允许英文和韩文；
@@ -138,31 +107,24 @@ ENGLISH_OCR_ALLOWED_VISUAL_SYMBOLS = frozenset(
     if not visual.isalnum()
 )
 
-# 部分相邻字符会改变下一个字符的起点；值会加到前一个字符的前进宽度。
-# 这不是 OCR 容错，而是依据实际交易请求截图标定的游戏字体排版数据。
-CHARACTER_PAIR_ADVANCE_ADJUSTMENTS = MappingProxyType({
-    # 2026-07-23 真实交易请求样本“킹차노스lokL”标定。
-    ("l", "o"): -1,
-    ("k", "L"): -2,
-    ("t", "y"): 3,
-    ("H", "M"): -2,
-    ("M", "n"): -1,
-})
+# 1280x960 实机样本中的相邻英文字符没有额外挤压或扩张。
+CHARACTER_PAIR_ADVANCE_ADJUSTMENTS = MappingProxyType({})
 
 
 def character_advance_width(char: str) -> int:
     """返回一个已支持英文或韩文字符的固定前进宽度。"""
     if "\uac00" <= char <= "\ud7a3" or "\u3131" <= char <= "\u318e":
         return KOREAN_ADVANCE_WIDTHS.get(char, KOREAN_ADVANCE_WIDTH)
-    return ENGLISH_ADVANCE_WIDTHS.get(
-        char,
-        DEFAULT_ENGLISH_ADVANCE_WIDTH,
-    )
+    else:
+        return ENGLISH_ADVANCE_WIDTHS.get(
+            char,
+            DEFAULT_ENGLISH_ADVANCE_WIDTH,
+        )
 
 
 def character_ocr_adjustments(char: str) -> tuple[int, int]:
     """返回字符单元转换成 OCR 裁剪框时的左右边界调整量。"""
-    return (
+    return tuple(_scale_metric(value) for value in (
         ENGLISH_OCR_LEFT_ADJUSTMENTS.get(
             char,
             DEFAULT_ENGLISH_OCR_LEFT_ADJUST,
@@ -171,7 +133,7 @@ def character_ocr_adjustments(char: str) -> tuple[int, int]:
             char,
             DEFAULT_ENGLISH_OCR_RIGHT_ADJUST,
         ),
-    )
+    ))
 
 
 def character_pair_advance_adjustment(
@@ -181,9 +143,11 @@ def character_pair_advance_adjustment(
     """返回相邻字符对对当前字符前进宽度的修正量。"""
     if following is None:
         return 0
-    return CHARACTER_PAIR_ADVANCE_ADJUSTMENTS.get(
-        (current, following),
-        0,
+    return _scale_metric(
+        CHARACTER_PAIR_ADVANCE_ADJUSTMENTS.get(
+            (current, following),
+            0,
+        )
     )
 
 
@@ -205,4 +169,17 @@ def character_ocr_match_is_high_risk(
         observed_key != str(expected or "").casefold()
         and observed_key
         in ENGLISH_OCR_HIGH_RISK_EQUIVALENTS.get(expected, frozenset())
+    )
+
+
+def korean_ocr_text_matches(expected: str, observed: str) -> bool:
+    """按订单字符位置比较韩文，并允许实机标定出的单向视觉等价字。"""
+    expected_value = str(expected or "")
+    observed_value = str(observed or "")
+    if len(expected_value) != len(observed_value):
+        return False
+    return all(
+        actual == wanted
+        or actual in KOREAN_OCR_HIGH_RISK_EQUIVALENTS.get(wanted, frozenset())
+        for wanted, actual in zip(expected_value, observed_value)
     )

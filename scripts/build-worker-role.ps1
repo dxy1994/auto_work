@@ -423,7 +423,7 @@ else {
 @"
 1. Edit .env and set BACKEND_WS_URL plus the STORAGE_* RustFS settings.
 2. Bind this machine to a Wireless HID device in the controller.
-3. Keep the game client at 800x600 and run check-package.bat.
+3. Keep the game client at 1280x960 and run check-package.bat.
 4. Keep the ocr_models directory beside the EXE; OCR runs offline without downloading models.
 "@
 }

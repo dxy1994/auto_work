@@ -124,10 +124,13 @@ def _extract_transaction_id(attributes: List[str]) -> str:
 def _extract_character_name(candidates: List[dict],
                             progress_text: str) -> str:
     for candidate in candidates or []:
-        onclick = str(candidate.get("onclick") or "")
+        copy_action = " ".join((
+            str(candidate.get("onclick") or ""),
+            str(candidate.get("href") or ""),
+        ))
         match = re.search(
             r"fncCharacterNameCopy\s*\(\s*(['\"])(.*?)\1",
-            onclick,
+            copy_action,
         )
         if match:
             value = html.unescape(match.group(2))
@@ -150,6 +153,54 @@ def _extract_character_name(candidates: List[dict],
         progress,
     )
     return _compact_text(match.group(1)) if match else ""
+
+
+def _combine_order_row_payloads(payloads: List[dict]) -> List[dict]:
+    """Combine ItemBay's primary row with its buyer-information row.
+
+    Live orders use ``rowspan=2`` on the item-number cell.  The first row
+    contains the product and transaction data, while the following row holds
+    the buyer character and BayTalk action.  Treating both rows as standalone
+    records loses the character name and turns the buyer row into a parse
+    error.
+    """
+    combined = []
+    index = 0
+    while index < len(payloads or []):
+        payload = dict(payloads[index] or {})
+        cells = list(payload.get("cells") or [])
+
+        if payload.get("is_buyer_detail"):
+            index += 1
+            continue
+
+        try:
+            row_span = max(1, int(payload.get("row_span") or 1))
+        except (TypeError, ValueError):
+            row_span = 1
+
+        attributes = list(payload.get("attributes") or [])
+        characters = list(payload.get("character_candidates") or [])
+        consumed = 1
+        if len(cells) >= 7 and row_span > 1:
+            for offset in range(1, row_span):
+                detail_index = index + offset
+                if detail_index >= len(payloads):
+                    break
+                detail = dict(payloads[detail_index] or {})
+                if not detail.get("is_buyer_detail"):
+                    break
+                attributes.extend(detail.get("attributes") or [])
+                characters.extend(
+                    detail.get("character_candidates") or [])
+                consumed += 1
+
+        payload["attributes"] = attributes
+        payload["character_candidates"] = characters
+        combined.append(payload)
+        index += consumed
+
+    return combined
 
 
 def _split_game_server(subject_lines: List[str],
@@ -233,6 +284,7 @@ def _parse_order_row_payload(payload: dict) -> Optional[dict]:
         "price": _compact_text(cells[4]),
         "character": character,
         "trade_status": trade_status,
+        "state": trade_status,
     }
 
 
@@ -917,76 +969,83 @@ class ItembayMonitor(BaseOrderMonitor):
                 f"未找到 {ORDER_TABLE_SELECTOR} 订单表格")
 
         rows = page.locator(ORDER_ROW_SELECTOR)
-        row_count = await rows.count()
+        row_payloads = await rows.evaluate_all("""
+            rows => rows.map(row => {
+                const cells = Array.from(row.cells || []);
+                const subject = cells[2];
+                const titleLink = subject
+                    ? subject.querySelector('a')
+                    : null;
+                const characterNodes = Array.from(
+                    row.querySelectorAll(
+                        '[onclick*="fncCharacterNameCopy"],'
+                        + '[href*="fncCharacterNameCopy"],'
+                        + '[data-character-name],'
+                        + '[data-character],'
+                        + '.buyer_info .hangul'
+                    )
+                );
+                const attributeNodes = Array.from(
+                    row.querySelectorAll('[href], [onclick]')
+                );
+                return {
+                    cells: cells.map(
+                        cell => (cell.innerText || '').trim()
+                    ),
+                    subject_lines: subject
+                        ? (subject.innerText || '')
+                            .split(/\\r?\\n/)
+                            .map(value => value.trim())
+                            .filter(Boolean)
+                        : [],
+                    title_link_text: titleLink
+                        ? (titleLink.innerText || '').trim()
+                        : '',
+                    attributes: attributeNodes.flatMap(node => [
+                        node.getAttribute('href') || '',
+                        node.getAttribute('onclick') || ''
+                    ]),
+                    data_tran_seq:
+                        row.getAttribute('data-tran-seq')
+                        || row.getAttribute('data-transeq')
+                        || '',
+                    character_candidates:
+                        characterNodes.map(node => ({
+                            text: (node.innerText || '').trim(),
+                            href: node.getAttribute('href') || '',
+                            onclick: node.getAttribute('onclick') || '',
+                            data_character_name:
+                                node.getAttribute(
+                                    'data-character-name'
+                                ) || '',
+                            data_character:
+                                node.getAttribute(
+                                    'data-character'
+                                ) || ''
+                        })),
+                    has_delivery_action: Boolean(
+                        row.querySelector(
+                            '[onclick*="fncSetGiveItem"]'
+                        )
+                    ),
+                    row_span: Number(
+                        cells[0]?.getAttribute('rowspan') || 1
+                    ),
+                    is_buyer_detail: Boolean(
+                        row.querySelector('td.buyer_info')
+                    )
+                };
+            })
+        """)
+        payloads = _combine_order_row_payloads(row_payloads)
         orders = []
         candidate_rows = 0
         failed_rows = 0
         seen_order_ids = set()
 
-        for index in range(row_count):
-            row = rows.nth(index)
+        for index, payload in enumerate(payloads):
             counted_candidate = False
             try:
-                payload = await row.evaluate("""
-                    row => {
-                        const cells = Array.from(row.cells || []);
-                        const subject = cells[2];
-                        const titleLink = subject
-                            ? subject.querySelector('a')
-                            : null;
-                        const characterNodes = Array.from(
-                            row.querySelectorAll(
-                                '[onclick*="fncCharacterNameCopy"],'
-                                + '[data-character-name],'
-                                + '[data-character]'
-                            )
-                        );
-                        const attributeNodes = Array.from(
-                            row.querySelectorAll('[href], [onclick]')
-                        );
-                        return {
-                            cells: cells.map(
-                                cell => (cell.innerText || '').trim()
-                            ),
-                            subject_lines: subject
-                                ? (subject.innerText || '')
-                                    .split(/\\r?\\n/)
-                                    .map(value => value.trim())
-                                    .filter(Boolean)
-                                : [],
-                            title_link_text: titleLink
-                                ? (titleLink.innerText || '').trim()
-                                : '',
-                            attributes: attributeNodes.flatMap(node => [
-                                node.getAttribute('href') || '',
-                                node.getAttribute('onclick') || ''
-                            ]),
-                            data_tran_seq:
-                                row.getAttribute('data-tran-seq')
-                                || row.getAttribute('data-transeq')
-                                || '',
-                            character_candidates:
-                                characterNodes.map(node => ({
-                                    text: (node.innerText || '').trim(),
-                                    onclick:
-                                        node.getAttribute('onclick') || '',
-                                    data_character_name:
-                                        node.getAttribute(
-                                            'data-character-name'
-                                        ) || '',
-                                    data_character:
-                                        node.getAttribute(
-                                            'data-character'
-                                        ) || ''
-                                })),
-                            has_delivery_action: Boolean(
-                                row.querySelector(
-                                    '[onclick*="fncSetGiveItem"]'
-                                )
-                            )
-                        };
-                    }
-                """)
                 if (
                     len(payload.get("cells") or []) == 1
                     and "없습니다" in str(payload["cells"][0])

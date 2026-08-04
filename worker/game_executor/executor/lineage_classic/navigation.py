@@ -1,4 +1,4 @@
-"""Lineage Classic 800x600 客户端的登录、切区与物品栏前置检查。"""
+"""Lineage Classic 1280x960 客户端的登录、切区与物品栏前置检查。"""
 
 from __future__ import annotations
 
@@ -55,11 +55,11 @@ except ImportError:
     win32process = None
 
 
-# 游戏分辨率与客户区均为 800x600，客户区左上角就是游戏坐标 (0, 0)。
+# 游戏分辨率与客户区均为 1280x960，客户区左上角就是游戏坐标 (0, 0)。
 # 标题栏位于客户区上方；若投影到游戏坐标系中，其 Y 为负数，不能把标题栏
 # 或截图外沿当成固定的正坐标偏移。所有 Ui 坐标均相对客户区，运行时只通过
 # ClientToScreen 动态换算屏幕绝对坐标。
-CLIENT_SIZE = (800, 600)
+CLIENT_SIZE = (1280, 960)
 OCR_MIN_CONFIDENCE = min(
     100.0,
     max(90.0, float(os.getenv("LINEAGE_OCR_MIN_CONFIDENCE", "90"))),
@@ -106,44 +106,42 @@ STEP_WAIT_PROFILES = {
 
 
 class Ui:
-    # 800x600 客户区右上物品格，以及底部快捷栏中的物品栏开关。
-    INVENTORY_CONTENT_REGION = (600, 15, 770, 360)
+    # 1280x960 客户区右上物品格，以及底部快捷栏中的物品栏开关。
+    INVENTORY_CONTENT_REGION = (960, 24, 1232, 576)
     # 使用物品栏独有的右侧滚动条下箭头与底部边框判断打开状态；
     # 不使用可能被其他右侧面板复用的 Close 标识。
-    INVENTORY_OPEN_REGION = (755, 290, 800, 370)
-    # 切换菜单后快捷栏会横向变化，按钮可能位于 x=644 或 x=693。
-    INVENTORY_BUTTON_REGION = (630, 560, 730, 600)
-    INVENTORY_BUTTON_FALLBACK = (704, 585)
+    INVENTORY_OPEN_REGION = (1208, 464, 1280, 592)
+    # 切换菜单后快捷栏会横向变化，按钮可能位于 x=1030 或 x=1126。
+    INVENTORY_BUTTON_REGION = (1008, 896, 1168, 960)
+    INVENTORY_BUTTON_FALLBACK = (1126, 936)
     # 兼容仍引用旧名称的扩展代码；新代码应明确使用 CONTENT/BUTTON 区域。
     INVENTORY_REGION = INVENTORY_CONTENT_REGION
-    CHARACTER_PICK_REGION = (136, 57, 225, 294)
+    CHARACTER_PICK_REGION = (218, 91, 360, 470)
     # 角色界面右下角固定的 OK / Cancel 操作区。
-    CHARACTER_ACTION_REGION = (640, 480, 780, 555)
+    CHARACTER_ACTION_REGION = (1024, 768, 1248, 888)
     # 角色名称值的输入框内部，不包含边框、人物或动态选中特效。
-    CHARACTER_NAME_VALUE_REGION = (212, 367, 450, 383)
+    CHARACTER_NAME_VALUE_REGION = (337, 581, 721, 615)
     CHARACTER_VALUE_BRIGHTNESS = 70
     CHARACTER_VALUE_MIN_BRIGHT_PIXELS = 20
-    SYSTEM_REGION = (600, 10, 783, 234)
-    MENU_BUTTON_REGION = (785, 565, 800, 600)
-    # 实机确认的切换按钮完整可点击范围（右、下边界按 Python 区域惯例不包含）。
-    MENU_BUTTON_CLICK_REGION = (788, 570, 800, 600)
-    EXIT_PANEL_TRIGGER_REGION = (755, 560, 795, 600)
-    # 800x600 客户区底部 HP 状态条；实机模板左上角约为 (217,474)。
-    IN_GAME_ANCHOR_REGION = (200, 465, 300, 500)
-    SERVER_REGION = (220, 107, 560, 430)
-    SERVER_SELECT_RADIUS_X = 20
-    SERVER_SELECT_RADIUS_Y = 2
-    SERVER_PAGINATION_REGION = (180, 350, 620, 500)
-    ACCOUNT_CONFIRM_REGION = (580, 420, 700, 480)
-    SERVER_PAGE_FIRST_CENTER = (340, 353)
-    SERVER_PAGE_SPACING_X = 24
+    SYSTEM_REGION = (960, 16, 1253, 374)
+    # 游戏主界面右下角最末端的切换按钮；仅在主界面已由其他锚点确认后点击。
+    MENU_BUTTON_CLICK_REGION = (1264, 914, 1279, 958)
+    EXIT_PANEL_TRIGGER_REGION = (1208, 896, 1272, 960)
+    # 1280x960 客户区底部 HP 状态条；新模板左上角约为 (365,758)。
+    IN_GAME_ANCHOR_REGION = (320, 744, 480, 800)
+    SERVER_REGION = (400, 180, 880, 690)
+    SERVER_SELECT_RADIUS_X = 32
+    SERVER_SELECT_RADIUS_Y = 3
+    SERVER_PAGINATION_REGION = (450, 540, 830, 590)
+    ACCOUNT_CONFIRM_REGION = (928, 672, 1120, 768)
+    SERVER_PAGE_FIRST_CENTER = (545, 564)
+    SERVER_PAGE_SPACING_X = 40
     SERVER_VISIBLE_PAGE_COUNT = 6
-    FULL_CLIENT = (0, 0, 800, 600)
+    FULL_CLIENT = (0, 0, 1280, 960)
 
     INVENTORY_BUTTON = "物品栏按钮.png"
     INVENTORY_OPEN = "物品栏已打开.png"
     IN_GAME_ANCHOR = "已进入游戏.png"
-    MENU_BUTTON = "切换菜单按钮.png"
     EXIT_PANEL_TRIGGER = "退出登录界面触发按钮.png"
     RELOGIN_BUTTON = "重新登录按钮.png"
     CHARACTER_SCREEN = "选人界面判断.png"
@@ -207,7 +205,7 @@ class TargetRegion:
             0 <= target.select_x < CLIENT_SIZE[0]
             and 0 <= target.select_y < CLIENT_SIZE[1]
         ):
-            raise NavigationError("后台订单的大区选择坐标超出 800x600 客户区")
+            raise NavigationError("后台订单的大区选择坐标超出 1280x960 客户区")
         if not target.name and not target.code:
             raise NavigationError("后台订单缺少大区名称和代码")
         return target
@@ -493,7 +491,7 @@ class ClientWindow:
     def validate_size(self, size: Optional[tuple[int, int]] = None) -> None:
         size = size or self.client_size()
         if size != CLIENT_SIZE:
-            raise NavigationError(f"游戏客户区必须为 800x600，当前为 {size[0]}x{size[1]}")
+            raise NavigationError(f"游戏客户区必须为 1280x960，当前为 {size[0]}x{size[1]}")
 
 
 class Vision(Protocol):
@@ -628,7 +626,7 @@ class TemplateVision:
         return int(width), int(height)
 
     def save_action_visualization(self, action: dict[str, object]) -> Optional[str]:
-        """保存点击、拖拽或键盘动作的 800x600 客户区示意图。"""
+        """保存点击、拖拽或键盘动作的 1280x960 客户区示意图。"""
         if not ACTION_DEBUG_IMAGES_ENABLED:
             return None
         if Image is None or ImageDraw is None:
@@ -1677,8 +1675,6 @@ class LineageSessionNavigator:
                 flush=True,
             )
             return True
-        if self._find_menu_button() is not None:
-            return True
         if self._find(
             Ui.EXIT_PANEL_TRIGGER,
             Ui.EXIT_PANEL_TRIGGER_REGION,
@@ -1692,15 +1688,6 @@ class LineageSessionNavigator:
             if self._find(template, region) is not None:
                 return True
         return False
-
-    def _find_menu_button(self):
-        # 右下角箭头在菜单开/关状态下仅有细微差异。搜索区域足够小，
-        # 使用 0.60 可兼容实机关闭态约 0.63、打开态约 0.99 的匹配结果。
-        return self._find(
-            Ui.MENU_BUTTON,
-            Ui.MENU_BUTTON_REGION,
-            threshold=0.60,
-        )
 
     def _is_character_screen(self) -> bool:
         return self._find(Ui.CHARACTER_SCREEN) is not None
@@ -1747,37 +1734,10 @@ class LineageSessionNavigator:
                 Ui.EXIT_PANEL_TRIGGER,
                 Ui.EXIT_PANEL_TRIGGER_REGION,
             )
-            menu = self._find_for_decision(
-                "右下角切换菜单按钮",
-                Ui.MENU_BUTTON,
-                Ui.MENU_BUTTON_REGION,
-                threshold=0.60,
-            )
             if trigger is None:
-                if menu is None:
-                    menu = self.wait_for_step(
-                        "查找切换菜单按钮",
-                        lambda: self._find_for_decision(
-                            "右下角切换菜单按钮（重试）",
-                            Ui.MENU_BUTTON,
-                            Ui.MENU_BUTTON_REGION,
-                            threshold=0.60,
-                        ),
-                        profile="recognition",
-                    )
-                if menu is None:
-                    print(
-                        "[Lineage][菜单判断结论] 未识别到 Restart、紫色触发按钮"
-                        "或右下角切换按钮，无法决定下一步",
-                        flush=True,
-                    )
-                    raise NavigationError(
-                        f"连续 {STEP_VERIFY_ATTEMPTS} 次未找到"
-                        "退出登录触发按钮或切换菜单按钮"
-                    )
                 print(
                     "[Lineage][菜单判断结论] 未识别到紫色触发按钮，"
-                    "但识别到右下角切换按钮；判定菜单尚未切换，执行切换",
+                    "当前已确认处于游戏主界面；点击右下角固定切换按钮",
                     flush=True,
                 )
                 self._click_menu_button()
@@ -1892,7 +1852,7 @@ class LineageSessionNavigator:
                 + (page - 1) * Ui.SERVER_PAGE_SPACING_X,
                 Ui.SERVER_PAGE_FIRST_CENTER[1],
             )
-            source = "800x600 固定分页坐标"
+            source = "1280x960 固定分页坐标"
         else:
             point = self.wait_for_step(
                 f"定位服务器列表第 {page} 页分页按钮",
@@ -2059,7 +2019,7 @@ class LineageSessionNavigator:
                 )
                 if inventory_button is None:
                     inventory_button = Ui.INVENTORY_BUTTON_FALLBACK
-                    source = "800x600 固定按钮坐标"
+                    source = "1280x960 固定按钮坐标"
                 else:
                     source = "模板定位"
                 print(
@@ -2098,7 +2058,7 @@ class LineageSessionNavigator:
             )
             if inventory_button is None:
                 inventory_button = Ui.INVENTORY_BUTTON_FALLBACK
-                source = "800x600 固定按钮坐标"
+                source = "1280x960 固定按钮坐标"
             else:
                 source = "模板定位"
             print(

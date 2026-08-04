@@ -16,6 +16,7 @@ from monitor.monitoring.platforms.itembay import (  # noqa: E402
     ItembayOrderWorker,
     ItembayRefreshWorker,
     ORDER_LIST_URL,
+    _combine_order_row_payloads,
     _parse_order_row_payload,
     _parse_refresh_action,
 )
@@ -95,6 +96,46 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("330만", order["trade_amount"])
         self.assertEqual("테스트기사", order["character"])
         self.assertEqual("paid", order["trade_status"])
+        self.assertEqual("paid", order["state"])
+
+    def test_live_two_row_order_combines_buyer_character_href(self):
+        primary = _active_order_payload(
+            row_span=2,
+            character_candidates=[],
+            attributes=[
+                "https://www.itembay.com/scripting/scriptProc?"
+                "url=/item/transaction/transactionGiveTakeDetail?"
+                "iTranSeq=96376891&vcDepth=0",
+            ],
+        )
+        buyer_detail = {
+            "cells": [
+                "구매자 TEST BUYER [캐릭터명 : 테스트기사]",
+                "IB코드 판매자 1234 | 구매자 5678",
+                "베이톡",
+            ],
+            "attributes": [
+                "javascript:fncCharacterNameCopy('테스트기사');",
+                "javascript:;",
+            ],
+            "character_candidates": [{
+                "text": "",
+                "href": "javascript:fncCharacterNameCopy('테스트기사');",
+                "onclick": "",
+                "data_character_name": "",
+                "data_character": "",
+            }],
+            "row_span": 1,
+            "is_buyer_detail": True,
+        }
+
+        payloads = _combine_order_row_payloads(
+            [primary, buyer_detail])
+
+        self.assertEqual(1, len(payloads))
+        order = _parse_order_row_payload(payloads[0])
+        self.assertEqual("96376891", order["order_no"])
+        self.assertEqual("테스트기사", order["character"])
 
     def test_order_row_falls_back_to_item_number_without_transaction_id(self):
         payload = _active_order_payload(

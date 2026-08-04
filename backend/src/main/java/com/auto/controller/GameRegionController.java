@@ -123,8 +123,8 @@ public class GameRegionController {
         if (x == null || y == null) {
             throw ApiException.badRequest("大区选择坐标 X、Y 必须同时填写");
         }
-        if (x < 0 || x >= 800 || y < 0 || y >= 600) {
-            throw ApiException.badRequest("大区选择坐标必须位于 800x600 游戏客户区内");
+        if (x < 0 || x >= 1280 || y < 0 || y >= 960) {
+            throw ApiException.badRequest("大区选择坐标必须位于 1280x960 游戏客户区内");
         }
     }
 }

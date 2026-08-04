@@ -16,14 +16,15 @@ from game_executor.executor.lineage_classic.font_metrics import (
     ENGLISH_OCR_ALLOWED_VISUAL_SYMBOLS,
     character_advance_width,
     character_ocr_adjustments,
-    character_ocr_match_is_high_risk,
     character_ocr_visual_equivalents,
     character_pair_advance_adjustment,
+    korean_ocr_text_matches,
 )
 from game_executor.executor.lineage_classic.paddle_ocr import recognize_text_line
 
 
 SEGMENT_PADDING = 0
+REPEATED_ENGLISH_OCR_RIGHT_PADDING = 2
 CONSTRAINED_MATCH_MIN_CONFIDENCE = 80.0
 # 单个 5px 点阵字母（尤其 n/s）即使裁剪正确，英文模型也可能只有约 29%
 # 置信度；最终仍需整串平均置信度及连续三帧共同约束。
@@ -120,7 +121,27 @@ def _foreground_mask(image):
     return (gray >= 175).astype("uint8")
 
 
-def _text_start(projection, search_limit: int = 20) -> int:
+ENGLISH_GLYPH_LEFT_INSETS = {
+    # 这些窄字形在固定 10px 单元内从右侧开始绘制；分段起点仍需还原到单元左边界。
+    "I": 2,
+    "i": 3,
+    "k": 2,
+    "l": 3,
+    "r": 2,
+}
+
+
+def _has_trade_panel_left_border(projection) -> bool:
+    """识别 1280x960 交易提示框在姓名裁剪区左侧留下的固定装饰亮点。"""
+    return (
+        len(projection) >= 9
+        and int(projection[4]) >= 3
+        and int(projection[6:9].sum()) >= 4
+        and int(projection[6:9].max()) <= 4
+    )
+
+
+def _detected_glyph_start(projection, search_limit: int = 32) -> int:
     limit = min(len(projection), max(1, search_limit))
     # 弹窗左边框偶尔会在前几列留下 1～2 个孤立亮点。r 等窄字符只有
     # 2 列，但纵向亮点总量仍不少于 6，因此同时使用宽度和总亮点过滤。
@@ -132,10 +153,30 @@ def _text_start(projection, search_limit: int = 20) -> int:
         start = column
         while column < limit and projection[column] > 0:
             column += 1
-        if column - start >= 2 and int(projection[start:column].sum()) >= 6:
+        run = projection[start:column]
+        # 1280x960 交易框左沿会在 X=4 和 X=6..8 留下少量装饰亮点；真实的
+        # 英文字形纵向至少有 5 个亮点，借此避免把面板噪点当成名字起点。
+        if (
+            column - start >= 2
+            and int(run.sum()) >= 8
+            and int(run.max()) >= 5
+        ):
             return int(start)
     active = np.flatnonzero(projection >= 2)
     return int(active[0]) if active.size else 0
+
+
+def _text_start(projection, first_char: str, search_limit: int = 32) -> int:
+    glyph_start = _detected_glyph_start(projection, search_limit)
+    # 交易提示框中的姓名字符单元固定从 X=17 开始；韩文及窄英文字形的实际
+    # 亮像素可能从 X=19/20 才出现，不能把亮像素起点误当成字符单元起点。
+    if (
+        _has_trade_panel_left_border(projection)
+        and 17 <= glyph_start <= 20
+    ):
+        return 17
+    inset = ENGLISH_GLYPH_LEFT_INSETS.get(first_char, 0)
+    return max(0, glyph_start - inset)
 
 
 def segment_expected_name(image, expected_name: str) -> tuple[NameSegment, ...]:
@@ -143,7 +184,9 @@ def segment_expected_name(image, expected_name: str) -> tuple[NameSegment, ...]:
     runs = split_expected_name(expected_name)
     mask = _foreground_mask(image)
     projection = mask.sum(axis=0)
-    start = _text_start(projection)
+    glyph_start = _detected_glyph_start(projection)
+    has_trade_panel_border = _has_trade_panel_left_border(projection)
+    start = _text_start(projection, expected_name[0])
 
     expected_value = "".join(run.text for run in runs)
     boundaries = [start]
@@ -179,10 +222,35 @@ def segment_expected_name(image, expected_name: str) -> tuple[NameSegment, ...]:
             )
         crop_left = left
         crop_right = right
+        if run.kind == "korean" and index == 0 and has_trade_panel_border:
+            # 保留固定 X=17 单元原点用于后续英文边界，但韩文 OCR 从首字实际
+            # 亮像素开始，避免左侧两列面板底色影响韩文模型。
+            crop_left = max(crop_left, glyph_start)
         if run.kind == "english":
             left_adjust, right_adjust = character_ocr_adjustments(run.text)
             crop_left = max(0, left + left_adjust)
             crop_right = min(image.shape[1], right + right_adjust)
+            repeated_t_with_previous = (
+                run.text == "T"
+                and index > 0
+                and runs[index - 1].kind == "english"
+                and runs[index - 1].text == run.text
+            )
+            repeated_t_with_following = (
+                run.text == "T"
+                and index + 1 < len(runs)
+                and runs[index + 1].kind == "english"
+                and runs[index + 1].text == run.text
+            )
+            # 大写 T 连续出现时，前一字形会紧贴当前单元。当前字符左侧不再扩展
+            # 到前一单元，并在右侧保留两列背景，避免实机样本中的 TT 被合并成 U。
+            if repeated_t_with_previous:
+                crop_left = max(crop_left, left)
+            if repeated_t_with_previous or repeated_t_with_following:
+                crop_right = min(
+                    image.shape[1],
+                    crop_right + REPEATED_ENGLISH_OCR_RIGHT_PADDING,
+                )
         if crop_right <= crop_left:
             raise ValueError(
                 f"玩家名 OCR 裁剪范围无效: {run.text!r} "
@@ -224,6 +292,8 @@ def _matches_expected_segment(
 ) -> bool:
     if kind == "english" and len(expected) == 1:
         return observed.casefold() in character_ocr_visual_equivalents(expected)
+    if kind == "korean":
+        return korean_ocr_text_matches(expected, observed)
     return observed.casefold() == expected.casefold()
 
 
@@ -304,11 +374,11 @@ def _recognize_segment(
     high_risk_matches = [
         candidate for candidate in candidates
         if (
-            segment.kind == "english"
-            and len(segment.expected) == 1
-            and character_ocr_match_is_high_risk(
-                segment.expected,
+            not _is_exact_expected_segment(candidate[0], segment.expected)
+            and _matches_expected_segment(
                 candidate[0],
+                segment.expected,
+                segment.kind,
             )
         )
     ]
