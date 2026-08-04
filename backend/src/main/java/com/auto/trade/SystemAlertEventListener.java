@@ -67,10 +67,16 @@ public class SystemAlertEventListener {
         String message = "原因：订单监控已停止，状态=" + safe(event.status(), "unknown")
                 + "，" + safe(event.message(), "未返回具体信息")
                 + "。解决方案：检查机器 " + machineName + " 的浏览器和登录状态，"
-                + "然后为平台账号 " + accountName + " 重新启动订单监控；确认恢复后可手动关闭本提醒。";
+                + "然后为平台账号 " + accountName + " 重新启动订单监控；监控恢复后本提醒会自动移除。";
         alertService.openOrRefresh(
                 "order_monitor_stopped", "monitor:" + event.accountId() + ":stopped",
                 event.machineId(), event.accountId(), "danger", "订单监控已掉线", message);
+    }
+
+    @EventListener
+    public void onOrderMonitorRestored(OrderMonitorRestored event) {
+        alertService.dismissBySourceKey(
+                "monitor:" + event.accountId() + ":stopped");
     }
 
     private String machineDisplayName(Machine machine, int machineId) {

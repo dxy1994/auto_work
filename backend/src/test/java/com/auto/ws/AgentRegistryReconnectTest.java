@@ -5,6 +5,7 @@ import com.auto.service.MachineService;
 import com.auto.service.WirelessHidDeviceManager;
 import com.auto.service.WirelessHidDeviceManager.WorkerBinding;
 import com.auto.trade.MachineSessionRestored;
+import com.auto.trade.OrderMonitorRestored;
 import com.auto.trade.TradeOffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -124,12 +125,57 @@ class AgentRegistryReconnectTest {
         assertNotNull(task);
         assertEquals("running", task.get("status"));
         assertEquals(1234.5, task.get("start_time"));
+        verify(eventPublisher).publishEvent(argThat((Object event) ->
+                event instanceof OrderMonitorRestored restored
+                        && restored.machineId() == 7
+                        && restored.accountId() == 4
+                        && "order-4".equals(restored.taskId())));
+
+        registry.updateHeartbeat(7, Map.of("runtime", Map.of(
+                "role", "monitor",
+                "active_tasks", List.of(Map.of(
+                        "account_id", 4,
+                        "task_id", "order-4",
+                        "status", "running",
+                        "start_time", 1234.5)))));
+
+        verify(eventPublisher, times(1)).publishEvent(argThat((Object event) ->
+                event instanceof OrderMonitorRestored));
 
         registry.updateHeartbeat(7, Map.of("runtime", Map.of(
                 "role", "monitor",
                 "active_tasks", List.of())));
 
         assertTrue(((Map<?, ?>) registry.getOrderCheckStatus(null)).isEmpty());
+    }
+
+    @Test
+    void newlyDispatchedMonitorClosesAlertOnlyAfterWorkerHeartbeatConfirmsIt() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        registry.bindAgent(7, session);
+
+        registry.dispatchOrderCheck(
+                7, "order-new-4", "https://example.com/login", "seller", "password",
+                "form", Map.of(), 3, 4);
+
+        verify(eventPublisher, never()).publishEvent(argThat((Object event) ->
+                event instanceof OrderMonitorRestored));
+
+        registry.updateHeartbeat(7, Map.of("runtime", Map.of(
+                "role", "monitor",
+                "active_tasks", List.of(Map.of(
+                        "account_id", 4,
+                        "task_id", "order-new-4",
+                        "status", "running",
+                        "start_time", 1234.5)))));
+
+        verify(eventPublisher).publishEvent(argThat((Object event) ->
+                event instanceof OrderMonitorRestored restored
+                        && restored.machineId() == 7
+                        && restored.accountId() == 4
+                        && "order-new-4".equals(restored.taskId())));
     }
 
     @Test

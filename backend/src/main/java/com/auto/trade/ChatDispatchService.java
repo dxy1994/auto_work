@@ -52,6 +52,9 @@ public class ChatDispatchService {
     private static final String ITEMBAY_URL_TEMPLATE =
             "https://www.itembay.com/ibmessenger/bayTalkChatTran"
                     + "?iTranSeq={order_no}";
+    private static final String ITEMBAY_DELIVERY_URL_TEMPLATE =
+            "https://www.itembay.com/item/transaction/transactionGiveTakeDetail"
+                    + "?iTranSeq={order_no}";
     private static final int ITEMBAY_MAX_TEXT_LENGTH = 800;
     private static final int ITEMBAY_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
@@ -300,9 +303,19 @@ public class ChatDispatchService {
         String openConfirmSelector = configString(config, "open_confirm_selector");
         String confirmSelector = configString(config, "confirm_selector");
         String successSelector = configString(config, "success_selector");
+        String successAbsentSelector = configString(
+                config, "success_absent_selector");
+        String successUrlContains = configString(
+                config, "success_url_contains");
+        String readySelector = configString(config, "ready_selector");
+        String blockingPopupSelector = configString(
+                config, "blocking_popup_selector");
+        String blockingPopupCloseSelector = configString(
+                config, "blocking_popup_close_selector");
         List<String> successTexts = configStringList(config, "success_texts");
         String stageSelector = configString(config, "stage_selector");
         int pendingStage = configInt(config, "pending_stage", 0);
+        boolean singleClick = configBoolean(config, "single_click", false);
 
         if ("itemmania".equals(platformCode)) {
             if (urlTemplate.isBlank()) {
@@ -329,6 +342,27 @@ public class ChatDispatchService {
             }
         }
 
+        if ("itembay".equals(platformCode)) {
+            if (urlTemplate.isBlank()) {
+                urlTemplate = ITEMBAY_DELIVERY_URL_TEMPLATE;
+            }
+            if (openConfirmSelector.isBlank()) {
+                openConfirmSelector =
+                        ".bay-btn-confirm[onclick*='ItemGiveTake.setGiveItem']";
+            }
+            if (readySelector.isBlank()) {
+                readySelector = "#middle .list-page-detail";
+            }
+            if (successAbsentSelector.isBlank()) {
+                successAbsentSelector =
+                        ".bay-btn-confirm[onclick*='ItemGiveTake.setGiveItem']";
+            }
+            if (successUrlContains.isBlank()) {
+                successUrlContains = "/mybay/status/mybayStatusGiveList";
+            }
+            singleClick = configBoolean(config, "single_click", true);
+        }
+
         String orderNo = normalizeOrderNo(order.getSourceOrderNo());
         if (orderNo.isBlank()) {
             throw ApiException.badRequest("订单缺少平台订单号，无法确认商品交付");
@@ -339,10 +373,13 @@ public class ChatDispatchService {
             throw ApiException.badRequest(
                     "平台未配置包含 {order_no} 的订单详情地址模板");
         }
+        boolean hasTextSuccessCheck = !successSelector.isBlank()
+                && !successTexts.isEmpty();
         if (openConfirmSelector.isBlank()
-                || confirmSelector.isBlank()
-                || successSelector.isBlank()
-                || successTexts.isEmpty()) {
+                || (!singleClick && confirmSelector.isBlank())
+                || (successAbsentSelector.isBlank()
+                && successUrlContains.isBlank()
+                && !hasTextSuccessCheck)) {
             throw ApiException.badRequest("平台未完整配置商品交付确认选择器");
         }
         if (stageSelector.isBlank() != (pendingStage <= 0)) {
@@ -359,9 +396,33 @@ public class ChatDispatchService {
         action.put("type", "confirm_delivery");
         action.put("detail_url", detailUrl);
         action.put("open_confirm_selector", openConfirmSelector);
-        action.put("confirm_selector", confirmSelector);
-        action.put("success_selector", successSelector);
-        action.put("success_texts", successTexts);
+        action.put("single_click", singleClick);
+        if (!confirmSelector.isBlank()) {
+            action.put("confirm_selector", confirmSelector);
+        }
+        if (!readySelector.isBlank()) {
+            action.put("ready_selector", readySelector);
+        }
+        if (!successAbsentSelector.isBlank()) {
+            action.put("success_absent_selector", successAbsentSelector);
+        }
+        if (!successUrlContains.isBlank()) {
+            action.put("success_url_contains", successUrlContains);
+        }
+        if (!successSelector.isBlank()) {
+            action.put("success_selector", successSelector);
+        }
+        if (!successTexts.isEmpty()) {
+            action.put("success_texts", successTexts);
+        }
+        if (!blockingPopupSelector.isBlank()) {
+            action.put("blocking_popup_selector", blockingPopupSelector);
+        }
+        if (!blockingPopupCloseSelector.isBlank()) {
+            action.put(
+                    "blocking_popup_close_selector",
+                    blockingPopupCloseSelector);
+        }
         if (!stageSelector.isBlank()) {
             action.put("stage_selector", stageSelector);
             action.put("pending_stage", pendingStage);

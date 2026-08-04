@@ -29,21 +29,28 @@ public class SystemControlController {
 
     @PutMapping
     public Map<String, Object> updateControl(@RequestBody UpdateControlRequest request) {
-        if (request == null || request.autoGameTradeEnabled() == null) {
-            throw ApiException.badRequest("是否执行自动游戏交易不能为空");
+        if (request == null
+                || (request.autoGameTradeEnabled() == null
+                && request.pageGuidesVisible() == null)) {
+            throw ApiException.badRequest("至少提供一项系统控制设置");
         }
-        return toResponse(controlService.updateAutoGameTradeEnabled(
-                request.autoGameTradeEnabled()));
+        return toResponse(controlService.updateControls(
+                request.autoGameTradeEnabled(),
+                request.pageGuidesVisible()));
     }
 
     private Map<String, Object> toResponse(SystemControl control) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("auto_game_trade_enabled",
                 Integer.valueOf(1).equals(control.getAutoGameTradeEnabled()));
+        response.put("page_guides_visible",
+                !Integer.valueOf(0).equals(control.getPageGuidesVisible()));
         response.put("updated_at", control.getUpdatedAt());
         return response;
     }
 
-    public record UpdateControlRequest(Boolean autoGameTradeEnabled) {
+    public record UpdateControlRequest(
+            Boolean autoGameTradeEnabled,
+            Boolean pageGuidesVisible) {
     }
 }

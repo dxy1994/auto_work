@@ -8,7 +8,7 @@ import asyncio
 import os
 import tempfile
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 IMAGE_CHAT_CLOSE_DELAY_MS = 10_000
@@ -270,7 +270,7 @@ async def _do_send_chat_with_post_action(
 
 
 async def _do_confirm_delivery(session, action: dict) -> dict:
-    """打开订单详情页，点击两级商品交付确认，并复核页面状态。"""
+    """打开平台交付页，执行单步或两步确认，并复核服务器状态。"""
     try:
         normalized = _normalize_delivery_action(action)
     except ValueError as exc:
@@ -297,6 +297,23 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
             timeout=15000,
         )
         await page.wait_for_timeout(1000)
+        if await _delivery_url_is_complete(
+                page, normalized, timeout=0):
+            return {
+                "success": True,
+                "message": "截图已发送，网站商品交付此前已确认",
+                "already_completed": True,
+            }
+        await _wait_for_delivery_ready(page, normalized, timeout=10000)
+        await _dismiss_blocking_popup(page, normalized)
+
+        if await _delivery_absence_is_complete(
+                page, normalized, timeout=0):
+            return {
+                "success": True,
+                "message": "截图已发送，网站商品交付此前已确认",
+                "already_completed": True,
+            }
 
         # Itemmania 在订单进入第 4/5 阶段后会移除交付按钮。先检查阶段，
         # 避免网站其实已经完成，却因为找不到 #trade_btn 被判为失败。
@@ -336,17 +353,61 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
         await open_confirm.wait_for(state="visible", timeout=10000)
         await open_confirm.click(force=True, timeout=5000)
 
-        confirm = page.locator(normalized["confirm_selector"]).first
-        await confirm.wait_for(state="visible", timeout=5000)
-        await confirm.click(force=True, timeout=10000)
+        if not normalized["single_click"]:
+            confirm = page.locator(normalized["confirm_selector"]).first
+            await confirm.wait_for(state="visible", timeout=5000)
+            await confirm.click(force=True, timeout=10000)
         await page.wait_for_timeout(1500)
 
-        # 重新进入详情页，以服务器最终状态作为成功依据，避免只凭点击判断。
+        if await _delivery_url_is_complete(
+                page, normalized, timeout=5000):
+            return {
+                "success": True,
+                "message": (
+                    "截图已发送，聊天页已关闭，"
+                    "ItemBay 商品交付已确认"
+                ),
+                "already_completed": False,
+            }
+
+        # 重新进入交付页，以服务器最终状态作为成功依据，避免只凭点击判断。
         await page.goto(
             normalized["detail_url"],
             wait_until="domcontentloaded",
             timeout=15000,
         )
+        if await _delivery_url_is_complete(
+                page, normalized, timeout=2000):
+            return {
+                "success": True,
+                "message": (
+                    "截图已发送，聊天页已关闭，"
+                    "ItemBay 商品交付已确认"
+                ),
+                "already_completed": False,
+            }
+        await _wait_for_delivery_ready(page, normalized, timeout=10000)
+        await _dismiss_blocking_popup(page, normalized)
+
+        if normalized["success_absent_selector"]:
+            if await _delivery_absence_is_complete(
+                    page, normalized, timeout=10000):
+                return {
+                    "success": True,
+                    "message": (
+                        "截图已发送，聊天页已关闭，"
+                        "ItemBay 商品交付已确认"
+                    ),
+                    "already_completed": False,
+                }
+            return {
+                "success": False,
+                "message": (
+                    "网站商品交付状态未更新，"
+                    "聊天页仍显示商品交付按钮"
+                ),
+            }
+
         current_stage, current_status = await _try_read_delivery_stage(
             page, normalized, timeout=10000
         )
@@ -400,6 +461,50 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
             session.end_transient_operation()
 
 
+async def _wait_for_delivery_ready(
+        page, normalized: dict, timeout: int) -> None:
+    selector = normalized.get("ready_selector")
+    if not selector:
+        return
+    ready = page.locator(selector).first
+    await ready.wait_for(state="visible", timeout=timeout)
+
+
+async def _delivery_absence_is_complete(
+        page, normalized: dict, timeout: int) -> bool:
+    selector = normalized.get("success_absent_selector")
+    if not selector:
+        return False
+
+    locator = page.locator(selector).first
+    deadline = asyncio.get_running_loop().time() + max(0, timeout) / 1000
+    while True:
+        try:
+            if await locator.count() == 0 or not await locator.is_visible():
+                return True
+        except Exception:
+            return False
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await page.wait_for_timeout(250)
+
+
+async def _delivery_url_is_complete(
+        page, normalized: dict, timeout: int) -> bool:
+    expected = normalized.get("success_url_contains")
+    if not expected:
+        return False
+
+    deadline = asyncio.get_running_loop().time() + max(0, timeout) / 1000
+    while True:
+        current_url = unquote(str(getattr(page, "url", "") or ""))
+        if expected in current_url:
+            return True
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await page.wait_for_timeout(250)
+
+
 async def _try_read_delivery_stage(
         page, normalized: dict, timeout: int) -> tuple[Optional[int], str]:
     """读取当前激活的交付阶段；页面无阶段状态条时交给文本规则继续判断。"""
@@ -423,8 +528,11 @@ async def _try_read_delivery_stage(
 
 async def _try_read_delivery_status_text(
         page, normalized: dict, timeout: int) -> str:
+    selector = normalized.get("success_selector")
+    if not selector:
+        return ""
     try:
-        status = page.locator(normalized["success_selector"]).first
+        status = page.locator(selector).first
         await status.wait_for(state="visible", timeout=timeout)
         return (await status.inner_text()).strip()
     except Exception:
@@ -672,25 +780,82 @@ def _normalize_delivery_action(action: dict) -> dict:
     if not isinstance(action, dict) or action.get("type") != "confirm_delivery":
         raise ValueError("商品交付确认动作无效")
     result = dict(action)
-    for key, label in (
-        ("detail_url", "订单详情地址"),
-        ("open_confirm_selector", "商品交付按钮选择器"),
-        ("confirm_selector", "最终交付确认按钮选择器"),
-        ("success_selector", "交付结果选择器"),
-    ):
-        result[key] = str(result.get(key) or "").strip()
-        if not result[key]:
-            raise ValueError(f"{label}未配置")
+    result["detail_url"] = str(result.get("detail_url") or "").strip()
+    if not result["detail_url"]:
+        raise ValueError("订单详情地址未配置")
     parsed = urlparse(result["detail_url"])
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("订单详情地址无效")
+
+    is_itembay_delivery_detail = (
+        (parsed.hostname or "").lower() in {"itembay.com", "www.itembay.com"}
+        and parsed.path.rstrip("/").endswith(
+            "/item/transaction/transactionGiveTakeDetail"
+        )
+    )
+    result["single_click"] = result.get("single_click") is True
+    result["open_confirm_selector"] = str(
+        result.get("open_confirm_selector") or ""
+    ).strip()
+    result["confirm_selector"] = str(
+        result.get("confirm_selector") or ""
+    ).strip()
+    result["ready_selector"] = str(
+        result.get("ready_selector") or ""
+    ).strip()
+    result["success_selector"] = str(
+        result.get("success_selector") or ""
+    ).strip()
+    result["success_absent_selector"] = str(
+        result.get("success_absent_selector") or ""
+    ).strip()
+    result["success_url_contains"] = str(
+        result.get("success_url_contains") or ""
+    ).strip()
+    result["blocking_popup_selector"] = str(
+        result.get("blocking_popup_selector") or ""
+    ).strip()
+    result["blocking_popup_close_selector"] = str(
+        result.get("blocking_popup_close_selector") or ""
+    ).strip()
+
+    if is_itembay_delivery_detail:
+        result["single_click"] = action.get("single_click", True) is not False
+        if not result["open_confirm_selector"]:
+            result["open_confirm_selector"] = (
+                ".bay-btn-confirm[onclick*='ItemGiveTake.setGiveItem']"
+            )
+        if not result["ready_selector"]:
+            result["ready_selector"] = "#middle .list-page-detail"
+        if not result["success_absent_selector"]:
+            result["success_absent_selector"] = (
+                ".bay-btn-confirm[onclick*='ItemGiveTake.setGiveItem']"
+            )
+        if not result["success_url_contains"]:
+            result["success_url_contains"] = (
+                "/mybay/status/mybayStatusGiveList"
+            )
+
+    if not result["open_confirm_selector"]:
+        raise ValueError("商品交付按钮选择器未配置")
+    if not result["single_click"] and not result["confirm_selector"]:
+        raise ValueError("最终交付确认按钮选择器未配置")
+
     values = result.get("success_texts")
     if not isinstance(values, list):
-        raise ValueError("商品交付成功状态未配置")
+        values = []
     result["success_texts"] = [
         str(value).strip() for value in values if str(value).strip()
     ]
-    if not result["success_texts"]:
+    has_text_success_check = (
+        bool(result["success_selector"])
+        and bool(result["success_texts"])
+    )
+    if (
+        not result["success_absent_selector"]
+        and not result["success_url_contains"]
+        and not has_text_success_check
+    ):
         raise ValueError("商品交付成功状态未配置")
     result["stage_selector"] = str(
         result.get("stage_selector") or ""

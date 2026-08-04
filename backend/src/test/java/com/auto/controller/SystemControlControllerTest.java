@@ -22,16 +22,36 @@ class SystemControlControllerTest {
         SystemControl control = new SystemControl();
         control.setId(SystemControl.SINGLETON_ID);
         control.setAutoGameTradeEnabled(0);
+        control.setPageGuidesVisible(1);
         control.setUpdatedAt(LocalDateTime.of(2026, 7, 29, 21, 0));
-        when(service.updateAutoGameTradeEnabled(false)).thenReturn(control);
+        when(service.updateControls(false, null)).thenReturn(control);
         SystemControlController controller = new SystemControlController(service);
 
         Map<String, Object> response = controller.updateControl(
-                new SystemControlController.UpdateControlRequest(false));
+                new SystemControlController.UpdateControlRequest(false, null));
 
         assertEquals(false, response.get("auto_game_trade_enabled"));
+        assertEquals(true, response.get("page_guides_visible"));
         assertEquals(control.getUpdatedAt(), response.get("updated_at"));
-        verify(service).updateAutoGameTradeEnabled(false);
+        verify(service).updateControls(false, null);
+    }
+
+    @Test
+    void updatesPageGuideVisibilityWithoutChangingTradeControl() {
+        SystemControlService service = mock(SystemControlService.class);
+        SystemControl control = new SystemControl();
+        control.setId(SystemControl.SINGLETON_ID);
+        control.setAutoGameTradeEnabled(1);
+        control.setPageGuidesVisible(0);
+        when(service.updateControls(null, false)).thenReturn(control);
+        SystemControlController controller = new SystemControlController(service);
+
+        Map<String, Object> response = controller.updateControl(
+                new SystemControlController.UpdateControlRequest(null, false));
+
+        assertEquals(true, response.get("auto_game_trade_enabled"));
+        assertEquals(false, response.get("page_guides_visible"));
+        verify(service).updateControls(null, false);
     }
 
     @Test
@@ -42,8 +62,8 @@ class SystemControlControllerTest {
         ApiException error = assertThrows(
                 ApiException.class,
                 () -> controller.updateControl(
-                        new SystemControlController.UpdateControlRequest(null)));
+                        new SystemControlController.UpdateControlRequest(null, null)));
 
-        assertEquals("是否执行自动游戏交易不能为空", error.getMessage());
+        assertEquals("至少提供一项系统控制设置", error.getMessage());
     }
 }

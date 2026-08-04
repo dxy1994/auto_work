@@ -240,6 +240,61 @@ class ChatDispatchServiceTest {
     }
 
     @Test
+    void itemBayDeliveryConfirmationUsesSellerOrderDetailPage() {
+        GameItemOrder order = itemBayOrder();
+        order.setDeliveryStatus("wait_web_confirm");
+        order.setStatus("processing");
+        order.setGameTradeScreenshot(
+                "/uploads/trade-screenshots/2026/08/04/itembay-proof.png");
+        PlatformAccount account = new PlatformAccount();
+        account.setId(6);
+        account.setWebsiteId(2);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(8);
+        binding.setAccountId(6);
+
+        when(orderService.getById(43)).thenReturn(order);
+        when(accountService.getById(6)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(6))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(8)).thenReturn(8);
+        when(platformService.getById(2)).thenReturn(itemBay());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap(), anyMap()))
+                .thenReturn(true);
+
+        service.dispatchDeliveryConfirmation(43);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> action =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap(), action.capture());
+
+        assertEquals(
+                "https://www.itembay.com/item/transaction/"
+                        + "transactionGiveTakeDetail?iTranSeq=96370042",
+                action.getValue().get("detail_url"));
+        assertEquals(
+                ".bay-btn-confirm[onclick*='ItemGiveTake.setGiveItem']",
+                action.getValue().get("open_confirm_selector"));
+        assertEquals(true, action.getValue().get("single_click"));
+        assertEquals(
+                "#middle .list-page-detail",
+                action.getValue().get("ready_selector"));
+        assertEquals(
+                action.getValue().get("open_confirm_selector"),
+                action.getValue().get("success_absent_selector"));
+        assertEquals(
+                "/mybay/status/mybayStatusGiveList",
+                action.getValue().get("success_url_contains"));
+        assertEquals(false, action.getValue().containsKey("confirm_selector"));
+    }
+
+    @Test
     void manualChatResultOnlyAppendsAnEvent() {
         GameItemOrder order = itemManiaOrder();
         order.setDeliveryStatus("assigned");

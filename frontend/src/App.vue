@@ -112,7 +112,7 @@
     </el-aside>
 
     <!-- 主内容区 -->
-    <el-main class="main-content">
+    <el-main class="main-content" :class="{ 'has-global-alert': manualAlerts.total }">
       <el-badge
         v-if="manualAlerts.total"
         :value="manualAlerts.total > 99 ? '99+' : manualAlerts.total"
@@ -123,6 +123,12 @@
           待处理提醒
         </el-button>
       </el-badge>
+      <PageUsageGuide
+        v-if="currentPageGuide"
+        :key="route.path"
+        :title="String(route.meta.title || '当前页面')"
+        :guide="currentPageGuide"
+      />
       <router-view />
     </el-main>
   </el-container>
@@ -294,11 +300,17 @@ import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { useManualAlertStore } from './stores/manualAlerts'
+import { useSystemControlStore } from './stores/systemControls'
+import PageUsageGuide from './components/PageUsageGuide.vue'
 
 const route = useRoute()
 const router = useRouter()
 const manualAlerts = useManualAlertStore()
+const systemControls = useSystemControlStore()
 const activeMenu = computed(() => route.path)
+const currentPageGuide = computed(() =>
+  systemControls.pageGuidesVisible ? route.meta.guide || null : null,
+)
 
 function severityType(severity) {
   return { critical: 'danger', danger: 'danger', warning: 'warning' }[severity] || 'info'
@@ -360,7 +372,10 @@ function openAlertOrder(item) {
   })
 }
 
-onMounted(() => manualAlerts.start())
+onMounted(() => {
+  manualAlerts.start()
+  systemControls.load()
+})
 onBeforeUnmount(() => manualAlerts.stop())
 </script>
 
@@ -404,6 +419,7 @@ html, body, #app { height: 100%; margin: 0; padding: 0; }
   right: 28px;
 }
 .global-alert-trigger .el-button { box-shadow: 0 6px 18px rgba(245, 108, 108, .35); }
+.main-content.has-global-alert .page-usage-guide { margin-top: 46px; }
 .voice-consent-content { display: flex; gap: 16px; align-items: flex-start; }
 .voice-consent-content p { margin: 0 0 10px; color: #303133; line-height: 1.7; }
 .voice-consent-icon { flex-shrink: 0; color: #e6a23c; }

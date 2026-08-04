@@ -2,17 +2,17 @@
   <div class="control-page">
     <header class="control-header">
       <div>
-        <div class="control-kicker">CONTROL / AUTO TRADE</div>
+        <div class="control-kicker">GLOBAL SETTINGS</div>
         <h1>系统控制</h1>
-        <p>控制中控是否继续发起新的游戏内自动交易。</p>
+        <p>快速切换全局行为，需要时再展开查看影响范围。</p>
       </div>
-      <div v-if="loaded" class="header-state" :class="{ active: autoTradeEnabled }">
-        <span class="state-light"></span>
-        {{ autoTradeEnabled ? '自动交易已接通' : '自动交易已切断' }}
+      <div v-if="loaded" class="header-meta">
+        <strong>2 项全局设置</strong>
+        <span>最近保存 {{ formatTime(updatedAt) }}</span>
       </div>
     </header>
 
-    <el-skeleton v-if="loading && !loaded" :rows="6" animated class="control-skeleton" />
+    <el-skeleton v-if="loading && !loaded" :rows="4" animated class="control-skeleton" />
 
     <el-result
       v-else-if="loadError && !loaded"
@@ -25,99 +25,166 @@
       </template>
     </el-result>
 
-    <main v-else class="control-board" :class="{ disabled: !autoTradeEnabled }">
-      <section class="pipeline-panel" aria-label="自动交易执行链路">
-        <div class="panel-label">订单执行链路</div>
-        <div class="pipeline">
-          <div class="pipeline-node always-on">
-            <span class="node-index">01</span>
-            <div>
-              <strong>订单监控</strong>
-              <small>持续运行</small>
-            </div>
+    <main v-else class="settings-board">
+      <div class="settings-board__heading">
+        <div>
+          <span>CONTROL PANEL</span>
+          <strong>全局控制项</strong>
+        </div>
+        <small>切换成功后立即保存，所有浏览器共享相同设置。</small>
+      </div>
+
+      <section class="control-item" :class="{ 'is-disabled': !autoTradeEnabled }">
+        <div class="control-item__row">
+          <span class="control-symbol control-symbol--trade" aria-hidden="true">
+            <el-icon><Operation /></el-icon>
+          </span>
+
+          <div class="control-item__copy">
+            <span class="control-item__eyebrow">运行控制</span>
+            <h2>自动游戏交易</h2>
+            <p>
+              {{ autoTradeEnabled
+                ? '允许新订单进入游戏交易排队和执行流程。'
+                : '暂停新交易，订单监控和聊天仍继续运行。' }}
+            </p>
+            <button
+              type="button"
+              class="detail-toggle"
+              :aria-expanded="tradeDetailsVisible"
+              aria-controls="trade-control-details"
+              @click="tradeDetailsVisible = !tradeDetailsVisible"
+            >
+              {{ tradeDetailsVisible ? '收起详情' : '查看运行链路与影响' }}
+              <el-icon :class="{ expanded: tradeDetailsVisible }"><ArrowDown /></el-icon>
+            </button>
           </div>
-          <div class="pipeline-link"><i></i></div>
-          <div class="pipeline-node always-on">
-            <span class="node-index">02</span>
-            <div>
-              <strong>聊天招呼</strong>
-              <small>持续运行</small>
-            </div>
-          </div>
-          <div class="pipeline-link" :class="{ cut: !autoTradeEnabled }"><i></i></div>
-          <div class="pipeline-node game-trade" :class="{ offline: !autoTradeEnabled }">
-            <span class="node-index">03</span>
-            <div>
-              <strong>游戏交易</strong>
-              <small>{{ autoTradeEnabled ? '允许新任务' : '停止新任务' }}</small>
-            </div>
+
+          <div class="control-item__action">
+            <span class="setting-state" :class="{ active: autoTradeEnabled }">
+              <i></i>{{ autoTradeEnabled ? '已开启' : '已关闭' }}
+            </span>
+            <el-switch
+              :model-value="autoTradeEnabled"
+              :loading="saving"
+              :disabled="saving"
+              size="large"
+              aria-label="执行自动游戏交易"
+              @change="changeAutoTrade"
+            />
           </div>
         </div>
-      </section>
 
-      <section class="switch-panel">
-        <div class="switch-copy">
-          <div class="switch-title-row">
-            <span class="signal-disc"><i></i></span>
-            <div>
-              <h2>执行自动游戏交易</h2>
-              <p>
-                {{ autoTradeEnabled
-                  ? '新订单可以进入游戏交易排队和执行流程。'
-                  : '新订单不会排队或下发游戏交易任务。' }}
-              </p>
+        <div
+          v-show="tradeDetailsVisible"
+          id="trade-control-details"
+          class="control-item__detail"
+        >
+          <div class="detail-label">订单执行链路</div>
+          <div class="pipeline" aria-label="自动交易执行链路">
+            <div class="pipeline-node always-on">
+              <span>01</span>
+              <div><strong>订单监控</strong><small>持续运行</small></div>
+            </div>
+            <div class="pipeline-link"><i></i></div>
+            <div class="pipeline-node always-on">
+              <span>02</span>
+              <div><strong>聊天招呼</strong><small>持续运行</small></div>
+            </div>
+            <div class="pipeline-link" :class="{ cut: !autoTradeEnabled }"><i></i></div>
+            <div class="pipeline-node game-trade" :class="{ offline: !autoTradeEnabled }">
+              <span>03</span>
+              <div>
+                <strong>游戏交易</strong>
+                <small>{{ autoTradeEnabled ? '允许新任务' : '停止新任务' }}</small>
+              </div>
             </div>
           </div>
-          <div class="update-time">
-            最近更新：{{ formatTime(updatedAt) }}
-          </div>
-        </div>
 
-        <div class="switch-action">
-          <span>{{ autoTradeEnabled ? '开启' : '关闭' }}</span>
-          <el-switch
-            :model-value="autoTradeEnabled"
-            :loading="saving"
-            :disabled="saving"
-            size="large"
-            aria-label="执行自动游戏交易"
-            @change="changeAutoTrade"
+          <div class="impact-grid">
+            <article>
+              <el-icon><ChatLineRound /></el-icon>
+              <div><strong>订单与聊天不受影响</strong><p>平台监控和招呼消息照常运行。</p></div>
+            </article>
+            <article>
+              <el-icon><Timer /></el-icon>
+              <div><strong>排队订单原地等待</strong><p>重新开启后在下一轮扫描继续。</p></div>
+            </article>
+            <article>
+              <el-icon><VideoPlay /></el-icon>
+              <div><strong>执行中任务不中断</strong><p>已经启动的交易会继续完成。</p></div>
+            </article>
+          </div>
+
+          <el-alert
+            v-if="!autoTradeEnabled"
+            title="招呼已完成但尚未进入队列的订单，重新开启后可能需要在订单页点击重试。"
+            type="warning"
+            :closable="false"
+            show-icon
           />
         </div>
       </section>
 
-      <section class="impact-panel">
-        <div class="panel-label">切换影响</div>
-        <div class="impact-grid">
-          <article>
-            <el-icon><ChatLineRound /></el-icon>
-            <div>
-              <strong>订单与聊天不受影响</strong>
-              <p>订单监控继续采集，平台聊天和招呼消息照常发送。</p>
-            </div>
-          </article>
-          <article>
-            <el-icon><Timer /></el-icon>
-            <div>
-              <strong>排队订单原地等待</strong>
-              <p>关闭期间不唤醒队首；重新开启后，系统会在下一轮扫描中继续处理。</p>
-            </div>
-          </article>
-          <article>
-            <el-icon><VideoPlay /></el-icon>
-            <div>
-              <strong>执行中任务不中断</strong>
-              <p>已经启动的游戏交易继续完成；尚未启动的新指派会被阻止。</p>
-            </div>
-          </article>
+      <section class="control-item">
+        <div class="control-item__row">
+          <span class="control-symbol control-symbol--guide" aria-hidden="true">i</span>
+
+          <div class="control-item__copy">
+            <span class="control-item__eyebrow">界面偏好</span>
+            <h2>展示页面说明</h2>
+            <p>
+              {{ pageGuidesVisible
+                ? '业务页面顶部显示默认折叠的详细操作手册。'
+                : '隐藏说明入口，不影响页面功能和业务数据。' }}
+            </p>
+            <button
+              type="button"
+              class="detail-toggle"
+              :aria-expanded="guideDetailsVisible"
+              aria-controls="guide-control-details"
+              @click="guideDetailsVisible = !guideDetailsVisible"
+            >
+              {{ guideDetailsVisible ? '收起详情' : '查看展示范围与同步规则' }}
+              <el-icon :class="{ expanded: guideDetailsVisible }"><ArrowDown /></el-icon>
+            </button>
+          </div>
+
+          <div class="control-item__action">
+            <span class="setting-state" :class="{ active: pageGuidesVisible }">
+              <i></i>{{ pageGuidesVisible ? '已展示' : '已隐藏' }}
+            </span>
+            <el-switch
+              :model-value="pageGuidesVisible"
+              :loading="saving"
+              :disabled="saving"
+              size="large"
+              aria-label="展示页面说明"
+              @change="changePageGuidesVisibility"
+            />
+          </div>
         </div>
-        <el-alert
-          v-if="!autoTradeEnabled"
-          title="招呼已完成但尚未进入队列的订单，需要重新开启后在订单页点击重试。"
-          type="warning"
-          :closable="false"
-          show-icon
-        />
+
+        <div
+          v-show="guideDetailsVisible"
+          id="guide-control-details"
+          class="control-item__detail control-item__detail--guide"
+        >
+          <div class="preference-facts">
+            <article>
+              <strong>展示范围</strong>
+              <p>覆盖全部业务页面，包括当前系统控制页面。</p>
+            </article>
+            <article>
+              <strong>默认状态</strong>
+              <p>说明入口默认折叠，只有点击后才展开完整手册。</p>
+            </article>
+            <article>
+              <strong>同步方式</strong>
+              <p>这是系统级设置，其他浏览器刷新后会读取相同状态。</p>
+            </article>
+          </div>
+        </div>
       </section>
     </main>
   </div>
@@ -125,29 +192,25 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getSystemControls, updateSystemControls } from '../api'
+import { useSystemControlStore } from '../stores/systemControls'
 
-const loading = ref(false)
 const saving = ref(false)
-const loaded = ref(false)
-const loadError = ref('')
-const autoTradeEnabled = ref(false)
-const updatedAt = ref(null)
+const tradeDetailsVisible = ref(false)
+const guideDetailsVisible = ref(false)
+const systemControls = useSystemControlStore()
+const {
+  loading,
+  loaded,
+  loadError,
+  autoTradeEnabled,
+  pageGuidesVisible,
+  updatedAt,
+} = storeToRefs(systemControls)
 
 async function loadControls() {
-  loading.value = true
-  loadError.value = ''
-  try {
-    const response = await getSystemControls()
-    autoTradeEnabled.value = Boolean(response.auto_game_trade_enabled)
-    updatedAt.value = response.updated_at
-    loaded.value = true
-  } catch (error) {
-    loadError.value = error.message || '无法连接中控后端'
-  } finally {
-    loading.value = false
-  }
+  await systemControls.load(true)
 }
 
 async function changeAutoTrade(nextEnabled) {
@@ -170,14 +233,27 @@ async function changeAutoTrade(nextEnabled) {
 
   saving.value = true
   try {
-    const response = await updateSystemControls({
+    await systemControls.update({
       auto_game_trade_enabled: nextEnabled,
     })
-    autoTradeEnabled.value = Boolean(response.auto_game_trade_enabled)
-    updatedAt.value = response.updated_at
     ElMessage.success(nextEnabled ? '自动游戏交易已开启' : '自动游戏交易已关闭')
   } catch (error) {
     ElMessage.error(error.message || '系统控制更新失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function changePageGuidesVisibility(nextVisible) {
+  if (saving.value) return
+  saving.value = true
+  try {
+    await systemControls.update({
+      page_guides_visible: nextVisible,
+    })
+    ElMessage.success(nextVisible ? '页面说明已展示' : '页面说明已隐藏')
+  } catch (error) {
+    ElMessage.error(error.message || '页面说明设置更新失败')
   } finally {
     saving.value = false
   }
@@ -196,11 +272,10 @@ onMounted(loadControls)
   --ink: #172033;
   --muted: #667085;
   --line: #d9e1ec;
-  --panel: #ffffff;
   --blue: #2563eb;
   --green: #16a34a;
   --amber: #d97706;
-  max-width: 1180px;
+  max-width: 1040px;
   margin: 0 auto;
   color: var(--ink);
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -211,317 +286,209 @@ onMounted(loadControls)
   align-items: flex-end;
   justify-content: space-between;
   gap: 24px;
-  padding: 18px 4px 28px;
+  padding: 14px 4px 22px;
 }
 
 .control-kicker,
-.panel-label,
-.node-index {
+.control-item__eyebrow,
+.detail-label,
+.settings-board__heading > div > span {
+  color: var(--blue);
   font-family: "JetBrains Mono", Consolas, monospace;
+  font-weight: 700;
   letter-spacing: .12em;
 }
 
-.control-kicker {
-  color: var(--blue);
-  font-size: 12px;
-  font-weight: 700;
-}
-
+.control-kicker { font-size: 11px; }
 .control-header h1 {
-  margin: 7px 0 4px;
-  font-size: clamp(30px, 4vw, 44px);
+  margin: 5px 0 3px;
+  font-size: clamp(30px, 4vw, 40px);
   line-height: 1.08;
   letter-spacing: -.04em;
 }
+.control-header p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
 
-.control-header p {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.7;
-}
-
-.header-state {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 10px 14px;
-  border: 1px solid #f0c9a3;
-  border-radius: 999px;
-  background: #fff8ef;
-  color: #9a4c0b;
-  font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.header-state.active {
-  border-color: #a7dab6;
-  background: #f0fbf3;
-  color: #147b32;
-}
-
-.state-light {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--amber);
-  box-shadow: 0 0 0 4px rgba(217, 119, 6, .12);
-}
-
-.header-state.active .state-light {
-  background: var(--green);
-  box-shadow: 0 0 0 4px rgba(22, 163, 74, .12);
+.header-meta { display: grid; justify-items: end; gap: 4px; }
+.header-meta strong { font-size: 13px; }
+.header-meta span {
+  color: #98a2b3;
+  font: 500 10px/1.5 "JetBrains Mono", Consolas, monospace;
 }
 
 .control-skeleton,
-.control-board {
+.settings-board {
   border: 1px solid var(--line);
-  border-radius: 16px;
-  background: var(--panel);
-  box-shadow: 0 16px 40px rgba(31, 42, 68, .07);
-}
-
-.control-skeleton {
-  padding: 36px;
-}
-
-.control-board {
-  overflow: hidden;
-}
-
-.pipeline-panel,
-.switch-panel,
-.impact-panel {
-  padding: 28px 32px;
-}
-
-.panel-label {
-  margin-bottom: 20px;
-  color: #8490a4;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.pipeline-panel {
-  border-bottom: 1px solid var(--line);
-  background-color: #f8fafc;
-  background-image:
-    linear-gradient(#e9eef5 1px, transparent 1px),
-    linear-gradient(90deg, #e9eef5 1px, transparent 1px);
-  background-size: 24px 24px;
-}
-
-.pipeline {
-  display: grid;
-  grid-template-columns: minmax(170px, 1fr) 76px minmax(170px, 1fr) 76px minmax(170px, 1fr);
-  align-items: center;
-}
-
-.pipeline-node {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-height: 84px;
-  padding: 16px 18px;
-  border: 1px solid #bdd8c5;
-  border-radius: 12px;
+  border-radius: 14px;
   background: #fff;
-  box-shadow: inset 4px 0 0 var(--green);
+  box-shadow: 0 12px 34px rgba(31, 42, 68, .07);
 }
+.control-skeleton { padding: 30px; }
+.settings-board { overflow: hidden; }
 
-.pipeline-node.game-trade {
-  border-color: #b9cff8;
-  box-shadow: inset 4px 0 0 var(--blue);
-}
-
-.pipeline-node.offline {
-  border-color: #e5c6a8;
-  box-shadow: inset 4px 0 0 var(--amber);
-}
-
-.node-index {
-  color: #98a2b3;
-  font-size: 12px;
-}
-
-.pipeline-node strong,
-.pipeline-node small {
-  display: block;
-}
-
-.pipeline-node strong {
-  margin-bottom: 6px;
-  font-size: 16px;
-}
-
-.pipeline-node small {
-  color: var(--green);
-  font-size: 12px;
-}
-
-.pipeline-node.game-trade small {
-  color: var(--blue);
-}
-
-.pipeline-node.offline small {
-  color: var(--amber);
-}
-
-.pipeline-link {
-  position: relative;
-  height: 2px;
-  background: #7bc18e;
-}
-
-.pipeline-link::after {
-  content: "";
-  position: absolute;
-  top: -4px;
-  right: -1px;
-  width: 0;
-  height: 0;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 7px solid #7bc18e;
-}
-
-.pipeline-link.cut {
-  background: repeating-linear-gradient(90deg, #d1a06e 0 8px, transparent 8px 14px);
-}
-
-.pipeline-link.cut::after {
-  border-left-color: #d1a06e;
-}
-
-.switch-panel {
+.settings-board__heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 32px;
+  gap: 20px;
+  padding: 15px 24px;
   border-bottom: 1px solid var(--line);
+  background: #f8fafc;
 }
+.settings-board__heading > div { display: flex; align-items: baseline; gap: 10px; }
+.settings-board__heading > div > span { font-size: 9px; }
+.settings-board__heading strong { font-size: 15px; }
+.settings-board__heading small { color: var(--muted); font-size: 11px; }
 
-.switch-title-row {
-  display: flex;
-  align-items: flex-start;
+.control-item + .control-item { border-top: 1px solid var(--line); }
+.control-item__row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
   gap: 16px;
+  align-items: center;
+  padding: 21px 24px;
 }
 
-.signal-disc {
+.control-symbol {
   display: grid;
   place-items: center;
-  flex: 0 0 46px;
-  width: 46px;
-  height: 46px;
-  border: 1px solid #b9cff8;
-  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  color: var(--blue);
+  border: 1px solid #bed1f7;
   background: #eef4ff;
+  box-shadow: 0 5px 12px rgba(37, 99, 235, .1);
 }
-
-.signal-disc i {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
+.control-symbol--trade { border-radius: 50%; font-size: 20px; }
+.control-symbol--guide {
+  height: 48px;
+  border: 0;
+  border-radius: 6px 6px 11px 11px;
   background: var(--blue);
-  box-shadow: 0 0 0 6px rgba(37, 99, 235, .12);
+  color: #fff;
+  font: 700 20px/1 Georgia, serif;
 }
+.is-disabled .control-symbol--trade { border-color: #e6c9ab; background: #fff7ed; color: var(--amber); }
 
-.disabled .signal-disc {
-  border-color: #e5c6a8;
-  background: #fff7ed;
+.control-item__eyebrow { display: block; margin-bottom: 3px; font-size: 9px; }
+.control-item__copy h2 { margin: 0 0 4px; font-size: 18px; letter-spacing: -.02em; }
+.control-item__copy p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+
+.detail-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  cursor: pointer;
+  font: 600 12px/1.5 inherit;
 }
+.detail-toggle:hover { color: #174cb7; }
+.detail-toggle:focus-visible { outline: 2px solid rgba(37, 99, 235, .35); outline-offset: 3px; border-radius: 3px; }
+.detail-toggle .el-icon { transition: transform .18s ease; }
+.detail-toggle .el-icon.expanded { transform: rotate(180deg); }
 
-.disabled .signal-disc i {
-  background: var(--amber);
-  box-shadow: 0 0 0 6px rgba(217, 119, 6, .12);
-}
-
-.switch-panel h2 {
-  margin: 0 0 7px;
-  font-size: 21px;
-  letter-spacing: -.02em;
-}
-
-.switch-panel p {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.6;
-}
-
-.update-time {
-  margin: 14px 0 0 62px;
-  color: #98a2b3;
-  font-family: "JetBrains Mono", Consolas, monospace;
-  font-size: 11px;
-}
-
-.switch-action {
+.control-item__action {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 13px 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  padding: 10px 13px;
+  border: 1px solid #e1e7ef;
+  border-radius: 11px;
   background: #f8fafc;
 }
-
-.switch-action > span {
-  min-width: 28px;
-  color: var(--muted);
-  font-size: 13px;
+.setting-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 52px;
+  color: #8a5a25;
+  font-size: 12px;
   font-weight: 700;
 }
+.setting-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+.setting-state.active { color: #147b32; }
+.setting-state.active i { background: var(--green); }
 
-.impact-grid {
+.control-item__detail {
+  padding: 20px 24px 24px 88px;
+  border-top: 1px solid #e5eaf1;
+  background: #f8fafc;
+}
+.detail-label { margin-bottom: 12px; font-size: 9px; }
+
+.pipeline {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 50px minmax(150px, 1fr) 50px minmax(150px, 1fr);
+  align-items: center;
+}
+.pipeline-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 11px 13px;
+  border: 1px solid #bdd8c5;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: inset 3px 0 0 var(--green);
+}
+.pipeline-node.game-trade { border-color: #b9cff8; box-shadow: inset 3px 0 0 var(--blue); }
+.pipeline-node.offline { border-color: #e5c6a8; box-shadow: inset 3px 0 0 var(--amber); }
+.pipeline-node > span { color: #98a2b3; font: 700 10px/1.4 Consolas, monospace; }
+.pipeline-node strong, .pipeline-node small { display: block; }
+.pipeline-node strong { margin-bottom: 3px; font-size: 14px; }
+.pipeline-node small { color: var(--green); font-size: 11px; }
+.pipeline-node.game-trade small { color: var(--blue); }
+.pipeline-node.offline small { color: var(--amber); }
+
+.pipeline-link { position: relative; height: 2px; background: #7bc18e; }
+.pipeline-link::after {
+  position: absolute;
+  top: -4px;
+  right: -1px;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid #7bc18e;
+  content: "";
+}
+.pipeline-link.cut { background: repeating-linear-gradient(90deg, #d1a06e 0 8px, transparent 8px 14px); }
+.pipeline-link.cut::after { border-left-color: #d1a06e; }
+
+.impact-grid,
+.preference-facts {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  gap: 10px;
+  margin-top: 14px;
 }
-
-.impact-grid article {
+.impact-grid article,
+.preference-facts article {
   display: flex;
-  gap: 12px;
-  min-height: 116px;
-  padding: 17px;
-  border: 1px solid #e4e9f1;
-  border-radius: 12px;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #e1e7ef;
+  border-radius: 8px;
+  background: #fff;
 }
+.impact-grid .el-icon { flex: 0 0 auto; margin-top: 2px; color: var(--blue); }
+.impact-grid strong,
+.preference-facts strong { display: block; margin-bottom: 3px; font-size: 12px; }
+.impact-grid p,
+.preference-facts p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.control-item__detail .el-alert { margin-top: 12px; }
+.control-item__detail--guide { padding-top: 6px; }
+.preference-facts { margin-top: 0; }
+.preference-facts article { display: block; }
 
-.impact-grid .el-icon {
-  flex: 0 0 auto;
-  margin-top: 2px;
-  color: var(--blue);
-  font-size: 20px;
-}
-
-.impact-grid strong {
-  display: block;
-  margin-bottom: 7px;
-  font-size: 14px;
-}
-
-.impact-grid p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.impact-panel .el-alert {
-  margin-top: 18px;
-}
-
-@media (max-width: 900px) {
-  .pipeline {
-    grid-template-columns: 1fr;
-  }
-
-  .pipeline-link {
-    width: 2px;
-    height: 34px;
-    margin-left: 42px;
-  }
-
+@media (max-width: 760px) {
+  .control-item__row { grid-template-columns: 44px minmax(0, 1fr); }
+  .control-item__action { grid-column: 1 / -1; justify-content: space-between; }
+  .control-item__detail { padding-left: 24px; }
+  .pipeline { grid-template-columns: 1fr; }
+  .pipeline-link { width: 2px; height: 24px; margin-left: 31px; }
   .pipeline-link::after {
     top: auto;
     right: -4px;
@@ -531,48 +498,19 @@ onMounted(loadControls)
     border-bottom: 0;
     border-left: 5px solid transparent;
   }
-
-  .pipeline-link.cut {
-    background: repeating-linear-gradient(#d1a06e 0 8px, transparent 8px 14px);
-  }
-
-  .pipeline-link.cut::after {
-    border-top-color: #d1a06e;
-    border-left-color: transparent;
-  }
-
-  .impact-grid {
-    grid-template-columns: 1fr;
-  }
+  .pipeline-link.cut { background: repeating-linear-gradient(#d1a06e 0 8px, transparent 8px 14px); }
+  .pipeline-link.cut::after { border-top-color: #d1a06e; border-left-color: transparent; }
+  .impact-grid, .preference-facts { grid-template-columns: 1fr; }
 }
 
-@media (max-width: 640px) {
-  .control-header,
-  .switch-panel {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .pipeline-panel,
-  .switch-panel,
-  .impact-panel {
-    padding: 22px 18px;
-  }
-
-  .switch-action {
-    justify-content: space-between;
-  }
-
-  .update-time {
-    margin-left: 0;
-  }
+@media (max-width: 600px) {
+  .control-header, .settings-board__heading { align-items: flex-start; flex-direction: column; }
+  .header-meta { justify-items: start; }
+  .settings-board__heading { display: flex; }
+  .control-item__row, .control-item__detail { padding-right: 17px; padding-left: 17px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .control-page *,
-  .control-page *::before,
-  .control-page *::after {
-    transition: none !important;
-  }
+  .detail-toggle .el-icon { transition: none; }
 }
 </style>

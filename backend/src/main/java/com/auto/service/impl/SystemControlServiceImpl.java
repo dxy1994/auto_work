@@ -23,15 +23,23 @@ public class SystemControlServiceImpl extends ServiceImpl<SystemControlMapper, S
         control = new SystemControl();
         control.setId(SystemControl.SINGLETON_ID);
         control.setAutoGameTradeEnabled(1);
+        control.setPageGuidesVisible(1);
         save(control);
         return control;
     }
 
     @Override
     @Transactional
-    public SystemControl updateAutoGameTradeEnabled(boolean enabled) {
+    public SystemControl updateControls(
+            Boolean autoGameTradeEnabled,
+            Boolean pageGuidesVisible) {
         SystemControl control = getControl();
-        control.setAutoGameTradeEnabled(enabled ? 1 : 0);
+        if (autoGameTradeEnabled != null) {
+            control.setAutoGameTradeEnabled(autoGameTradeEnabled ? 1 : 0);
+        }
+        if (pageGuidesVisible != null) {
+            control.setPageGuidesVisible(pageGuidesVisible ? 1 : 0);
+        }
         control.setUpdatedAt(LocalDateTime.now());
         updateById(control);
         return control;

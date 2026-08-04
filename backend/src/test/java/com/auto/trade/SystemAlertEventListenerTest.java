@@ -99,6 +99,14 @@ class SystemAlertEventListenerTest {
                 eq("danger"), eq("订单监控已掉线"),
                 argThat(message -> message.contains("页面结构异常")
                         && message.contains("重新启动订单监控")
-                        && message.contains("手动关闭")));
+                        && message.contains("自动移除")));
+    }
+
+    @Test
+    void restoredOrderMonitorAutomaticallyDismissesAccountAlert() {
+        listener.onOrderMonitorRestored(new OrderMonitorRestored(
+                7, 12, "order-12-new"));
+
+        verify(alertService).dismissBySourceKey("monitor:12:stopped");
     }
 }

@@ -8,6 +8,7 @@ import com.auto.trade.TradeOffer;
 import com.auto.trade.WorkerRuntimeStatus;
 import com.auto.trade.MachineSessionLost;
 import com.auto.trade.MachineSessionRestored;
+import com.auto.trade.OrderMonitorRestored;
 import com.auto.trade.OrderMonitorStopped;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -78,6 +79,8 @@ public class AgentRegistry {
         public String status;
         public String message;
         public double startTime;
+        /** 是否已由 Worker 的任务快照或状态上报确认正在运行。 */
+        public boolean confirmedByWorker;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -194,6 +197,7 @@ public class AgentRegistry {
             return;
         }
         Set<Integer> reportedAccounts = new HashSet<>();
+        List<OrderMonitorRestored> restoredEvents = new ArrayList<>();
         WebSocketSession session = agentConnections.get(machineId);
         synchronized (taskLock) {
             for (Object itemObject : activeTasks) {
@@ -228,10 +232,15 @@ public class AgentRegistry {
                     retireTaskId(current.taskId);
                 }
 
+                boolean alreadyConfirmed = current != null
+                        && current.machineId == machineId
+                        && taskId.equals(current.taskId)
+                        && current.confirmedByWorker;
                 TaskInfo reported = current != null ? current : new TaskInfo();
                 reported.machineId = machineId;
                 reported.taskId = taskId;
                 reported.status = status;
+                reported.confirmedByWorker = "running".equals(status);
                 reported.message = "stopping".equals(status)
                         ? "正在终止..."
                         : "订单监控运行中...";
@@ -244,6 +253,10 @@ public class AgentRegistry {
                 taskToMachine.put(taskId, machineId);
                 if (session != null && session.isOpen()) {
                     taskToAgentSession.put(taskId, session);
+                }
+                if ("running".equals(status) && !alreadyConfirmed) {
+                    restoredEvents.add(new OrderMonitorRestored(
+                            machineId, accountId, taskId));
                 }
             }
 
@@ -259,6 +272,7 @@ public class AgentRegistry {
                 }
             });
         }
+        restoredEvents.forEach(eventPublisher::publishEvent);
     }
 
     public WorkerRuntimeStatus getRuntimeStatus(int machineId) {
@@ -391,13 +405,22 @@ public class AgentRegistry {
             return;
         }
         TaskInfo info = accountTasks.get(accountId);
+        boolean restored = false;
         if (info != null && info.taskId != null && info.taskId.equals(taskId)) {
             if (msg.get("status") != null) {
                 info.status = str(msg.get("status"));
+                if ("running".equals(info.status) && !info.confirmedByWorker) {
+                    info.confirmedByWorker = true;
+                    restored = true;
+                }
             }
             if (msg.get("message") != null) {
                 info.message = str(msg.get("message"));
             }
+        }
+        if (restored) {
+            eventPublisher.publishEvent(new OrderMonitorRestored(
+                    info.machineId, accountId, taskId));
         }
     }
 
@@ -583,6 +606,7 @@ public class AgentRegistry {
             info.status = "running";
             info.message = "订单监控运行中...";
             info.startTime = System.currentTimeMillis() / 1000.0;
+            info.confirmedByWorker = false;
             if (accountTasks.putIfAbsent(accountId, info) != null) {
                 releaseTask(taskId, accountId);
                 throw new IllegalStateException("该账号已有任务在运行");

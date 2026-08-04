@@ -162,9 +162,9 @@ public class OrderMonitorAutoStartService {
 
         StartSummary summary = new StartSummary(
                 bindings.size(), started, alreadyRunning, stoppedUnbound, skipped);
-        log.info("[OrderMonitor] 机器账号监控对账完成 machine_id={} bound={} started={} running={} stopped_unbound={} skipped={}",
-                machineId, summary.total(), summary.started(), summary.alreadyRunning(),
-                summary.stoppedUnbound(), summary.skipped());
+//        log.info("[OrderMonitor] 机器账号监控对账完成 machine_id={} bound={} started={} running={} stopped_unbound={} skipped={}",
+//                machineId, summary.total(), summary.started(), summary.alreadyRunning(),
+//                summary.stoppedUnbound(), summary.skipped());
         return summary;
     }
 

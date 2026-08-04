@@ -7,7 +7,11 @@ public interface SystemControlService extends IService<SystemControl> {
 
     SystemControl getControl();
 
-    SystemControl updateAutoGameTradeEnabled(boolean enabled);
+    SystemControl updateControls(Boolean autoGameTradeEnabled, Boolean pageGuidesVisible);
+
+    default SystemControl updateAutoGameTradeEnabled(boolean enabled) {
+        return updateControls(enabled, null);
+    }
 
     boolean isAutoGameTradeEnabled();
 }

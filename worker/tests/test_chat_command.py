@@ -523,6 +523,102 @@ class ChatCommandTest(unittest.TestCase):
         self.assertIn("click:#trade_btn", events)
         self.assertIn("click:#delivery-confirm", events)
 
+    def test_itembay_delivery_confirmation_uses_seller_detail_button(self):
+        events = []
+        delivery_selector = (
+            ".bay-btn-confirm[onclick*='ItemGiveTake.setGiveItem']"
+        )
+
+        class FakeLocator:
+            def __init__(self, selector, page):
+                self.selector = selector
+                self.page = page
+
+            @property
+            def first(self):
+                return self
+
+            async def wait_for(self, **_kwargs):
+                events.append(f"wait-for:{self.selector}")
+
+            async def click(self, **_kwargs):
+                events.append(f"click:{self.selector}")
+                if self.selector == delivery_selector:
+                    self.page.delivered = True
+                    self.page.url = (
+                        "https://www.itembay.com/scripting/scriptProc?"
+                        "url=https%3A%2F%2Fwww.itembay.com%2Fmybay%2Fstatus%2F"
+                        "mybayStatusGiveList"
+                    )
+
+            async def count(self):
+                if self.selector == delivery_selector:
+                    return 0 if self.page.delivered else 1
+                return 1
+
+            async def is_visible(self):
+                if self.selector == delivery_selector:
+                    return not self.page.delivered
+                return True
+
+        class FakePage:
+            def __init__(self):
+                self.delivered = False
+                self.url = ""
+
+            async def goto(self, url, **_kwargs):
+                events.append(f"goto:{url}")
+                self.url = url
+
+            async def wait_for_timeout(self, milliseconds):
+                events.append(f"wait:{milliseconds}")
+
+            def locator(self, selector):
+                return FakeLocator(selector, self)
+
+            def on(self, event, _callback):
+                events.append(f"on:{event}")
+
+            async def close(self):
+                events.append("close")
+
+        class FakeSession:
+            def __init__(self):
+                self.page = FakePage()
+
+            def begin_transient_operation(self):
+                return True
+
+            async def new_page(self):
+                return self.page
+
+            def track_transient_page(self, _page):
+                return None
+
+            def untrack_transient_page(self, _page):
+                return None
+
+            def end_transient_operation(self):
+                return None
+
+        detail_url = (
+            "https://www.itembay.com/item/transaction/"
+            "transactionGiveTakeDetail?iTranSeq=96388874"
+        )
+        result = asyncio.run(sender._do_confirm_delivery(
+            FakeSession(),
+            {
+                "type": "confirm_delivery",
+                "detail_url": detail_url,
+            },
+        ))
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["already_completed"])
+        self.assertEqual(1, events.count(f"goto:{detail_url}"))
+        self.assertIn(f"click:{delivery_selector}", events)
+        self.assertNotIn("click:#btnTradeAccept", events)
+
     def test_delivery_confirmation_accepts_itemmania_stage_five_without_button(self):
         events = []
 
