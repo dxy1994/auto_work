@@ -9,6 +9,9 @@ import com.auto.service.SystemAlertService;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /** 将掉线事件持久化为提醒，并在机器恢复连接后自动关闭机器掉线提醒。 */
 @Component
 public class SystemAlertEventListener {
@@ -38,9 +41,12 @@ public class SystemAlertEventListener {
         String name = machineDisplayName(machine, event.machineId());
         boolean monitorMachine = !machinePlatformAccountService
                 .findByMachineIdActive(event.machineId()).isEmpty();
-        String title = monitorMachine ? "订单监控机器已掉线" : "机器已掉线";
-        String message = "原因：" + safe(event.reason(), "Worker 连接已断开")
-                + "。解决方案：检查机器 " + name + " 的进程和网络，重新连接总控；重连成功后本提醒会自动移除。";
+        String title = monitorMachine
+                ? "订单监控机器「" + name + "」已掉线"
+                : "机器「" + name + "」已掉线";
+        String message = "掉线机器：" + machineIdentity(machine, event.machineId())
+                + "。原因：" + safe(event.reason(), "Worker 连接已断开")
+                + "。解决方案：检查该机器的进程和网络，重新连接总控；重连成功后本提醒会自动移除。";
         alertService.openOrRefresh(
                 "machine_offline", "machine:" + event.machineId() + ":offline",
                 event.machineId(), null, "critical", title, message);
@@ -71,7 +77,26 @@ public class SystemAlertEventListener {
         if (machine == null) return "#" + machineId;
         if (machine.getName() != null && !machine.getName().isBlank()) return machine.getName();
         if (machine.getHostname() != null && !machine.getHostname().isBlank()) return machine.getHostname();
+        if (machine.getMacAddress() != null && !machine.getMacAddress().isBlank()) return machine.getMacAddress();
         return "#" + machineId;
+    }
+
+    private String machineIdentity(Machine machine, int machineId) {
+        List<String> parts = new ArrayList<>();
+        if (machine != null) {
+            addIdentityPart(parts, "名称", machine.getName());
+            addIdentityPart(parts, "主机名", machine.getHostname());
+            addIdentityPart(parts, "MAC", machine.getMacAddress());
+            addIdentityPart(parts, "IP", machine.getIpAddress());
+        }
+        parts.add("ID #" + machineId);
+        return String.join("；", parts);
+    }
+
+    private void addIdentityPart(List<String> parts, String label, String value) {
+        if (value != null && !value.isBlank()) {
+            parts.add(label + " " + value.trim());
+        }
     }
 
     private String safe(String value, String fallback) {

@@ -31,6 +31,9 @@ SELL_LIST_URL = (
 ORDER_LIST_URL = (
     "https://www.itembay.com/mybay/status/mybayStatusGiveListBySSL"
 )
+BAYTALK_LIST_URL = (
+    "https://www.itembay.com/ibmessenger/bayTalkListMain"
+)
 
 ORDER_TABLE_SELECTOR = "table.list_type"
 ORDER_ROW_SELECTOR = "table.list_type tbody tr"
@@ -43,6 +46,9 @@ LAST_PAGE_SELECTOR = (
 NEXT_PAGE_SELECTOR = (
     '#NavigationPanel a:has(img[alt="다음 페이지"])'
 )
+PRESALE_LIST_SELECTOR = "#before_chat_list"
+PRESALE_ROW_SELECTOR = "#before_chat_list .item_list"
+PRESALE_TAB_SELECTOR = '.btn_tab[data-type="before"]'
 
 MIN_COMMIT_TIMEOUT_MS = 15000
 MIN_READY_TIMEOUT_MS = 20000
@@ -52,10 +58,31 @@ REFRESH_PAGE_MAX_ACTIONS = 30
 RELOGIN_MAX_ATTEMPTS = 3
 RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
 MAX_SALES_PRODUCT_PAGES = 1000
+PRESALE_POLL_INTERVAL_SECONDS = 5.0
+PRESALE_LIST_REFRESH_INTERVAL_SECONDS = 15.0
+PRESALE_ALERT_INTERVAL_SECONDS = 20.0
 
 
 def _compact_text(value) -> str:
     return " ".join(str(value or "").split())
+
+
+def _parse_presale_inquiry_payload(payload: dict) -> Optional[dict]:
+    """Normalize one live BayTalk pre-sale row when it has unread messages."""
+    unread_text = _compact_text(payload.get("unread_text"))
+    match = re.search(r"\d[\d,]*", unread_text)
+    if not match:
+        return None
+    unread_count = int(match.group(0).replace(",", ""))
+    if unread_count <= 0:
+        return None
+    return {
+        "talk_seq": _compact_text(payload.get("talk_seq")),
+        "item_seq": _compact_text(payload.get("item_seq")),
+        "game_server": _compact_text(payload.get("game_server")),
+        "last_time": _compact_text(payload.get("last_time")),
+        "unread_count": unread_count,
+    }
 
 
 def _parse_sales_product_row_payload(payload: dict) -> dict:
@@ -559,6 +586,162 @@ class ItembayOrderWorker(PageWorker):
             return False
 
 
+class ItembayPresaleChatWorker(PageWorker):
+    """售前咨询 Worker：轮询 BayTalk 未读数并持续语音提醒。"""
+
+    def __init__(self, session, stop_event, monitor: 'ItembayMonitor'):
+        super().__init__(session, stop_event, name="ItembayPresaleChat")
+        self._monitor = monitor
+        self._next_alert_at = 0.0
+        self._last_unread_total = 0
+
+    async def run(self):
+        timeout = self._monitor.get_order_cfg().get(
+            "wait_timeout", 10000)
+        next_list_refresh_at = 0.0
+        print(
+            f"[{self._log_tag}] 售前咨询监控开始 "
+            f"(poll={PRESALE_POLL_INTERVAL_SECONDS:.0f}s, "
+            f"repeat={PRESALE_ALERT_INTERVAL_SECONDS:.0f}s)"
+        )
+
+        while not self.stopped:
+            self._touch()
+            if self._page_crashed:
+                raise RuntimeError("BayTalk 售前总览页渲染进程已崩溃")
+
+            try:
+                now = time.monotonic()
+                if now >= next_list_refresh_at:
+                    await self._refresh_presale_list(timeout)
+                    next_list_refresh_at = (
+                        time.monotonic()
+                        + PRESALE_LIST_REFRESH_INTERVAL_SECONDS
+                    )
+
+                inquiries = await self._read_unread_inquiries()
+                await self._announce_if_due(inquiries, now=now)
+            except Exception as exc:
+                if self.page_failure_requires_rebuild(exc):
+                    raise RuntimeError(
+                        "BayTalk 售前总览页不可用，需要重建标签"
+                    ) from exc
+                print(
+                    f"[{self._log_tag}] 售前咨询读取失败: {exc}；"
+                    "下轮重新加载售前列表"
+                )
+                next_list_refresh_at = 0.0
+
+            await asyncio.sleep(PRESALE_POLL_INTERVAL_SECONDS)
+
+    async def _refresh_presale_list(self, timeout: int):
+        if BAYTALK_LIST_URL not in self.page.url:
+            await self._goto_chat_overview(timeout)
+
+        tab = self.page.locator(PRESALE_TAB_SELECTOR).first
+        if await tab.count() == 0:
+            await self._goto_chat_overview(timeout)
+            tab = self.page.locator(PRESALE_TAB_SELECTOR).first
+        if await tab.count() == 0:
+            raise RuntimeError("BayTalk 总览未找到交易前标签")
+
+        # ItemBay 重载后默认回到交易中；点击交易前标签会通过站点自身
+        # 的轻量请求刷新列表，比频繁整页 reload 更不容易触发渲染崩溃。
+        await tab.click(timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
+        await self.page.wait_for_selector(
+            PRESALE_LIST_SELECTOR,
+            state="attached",
+            timeout=max(timeout, MIN_READY_TIMEOUT_MS),
+        )
+
+    async def _goto_chat_overview(self, timeout: int):
+        print(f"[{self._log_tag}] 导航到售前聊天总览: {BAYTALK_LIST_URL}")
+        await self.page.goto(
+            BAYTALK_LIST_URL,
+            wait_until="domcontentloaded",
+            timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS),
+        )
+        if self._session.is_login_page(self.page.url):
+            raise RuntimeError("ItemBay 登录失效，等待订单 Worker 恢复登录")
+
+    async def _read_unread_inquiries(self) -> List[dict]:
+        rows = self.page.locator(PRESALE_ROW_SELECTOR)
+        payloads = await rows.evaluate_all("""
+            rows => rows.map(row => {
+                const unreadBox = row.querySelector(
+                    '.info_game .ml-auto'
+                );
+                const unreadCandidates = unreadBox
+                    ? Array.from(unreadBox.querySelectorAll('*'))
+                        .filter(node => !node.classList.contains('blind'))
+                        .flatMap(node => [
+                            node.innerText || '',
+                            node.getAttribute('data-count') || '',
+                            node.getAttribute('data-unread-count') || '',
+                            node.getAttribute('aria-label') || '',
+                            node.getAttribute('title') || ''
+                        ])
+                    : [];
+                return {
+                    talk_seq:
+                        row.getAttribute('data-biitemtalkseq') || '',
+                    item_seq:
+                        row.getAttribute('data-isiitemseq') || '',
+                    game_server: (
+                        row.querySelector('.name_ganme')
+                            ?.innerText || ''
+                    ),
+                    last_time: (
+                        row.querySelector('.info_time span:last-child')
+                            ?.innerText || ''
+                    ),
+                    unread_text: [
+                        unreadBox?.innerText || '',
+                        unreadBox?.getAttribute('data-count') || '',
+                        unreadBox?.getAttribute(
+                            'data-unread-count'
+                        ) || '',
+                        ...unreadCandidates
+                    ].join(' ')
+                };
+            })
+        """)
+        return [
+            inquiry
+            for payload in payloads
+            if (inquiry := _parse_presale_inquiry_payload(payload))
+            is not None
+        ]
+
+    async def _announce_if_due(
+            self, inquiries: List[dict], now: Optional[float] = None) -> bool:
+        unread_total = sum(
+            int(inquiry.get("unread_count") or 0)
+            for inquiry in inquiries
+        )
+        if unread_total <= 0:
+            if self._last_unread_total > 0:
+                print(f"[{self._log_tag}] 售前未读咨询已清零，停止播报")
+            self._last_unread_total = 0
+            self._next_alert_at = 0.0
+            return False
+
+        self._last_unread_total = unread_total
+        current = time.monotonic() if now is None else now
+        if current < self._next_alert_at:
+            return False
+
+        conversation_count = len(inquiries)
+        message = (
+            f"itemBay账号{self._session.account_id}收到售前消息咨询，"
+            f"{conversation_count}个会话共{unread_total}条未读，"
+            "请及时回复"
+        )
+        print(f"[{self._log_tag}] {message}；未处理将持续重复播报")
+        self._next_alert_at = current + PRESALE_ALERT_INTERVAL_SECONDS
+        return bool(await play_alert_audio_async(text=message))
+
+
 class ItembayRefreshWorker(PageWorker):
     """商品刷新 Worker：固定在上架列表页，定时点击「끌올」。"""
 
@@ -949,6 +1132,8 @@ class ItembayMonitor(BaseOrderMonitor):
             ItembayOrderWorker(
                 self._session, self.stop_event, self),
             ItembayRefreshWorker(
+                self._session, self.stop_event, self),
+            ItembayPresaleChatWorker(
                 self._session, self.stop_event, self),
         ]
 

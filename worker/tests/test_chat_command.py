@@ -183,6 +183,14 @@ class ChatCommandTest(unittest.TestCase):
                 return self
 
             async def wait_for(self, **_kwargs):
+                state = _kwargs.get("state")
+                if self.selector == "#sTalkPop" and state == "hidden":
+                    if self.page.popup_visible:
+                        raise AssertionError("遮挡弹窗仍然可见")
+                    return None
+                if self.selector in {"#txtAreaMsgSend", "#btnSend"}:
+                    if self.page.popup_visible:
+                        raise AssertionError("遮挡弹窗关闭前不能操作聊天控件")
                 return None
 
             async def is_enabled(self):
@@ -195,6 +203,8 @@ class ChatCommandTest(unittest.TestCase):
 
             async def click(self, **_kwargs):
                 events.append(f"click:{self.selector}")
+                if self.selector == "#sTalkPop .btn_pop_close":
+                    self.page.popup_visible = False
                 if self.selector == "#btnSend":
                     self.page.sent_count += 1
 
@@ -206,6 +216,7 @@ class ChatCommandTest(unittest.TestCase):
             def __init__(self):
                 self.keyboard = FakeKeyboard()
                 self.sent_count = 0
+                self.popup_visible = True
 
             async def goto(self, url, **_kwargs):
                 events.append(f"goto:{url}")
@@ -249,6 +260,11 @@ class ChatCommandTest(unittest.TestCase):
                 "input_selector": "#txtAreaMsgSend",
                 "send_selector": "#btnSend",
                 "file_selector": "#txtScreenShot",
+                "blocking_popup_selector": "#sTalkPop",
+                "blocking_popup_close_selector": (
+                    "#sTalkPop .btn_pop_close"
+                ),
+                "blocking_popup_wait_ms": 1000,
                 "sent_selector": "#chat_container .list_message li.send",
                 "sent_timeout_ms": 1000,
                 "max_text_length": 800,
@@ -258,6 +274,11 @@ class ChatCommandTest(unittest.TestCase):
         ))
 
         self.assertTrue(result["success"])
+        self.assertFalse(session.page.popup_visible)
+        self.assertLess(
+            events.index("click:#sTalkPop .btn_pop_close"),
+            events.index("click:#txtAreaMsgSend"),
+        )
         self.assertIn("type:안녕하세요", events)
         self.assertIn("click:#btnSend", events)
         self.assertEqual(1, session.page.sent_count)
@@ -276,6 +297,54 @@ class ChatCommandTest(unittest.TestCase):
                 },
                 [{"content": "x" * 801, "image_urls": []}],
             )
+
+    def test_itembay_target_gets_live_blocking_popup_defaults(self):
+        target = sender._normalize_target(
+            {
+                "url": (
+                    "https://www.itembay.com/ibmessenger/"
+                    "bayTalkChatTran?iTranSeq=96370042"
+                ),
+                "input_selector": "#txtAreaMsgSend",
+                "send_selector": "#btnSend",
+            },
+            [{"content": "hello", "image_urls": []}],
+        )
+
+        self.assertEqual("#sTalkPop", target["blocking_popup_selector"])
+        self.assertEqual(
+            "#sTalkPop .btn_pop_close",
+            target["blocking_popup_close_selector"],
+        )
+
+    def test_itembay_missing_blocking_popup_is_a_normal_path(self):
+        class MissingPopupLocator:
+            @property
+            def first(self):
+                return self
+
+            async def wait_for(self, **_kwargs):
+                raise TimeoutError("popup not shown")
+
+            async def click(self, **_kwargs):
+                raise AssertionError("隐藏弹窗不应执行点击")
+
+        class PopupFreePage:
+            def locator(self, _selector):
+                return MissingPopupLocator()
+
+        dismissed = asyncio.run(sender._dismiss_blocking_popup(
+            PopupFreePage(),
+            {
+                "blocking_popup_selector": "#sTalkPop",
+                "blocking_popup_close_selector": (
+                    "#sTalkPop .btn_pop_close"
+                ),
+                "blocking_popup_wait_ms": 100,
+            },
+        ))
+
+        self.assertFalse(dismissed)
 
     def test_itembay_image_selection_auto_sends_and_verifies_receipt(self):
         class FakeResponse:

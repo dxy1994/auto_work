@@ -14,10 +14,12 @@ from monitor.monitoring.platforms import itembay as itembay_module  # noqa: E402
 from monitor.monitoring.platforms.itembay import (  # noqa: E402
     ItembayMonitor,
     ItembayOrderWorker,
+    ItembayPresaleChatWorker,
     ItembayRefreshWorker,
     ORDER_LIST_URL,
     _combine_order_row_payloads,
     _parse_order_row_payload,
+    _parse_presale_inquiry_payload,
     _parse_refresh_action,
 )
 from monitor.orders.adapters import adapter_for  # noqa: E402
@@ -238,16 +240,59 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
         page.goto.assert_awaited_once()
         self.assertEqual(ORDER_LIST_URL, page.goto.await_args.args[0])
 
-    def test_monitor_uses_independent_order_and_refresh_workers(self):
+    def test_monitor_uses_independent_order_refresh_and_presale_workers(self):
         monitor = object.__new__(ItembayMonitor)
         monitor._session = _FakeSession()
         monitor.stop_event = None
 
         workers = monitor._get_workers()
 
-        self.assertEqual(2, len(workers))
+        self.assertEqual(3, len(workers))
         self.assertIsInstance(workers[0], ItembayOrderWorker)
         self.assertIsInstance(workers[1], ItembayRefreshWorker)
+        self.assertIsInstance(workers[2], ItembayPresaleChatWorker)
+
+    def test_presale_payload_requires_a_positive_unread_count(self):
+        self.assertIsNone(_parse_presale_inquiry_payload({
+            "unread_text": "안 읽은 수",
+            "talk_seq": "119633",
+        }))
+        self.assertEqual({
+            "talk_seq": "119633",
+            "item_seq": "33579710017",
+            "game_server": "리니지클래식 > 군터",
+            "last_time": "14:55",
+            "unread_count": 12,
+        }, _parse_presale_inquiry_payload({
+            "unread_text": "안 읽은 수 12",
+            "talk_seq": "119633",
+            "item_seq": "33579710017",
+            "game_server": "리니지클래식 > 군터",
+            "last_time": "14:55",
+        }))
+
+    async def test_same_unread_presale_inquiry_repeats_until_cleared(self):
+        monitor = SimpleNamespace(get_order_cfg=lambda: {})
+        worker = ItembayPresaleChatWorker(
+            _FakeSession(), None, monitor)
+        inquiry = [{"unread_count": 1}]
+
+        with patch.object(
+                itembay_module,
+                "play_alert_audio_async",
+                new=AsyncMock(return_value=True)) as alert:
+            self.assertTrue(await worker._announce_if_due(
+                inquiry, now=100.0))
+            self.assertFalse(await worker._announce_if_due(
+                inquiry, now=101.0))
+            self.assertTrue(await worker._announce_if_due(
+                inquiry, now=121.0))
+            self.assertFalse(await worker._announce_if_due(
+                [], now=122.0))
+            self.assertTrue(await worker._announce_if_due(
+                inquiry, now=123.0))
+
+        self.assertEqual(3, alert.await_count)
 
     def test_refresh_flow_matches_live_ajax_page_contract(self):
         source = inspect.getsource(ItembayRefreshWorker._do_refresh)

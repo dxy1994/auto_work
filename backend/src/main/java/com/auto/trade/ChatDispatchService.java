@@ -414,6 +414,9 @@ public class ChatDispatchService {
         String fileSelector = configString(chatConfig, "file_selector");
         String uploadSendSelector = configString(chatConfig, "upload_send_selector");
         String uploadCloseSelector = configString(chatConfig, "upload_close_selector");
+        String blockingPopupSelector = configString(chatConfig, "blocking_popup_selector");
+        String blockingPopupCloseSelector =
+                configString(chatConfig, "blocking_popup_close_selector");
         String sentSelector = configString(chatConfig, "sent_selector");
         boolean uploadAutoSend = configBoolean(chatConfig, "upload_auto_send", true);
         int sentTimeoutMs = configInt(chatConfig, "sent_timeout_ms", 0);
@@ -436,6 +439,12 @@ public class ChatDispatchService {
             if (inputSelector.isBlank()) inputSelector = "#txtAreaMsgSend";
             if (sendSelector.isBlank()) sendSelector = "#btnSend";
             if (fileSelector.isBlank()) fileSelector = "#txtScreenShot";
+            if (blockingPopupSelector.isBlank()) {
+                blockingPopupSelector = "#sTalkPop";
+            }
+            if (blockingPopupCloseSelector.isBlank()) {
+                blockingPopupCloseSelector = "#sTalkPop .btn_pop_close";
+            }
             if (sentSelector.isBlank()) {
                 sentSelector = "#chat_container .list_message li.send";
             }
@@ -492,6 +501,11 @@ public class ChatDispatchService {
         }
         if (!uploadCloseSelector.isBlank()) {
             target.put("upload_close_selector", uploadCloseSelector);
+        }
+        if (!blockingPopupCloseSelector.isBlank()) {
+            target.put("blocking_popup_selector", blockingPopupSelector);
+            target.put("blocking_popup_close_selector", blockingPopupCloseSelector);
+            target.put("blocking_popup_wait_ms", 2_000);
         }
         if (!sentSelector.isBlank()) {
             target.put("sent_selector", sentSelector);

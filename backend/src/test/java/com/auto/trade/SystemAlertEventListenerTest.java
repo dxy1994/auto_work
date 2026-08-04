@@ -38,6 +38,9 @@ class SystemAlertEventListenerTest {
         Machine machine = new Machine();
         machine.setId(7);
         machine.setName("监控主机 A");
+        machine.setHostname("worker-a");
+        machine.setMacAddress("AA:BB:CC:DD:EE:07");
+        machine.setIpAddress("192.168.1.27");
         machine.setStatus("offline");
         when(machineService.getById(7)).thenReturn(machine);
         when(associationService.findByMachineIdActive(7))
@@ -47,8 +50,13 @@ class SystemAlertEventListenerTest {
 
         verify(alertService).openOrRefresh(
                 eq("machine_offline"), eq("machine:7:offline"), eq(7), isNull(),
-                eq("critical"), eq("订单监控机器已掉线"),
-                argThat(message -> message.contains("原因：worker 断线")
+                eq("critical"), eq("订单监控机器「监控主机 A」已掉线"),
+                argThat(message -> message.contains("名称 监控主机 A")
+                        && message.contains("主机名 worker-a")
+                        && message.contains("MAC AA:BB:CC:DD:EE:07")
+                        && message.contains("IP 192.168.1.27")
+                        && message.contains("ID #7")
+                        && message.contains("原因：worker 断线")
                         && message.contains("解决方案：")
                         && message.contains("自动移除")));
     }

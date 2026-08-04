@@ -227,6 +227,10 @@ class ChatDispatchServiceTest {
         assertEquals("#txtAreaMsgSend", target.getValue().get("input_selector"));
         assertEquals("#btnSend", target.getValue().get("send_selector"));
         assertEquals("#txtScreenShot", target.getValue().get("file_selector"));
+        assertEquals("#sTalkPop", target.getValue().get("blocking_popup_selector"));
+        assertEquals(
+                "#sTalkPop .btn_pop_close",
+                target.getValue().get("blocking_popup_close_selector"));
         assertEquals(
                 "#chat_container .list_message li.send",
                 target.getValue().get("sent_selector"));

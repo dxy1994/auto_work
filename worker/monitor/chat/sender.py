@@ -140,6 +140,7 @@ async def _do_send_chat_locked(
         session.track_transient_page(page)
         await page.goto(chat_url, wait_until="commit", timeout=10000)
         await page.wait_for_timeout(500)
+        await _dismiss_blocking_popup(page, target)
 
         input_box = page.locator(target["input_selector"]).first
         send_button = page.locator(target["send_selector"]).first
@@ -545,6 +546,30 @@ def _normalize_target(target: dict, messages: list) -> dict:
     result["upload_send_selector"] = str(
         result.get("upload_send_selector") or ""
     ).strip()
+    result["blocking_popup_selector"] = str(
+        result.get("blocking_popup_selector") or ""
+    ).strip()
+    result["blocking_popup_close_selector"] = str(
+        result.get("blocking_popup_close_selector") or ""
+    ).strip()
+    is_itembay_chat = (
+        (parsed.hostname or "").lower() in {"itembay.com", "www.itembay.com"}
+        and parsed.path.rstrip("/").endswith(
+            "/ibmessenger/bayTalkChatTran"
+        )
+    )
+    if is_itembay_chat:
+        if not result["blocking_popup_selector"]:
+            result["blocking_popup_selector"] = "#sTalkPop"
+        if not result["blocking_popup_close_selector"]:
+            result["blocking_popup_close_selector"] = (
+                "#sTalkPop .btn_pop_close"
+            )
+    if result["blocking_popup_close_selector"]:
+        result["blocking_popup_wait_ms"] = max(
+            100,
+            _positive_int(result.get("blocking_popup_wait_ms"), 2000),
+        )
     if (
         has_images
         and not result["upload_auto_send"]
@@ -577,6 +602,38 @@ def _normalize_target(target: dict, messages: list) -> dict:
     if max_image_bytes > 0:
         result["max_image_bytes"] = max_image_bytes
     return result
+
+
+async def _dismiss_blocking_popup(page, target: dict) -> bool:
+    """关闭聊天页首次打开时可能遮挡输入区的非业务弹窗。"""
+    close_selector = str(
+        target.get("blocking_popup_close_selector") or ""
+    ).strip()
+    if not close_selector:
+        return False
+
+    wait_ms = max(
+        100,
+        _positive_int(target.get("blocking_popup_wait_ms"), 2000),
+    )
+    close_button = page.locator(close_selector).first
+    try:
+        await close_button.wait_for(state="visible", timeout=wait_ms)
+    except Exception:
+        # “今日不再显示”生效或平台未展示弹窗时属于正常路径。
+        return False
+
+    try:
+        await close_button.click(timeout=2000)
+        popup_selector = str(
+            target.get("blocking_popup_selector") or ""
+        ).strip()
+        if popup_selector:
+            popup = page.locator(popup_selector).first
+            await popup.wait_for(state="hidden", timeout=2000)
+        return True
+    except Exception as exc:
+        raise RuntimeError(f"聊天遮挡弹窗关闭失败: {exc}") from exc
 
 
 async def _sent_message_count(page, target: dict) -> Optional[int]:

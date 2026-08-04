@@ -244,9 +244,16 @@
           订单：{{ item.source_order_no || item.order_no || item.entity_id }}
           <span v-if="item.buyer_character">· 买家 {{ item.buyer_character }}</span>
         </div>
-        <div v-else class="manual-alert-order">
-          <span v-if="item.machine_id">机器 #{{ item.machine_id }}</span>
-          <span v-if="item.account_id"> · 平台账号 #{{ item.account_id }}</span>
+        <div v-else class="manual-alert-machine">
+          <div v-if="item.machine_id" class="manual-alert-machine-primary">
+            <el-icon><Monitor /></el-icon>
+            <strong>{{ machineDisplayName(item) }}</strong>
+            <span>机器 ID #{{ item.machine_id }}</span>
+          </div>
+          <div v-if="machineDetails(item).length" class="manual-alert-machine-details">
+            <span v-for="detail in machineDetails(item)" :key="detail">{{ detail }}</span>
+          </div>
+          <div v-if="item.account_id" class="manual-alert-account">平台账号 #{{ item.account_id }}</div>
         </div>
         <p>{{ item.message }}</p>
         <template v-if="item.entity_type === 'buyer_review'">
@@ -309,6 +316,22 @@ function formatTime(value) {
 function formatConfidence(value) {
   const confidence = Number(value)
   return Number.isFinite(confidence) && confidence >= 0 ? `${confidence.toFixed(1)}%` : '无法识别'
+}
+
+function machineDisplayName(item) {
+  return item.machine_name || item.machine_hostname || item.machine_mac_address || `未命名机器 #${item.machine_id}`
+}
+
+function machineDetails(item) {
+  const details = []
+  if (item.machine_hostname && item.machine_hostname !== machineDisplayName(item)) {
+    details.push(`主机名 ${item.machine_hostname}`)
+  }
+  if (item.machine_mac_address && item.machine_mac_address !== machineDisplayName(item)) {
+    details.push(`MAC ${item.machine_mac_address}`)
+  }
+  if (item.machine_ip_address) details.push(`IP ${item.machine_ip_address}`)
+  return details
 }
 
 async function handleBuyerReview(approved, item) {
@@ -426,6 +449,19 @@ html, body, #app { height: 100%; margin: 0; padding: 0; }
 .manual-alert-close { margin-left: 2px; color: #909399; }
 .manual-alert-close:hover { color: #f56c6c; }
 .manual-alert-order { margin-top: 10px; color: #606266; font-size: 13px; }
+.manual-alert-machine {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #f5f7fa;
+  color: #606266;
+  font-size: 13px;
+}
+.manual-alert-machine-primary { display: flex; align-items: center; gap: 7px; }
+.manual-alert-machine-primary strong { color: #303133; font-size: 14px; }
+.manual-alert-machine-primary span { margin-left: auto; color: #909399; font-size: 12px; }
+.manual-alert-machine-details { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 7px; color: #606266; }
+.manual-alert-account { margin-top: 7px; color: #909399; }
 .manual-alert-card p { margin: 8px 0; color: #303133; line-height: 1.6; }
 .manual-alert-footer { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
 .buyer-review-names { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px 0 14px; }
