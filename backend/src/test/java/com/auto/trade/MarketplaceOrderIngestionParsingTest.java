@@ -6,7 +6,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MarketplaceOrderIngestionParsingTest {
 
@@ -30,6 +32,18 @@ class MarketplaceOrderIngestionParsingTest {
         assertEquals("", MarketplaceOrderIngestionService.parseItemFromTitle("商品%游戏币"));
         assertEquals("", MarketplaceOrderIngestionService.parseItemFromTitle("普通商品"));
         assertEquals("", MarketplaceOrderIngestionService.parseItemFromTitle(null));
+    }
+
+    @Test
+    void matchesPlatformGameNamesIgnoringInternalSpaces() {
+        assertTrue(MarketplaceOrderIngestionService.samePlatformGameName(
+                "리니지 클래식", "리니지클래식"));
+        assertTrue(MarketplaceOrderIngestionService.samePlatformGameName(
+                "  리니지   클래식 ", "리니지클래식"));
+        assertFalse(MarketplaceOrderIngestionService.samePlatformGameName(
+                "리니지 클래식", "디아블로2:레저렉션"));
+        assertFalse(MarketplaceOrderIngestionService.samePlatformGameName(
+                "", ""));
     }
 
     @Test

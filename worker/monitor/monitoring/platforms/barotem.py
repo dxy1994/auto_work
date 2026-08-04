@@ -12,7 +12,9 @@ import re
 import time
 from decimal import Decimal
 from typing import List, Optional
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode, urljoin, urlparse, parse_qs
+
+from bs4 import BeautifulSoup
 
 from monitor.browser.audio import play_alert_audio_async
 from monitor.monitoring.base import BaseOrderMonitor
@@ -23,6 +25,11 @@ from monitor.orders.adapters import adapter_for, parse_korean_amount
 
 SELL_LIST_URL = "https://www.barotem.com/mypage/sellingproduct/sell"
 ORDER_LIST_URL = "https://www.barotem.com/mypage/sellview/4"
+PRODUCT_DETAIL_URL = "https://www.barotem.com/product/view/{product_id}"
+
+NEW_CHAT_ALERT_SELECTOR = "#chargeModal:visible"
+TRADE_VERIFICATION_SELECTOR = ".preventionground:visible"
+POPUP_ACTION_TIMEOUT_MS = 5000
 
 ORDER_CONTENT_SELECTOR = ".product_background .product_contents"
 ORDER_CARD_SELECTOR = ".product_contents .product_wrap"
@@ -38,6 +45,7 @@ MIN_READY_TIMEOUT_MS = 20000
 COMMIT_GRACE_SECONDS = 3.0
 REFRESH_RESULT_TIMEOUT_SECONDS = 15.0
 REFRESH_PAGE_MAX_ACTIONS = 30
+SCHEDULED_PRODUCT_REFRESH_ENABLED = False
 RELOGIN_MAX_ATTEMPTS = 3
 RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
 
@@ -55,6 +63,112 @@ def _parse_buyer_character(onclick: str) -> str:
     quoted = re.findall(r"""(['"])(.*?)\1""", match.group("args"),
                         re.DOTALL)
     return _compact_text(quoted[1][1]) if len(quoted) >= 2 else ""
+
+
+def _parse_product_view_id(onclick: str) -> str:
+    """从 productview(product_id) 中读取订单对应的在售商品 ID。"""
+    match = re.search(
+        r"\bproductview\s*\(\s*['\"]?(\d+)",
+        str(onclick or ""),
+    )
+    return match.group(1) if match else ""
+
+
+def _parse_chat_view_url(onclick: str) -> str:
+    """从订单卡片提取聊天入口，并去掉站点 onclick 中多余的 ``>``。"""
+    match = re.search(
+        r"(?P<path>/chat/view\?jangNum=\d+)",
+        str(onclick or ""),
+    )
+    if not match:
+        return ""
+    chat_url = urljoin("https://www.barotem.com", match.group("path"))
+    parsed = urlparse(chat_url)
+    if (
+        (parsed.hostname or "").lower()
+        not in {"barotem.com", "www.barotem.com"}
+        or parsed.path.rstrip("/") != "/chat/view"
+    ):
+        return ""
+    return chat_url
+
+
+def _parse_product_detail_html(html: str) -> dict:
+    """读取商品详情页中决定订单实际数量单位的字段。"""
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    labels = {
+        "서버": "detail_server",
+        "최소수량": "minimum_quantity",
+        "최대수량": "maximum_quantity",
+        "상세가격": "detail_price",
+    }
+    result = {}
+    for item in soup.select("li.info"):
+        label_node = item.find("p", recursive=False)
+        if label_node is None:
+            continue
+        key = labels.get(_compact_text(label_node.get_text(" ", strip=True)))
+        if not key:
+            continue
+        value_node = next(
+            (
+                child
+                for child in item.find_all(recursive=False)
+                if getattr(child, "name", None) and child is not label_node
+            ),
+            None,
+        )
+        value = _compact_text(
+            value_node.get_text(" ", strip=True) if value_node else ""
+        )
+        if value:
+            result[key] = value
+    return result
+
+
+def _detail_quantity_scale(detail_price: str) -> Optional[Decimal]:
+    """从“만 아데나당 980원”等详情价格中提取每个列表单位的实际数量。"""
+    text = _compact_text(detail_price)
+    if "당" not in text:
+        return None
+    unit_text = text.split("당", 1)[0]
+    match = re.search(
+        r"(?P<amount>(?:\d[\d,]*)?\s*(?:조|억|만|천|백|십))",
+        unit_text,
+    )
+    if not match:
+        return Decimal("1")
+    amount_text = match.group("amount")
+    if not re.search(r"\d", amount_text):
+        amount_text = "1" + amount_text
+    return parse_korean_amount(amount_text)
+
+
+def _resolve_order_quantity(
+        amount: str, detail_price: str = "",
+        minimum_quantity: str = "", require_detail: bool = False) -> Decimal:
+    """把列表的购买单位数换算为游戏内真实数量。"""
+    amount_text = _compact_text(amount)
+    base_amount = parse_korean_amount(amount_text)
+    if re.search(r"(?:조|억|만|천|백|십)", amount_text):
+        return base_amount
+
+    scale = _detail_quantity_scale(detail_price)
+    if scale is None and minimum_quantity:
+        minimum_total = parse_korean_amount(minimum_quantity)
+        number_match = re.search(r"\d+(?:,\d{3})*(?:\.\d+)?", minimum_quantity)
+        if number_match:
+            minimum_units = Decimal(number_match.group(0).replace(",", ""))
+            if minimum_units > 0:
+                scale = minimum_total / minimum_units
+    if scale is None:
+        if require_detail:
+            raise ValueError("未读取到 Barotem 商品数量单位")
+        scale = Decimal("1")
+    quantity = base_amount * scale
+    if quantity != quantity.to_integral_value():
+        raise ValueError("Barotem 订单实际数量不是整数")
+    return quantity
 
 
 def _parse_order_card_payload(payload: dict) -> Optional[dict]:
@@ -88,6 +202,8 @@ def _parse_order_card_payload(payload: dict) -> Optional[dict]:
     return {
         "order_no": order_no,
         "deal_id": order_no,
+        "platform_product_id": _compact_text(
+            payload.get("platform_product_id")),
         "game_name": game_name,
         "server_code": server,
         "item_type": _compact_text(payload.get("item_type")) or "unknown",
@@ -96,6 +212,9 @@ def _parse_order_card_payload(payload: dict) -> Optional[dict]:
         "price": _compact_text(payload.get("price")),
         "buyer_character": buyer,
         "platform_order_time": _compact_text(payload.get("order_time")),
+        "minimum_quantity": _compact_text(payload.get("minimum_quantity")),
+        "maximum_quantity": _compact_text(payload.get("maximum_quantity")),
+        "detail_price": _compact_text(payload.get("detail_price")),
         "status": status,
         "state": status,
     }
@@ -149,6 +268,110 @@ def _order_list_url(item_type: str) -> str:
     return f"{ORDER_LIST_URL}?{query}"
 
 
+async def _fetch_product_detail(page, product_id: str) -> dict:
+    """通过当前登录上下文读取商品详情，不离开订单列表页面。"""
+    if not re.fullmatch(r"\d+", str(product_id or "")):
+        raise ValueError("Barotem 商品 ID 无效")
+    url = PRODUCT_DETAIL_URL.format(product_id=product_id)
+    response = await page.context.request.get(url, timeout=10000)
+    if not response.ok:
+        raise RuntimeError(
+            f"Barotem 商品详情请求失败: HTTP {response.status}"
+        )
+    response_url = str(response.url or "")
+    if "/auth/login" in response_url:
+        raise RuntimeError("Barotem 商品详情请求被重定向到登录页")
+    detail = _parse_product_detail_html(await response.text())
+    if not detail:
+        raise RuntimeError("Barotem 商品详情页未包含数量单位字段")
+    return detail
+
+
+async def _dismiss_new_chat_alert(
+        page, timeout: int = POPUP_ACTION_TIMEOUT_MS) -> bool:
+    """关闭最上层的新聊天提醒，但不勾选“下次登录前不再显示”。"""
+    modal = page.locator(NEW_CHAT_ALERT_SELECTOR).last
+    if await modal.count() == 0 or not await modal.is_visible():
+        return False
+
+    title = modal.locator("h2").first
+    title_text = (
+        _compact_text(await title.inner_text())
+        if await title.count() > 0 else ""
+    )
+    if title_text != "신규 채팅 알림":
+        return False
+
+    close = modal.locator(".charge_modal_close").last
+    if await close.count() == 0 or not await close.is_visible():
+        raise RuntimeError("Barotem 新聊天提醒缺少可见的取消按钮")
+    await close.click(timeout=timeout)
+    await modal.wait_for(state="hidden", timeout=timeout)
+    return True
+
+
+async def _complete_trade_verification(
+        page, timeout: int = POPUP_ACTION_TIMEOUT_MS) -> bool:
+    """按页面展示的买家角色名完成安全交易确认。"""
+    modal = page.locator(TRADE_VERIFICATION_SELECTOR).last
+    if await modal.count() == 0 or not await modal.is_visible():
+        return False
+
+    heading = modal.locator(".prevention_modal_wrap > h2").first
+    heading_text = (
+        _compact_text(await heading.inner_text())
+        if await heading.count() > 0 else ""
+    )
+    if heading_text != "안전 거래 정보 확인":
+        return False
+
+    character = modal.locator(".chrInfo:visible .chrname").first
+    character_name = (
+        _compact_text(await character.inner_text())
+        if await character.count() > 0 else ""
+    )
+    input_box = modal.locator("#chrCheck:visible").first
+    checkbox = modal.locator("#payment_alert_chrCheck").first
+    checkbox_label = modal.locator(
+        "label[for='payment_alert_chrCheck']:visible"
+    ).first
+    confirm = modal.locator(
+        ".btns_wrap.sellerChk:visible "
+        ".success[onclick*='preventionchrCheck']"
+    ).last
+    if not character_name:
+        return False
+    for control in (input_box, checkbox_label, confirm):
+        if await control.count() == 0 or not await control.is_visible():
+            return False
+    if await checkbox.count() == 0:
+        return False
+
+    await input_box.fill(character_name, timeout=timeout)
+    await checkbox_label.click(timeout=timeout)
+    if not await checkbox.is_checked():
+        await checkbox.check(timeout=timeout, force=True)
+    if _compact_text(await input_box.input_value()) != character_name:
+        raise RuntimeError("Barotem 安全交易角色名填写后校验失败")
+    if not await checkbox.is_checked():
+        raise RuntimeError("Barotem 安全交易风险确认未勾选")
+
+    await confirm.click(timeout=timeout)
+    await modal.wait_for(state="hidden", timeout=timeout)
+    return True
+
+
+async def _handle_blocking_popups(
+        page, timeout: int = POPUP_ACTION_TIMEOUT_MS) -> List[str]:
+    """独立处理可能单独或叠加出现的 Barotem 业务弹窗。"""
+    handled = []
+    if await _dismiss_new_chat_alert(page, timeout):
+        handled.append("new_chat_alert")
+    if await _complete_trade_verification(page, timeout):
+        handled.append("trade_verification")
+    return handled
+
+
 async def _read_document_time_origin(page) -> Optional[float]:
     try:
         return float(await page.evaluate("performance.timeOrigin"))
@@ -181,7 +404,21 @@ class _BarotemWorker(PageWorker):
         self._relogin_disabled = False
         self._last_relogin_wait_log_at = 0.0
 
+    async def _handle_page_popups(self) -> List[str]:
+        if not callable(getattr(self.page, "locator", None)):
+            return []
+        try:
+            handled = await _handle_blocking_popups(self.page)
+        except Exception as exc:
+            print(f"[{self._log_tag}] Barotem 弹窗自动处理失败: {exc}")
+            return []
+        if handled:
+            print(f"[{self._log_tag}] 已自动处理页面弹窗: "
+                  f"{', '.join(handled)}")
+        return handled
+
     async def _login_required(self) -> bool:
+        await self._handle_page_popups()
         if self._session.is_login_page(self.page.url):
             return True
         return await self._monitor.post_login_check(self.page)
@@ -257,11 +494,13 @@ class _BarotemWorker(PageWorker):
             self, selector: str, wait_timeout: int) -> bool:
         ready_timeout = max(wait_timeout, MIN_READY_TIMEOUT_MS)
         try:
+            await self._handle_page_popups()
             await self.page.wait_for_selector(
                 selector,
                 state="attached",
                 timeout=ready_timeout,
             )
+            await self._handle_page_popups()
             return True
         except Exception as exc:
             print(f"[{self._log_tag}] 等待业务区域超时"
@@ -498,7 +737,11 @@ class BarotemRefreshWorker(_BarotemWorker):
             print(f"[{self._log_tag}] 初始销售商品快照同步失败: {exc}")
             if self.page_failure_requires_rebuild(exc):
                 raise
-        print(f"[{self._log_tag}] 商品顶帖就绪 (间隔={interval}s)")
+        if SCHEDULED_PRODUCT_REFRESH_ENABLED:
+            print(f"[{self._log_tag}] 商品顶帖就绪 (间隔={interval}s)")
+        else:
+            print(f"[{self._log_tag}] Barotem 定时顶帖已关闭，"
+                  f"仅同步在售商品快照 (间隔={interval}s)")
         actions_on_page = 0
 
         while not self.stopped:
@@ -510,9 +753,8 @@ class BarotemRefreshWorker(_BarotemWorker):
             ).total_seconds()
             if elapsed >= interval:
                 try:
-                    result = await self._do_refresh(wait_timeout)
+                    result = await self._run_refresh_cycle(wait_timeout)
                     self._last_refresh = datetime.datetime.now()
-                    await self._sync_sales_products(wait_timeout)
                     if result == "refreshed":
                         actions_on_page += 1
                     if actions_on_page >= REFRESH_PAGE_MAX_ACTIONS:
@@ -529,6 +771,16 @@ class BarotemRefreshWorker(_BarotemWorker):
                             "上架页已不可用，需要重建标签"
                         ) from exc
             await asyncio.sleep(5)
+
+    async def _run_refresh_cycle(self, timeout: int) -> str:
+        if not SCHEDULED_PRODUCT_REFRESH_ENABLED:
+            await self._prepare_refresh_action_page(timeout)
+            await self._sync_sales_products(timeout)
+            return "scheduled_refresh_disabled"
+
+        result = await self._do_refresh(timeout)
+        await self._sync_sales_products(timeout)
+        return result
 
     async def _do_refresh(self, timeout: int) -> str:
         await self._prepare_refresh_action_page(timeout)
@@ -933,6 +1185,18 @@ class BarotemMonitor(BaseOrderMonitor):
     def _is_on_collect_page(self, page) -> bool:
         return "/mypage/sellview/4" in page.url
 
+    async def _get_product_detail(self, page, product_id: str) -> dict:
+        cache = getattr(self, "_product_detail_cache", None)
+        if cache is None:
+            cache = {}
+            self._product_detail_cache = cache
+        cached = cache.get(product_id)
+        if cached:
+            return dict(cached)
+        detail = await _fetch_product_detail(page, product_id)
+        cache[product_id] = dict(detail)
+        return detail
+
     async def _extract_orders_from_table(
             self, page) -> OrderExtractionResult:
         content = page.locator(ORDER_CONTENT_SELECTOR).first
@@ -992,6 +1256,12 @@ class BarotemMonitor(BaseOrderMonitor):
                         const buyer = card.querySelector(
                             '[onclick^="dealinfo("]'
                         );
+                        const product = card.querySelector(
+                            '.product_detail_info[onclick*="productview("]'
+                        );
+                        const chat = card.querySelector(
+                            '[onclick*="/chat/view?jangNum="]'
+                        );
                         return {
                             order_no: checkbox
                                 ? (checkbox.value || '')
@@ -1010,6 +1280,12 @@ class BarotemMonitor(BaseOrderMonitor):
                             buyer_onclick: buyer
                                 ? (buyer.getAttribute('onclick') || '')
                                 : '',
+                            product_onclick: product
+                                ? (product.getAttribute('onclick') || '')
+                                : '',
+                            chat_onclick: chat
+                                ? (chat.getAttribute('onclick') || '')
+                                : '',
                             order_time: (
                                 card.querySelector(
                                     '.product_title time'
@@ -1025,6 +1301,24 @@ class BarotemMonitor(BaseOrderMonitor):
                 """)
                 payload["mode"] = mode
                 payload["item_type"] = item_type
+                product_id = _parse_product_view_id(
+                    payload.get("product_onclick", ""))
+                payload["platform_product_id"] = product_id
+                chat_url = _parse_chat_view_url(
+                    payload.get("chat_onclick", ""))
+                cache_chat_url = getattr(
+                    self._session, "remember_conversation_url", None)
+                if chat_url and callable(cache_chat_url):
+                    cache_chat_url(
+                        "barotem", payload.get("order_no", ""), chat_url)
+                if product_id:
+                    try:
+                        payload.update(await self._get_product_detail(
+                            page, product_id))
+                    except Exception as exc:
+                        print(f"[{self._log_tag}] 订单卡片 #{index} "
+                              f"商品详情读取失败 product_id={product_id}: "
+                              f"{exc}")
                 parsed = _parse_order_card_payload(payload)
                 if parsed and parsed["order_no"] not in seen_order_ids:
                     orders.append(parsed)
@@ -1049,8 +1343,12 @@ class BarotemMonitor(BaseOrderMonitor):
             return None
 
         try:
-            quantity_value = parse_korean_amount(
-                order_data.get("amount", ""))
+            quantity_value = _resolve_order_quantity(
+                order_data.get("amount", ""),
+                detail_price=order_data.get("detail_price", ""),
+                minimum_quantity=order_data.get("minimum_quantity", ""),
+                require_detail=order_data.get("item_type") == "money",
+            )
         except ValueError as exc:
             print(f"[{self._log_tag}] 订单 "
                   f"{order_data.get('order_no', '?')} "
@@ -1064,8 +1362,10 @@ class BarotemMonitor(BaseOrderMonitor):
             platform_price = Decimal("0")
 
         adapter = adapter_for("barotem")
+        normalized_data = dict(order_data)
+        normalized_data["amount"] = format(quantity_value, "f")
         normalized = adapter.normalize(
-            order_data,
+            normalized_data,
             platform_order_time=order_data.get(
                 "platform_order_time", ""),
             platform_price=platform_price,

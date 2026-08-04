@@ -52,6 +52,10 @@ public class ChatDispatchService {
     private static final String ITEMBAY_URL_TEMPLATE =
             "https://www.itembay.com/ibmessenger/bayTalkChatTran"
                     + "?iTranSeq={order_no}";
+    private static final String BAROTEM_ORDER_LIST_URL_TEMPLATE =
+            "https://www.barotem.com/mypage/sellview/4"
+                    + "?mode=4&itemtype={item_type}&page=1&limit=500"
+                    + "&source_order_no={order_no}";
     private static final String ITEMBAY_DELIVERY_URL_TEMPLATE =
             "https://www.itembay.com/item/transaction/transactionGiveTakeDetail"
                     + "?iTranSeq={order_no}";
@@ -483,6 +487,7 @@ public class ChatDispatchService {
         int sentTimeoutMs = configInt(chatConfig, "sent_timeout_ms", 0);
         int maxTextLength = configInt(chatConfig, "max_text_length", 0);
         int maxImageBytes = configInt(chatConfig, "max_image_bytes", 0);
+        boolean barotemImageSubmit = false;
 
         if ("itemmania".equals(platformCode)) {
             if (urlTemplate.isBlank()) urlTemplate = ITEMMANIA_URL_TEMPLATE;
@@ -518,6 +523,23 @@ public class ChatDispatchService {
             }
             uploadAutoSend = true;
         }
+        if ("barotem".equals(platformCode)) {
+            // Barotem 的聊天地址使用订单卡片中的 jangNum，不能由平台订单号直接拼接。
+            // 先打开卖家订单列表，Worker 再按 source_order_no 找到卡片并解析聊天地址。
+            urlTemplate = BAROTEM_ORDER_LIST_URL_TEMPLATE;
+            if (inputSelector.isBlank()) {
+                inputSelector = "#happy_chating_form #message";
+            }
+            if (sendSelector.isBlank()) {
+                sendSelector = "#happy_chating_form .chat_send_btn";
+            }
+            // 将文件参数交给聊天页 imgchg() 生成预览，再点击当前页确认按钮。
+            barotemImageSubmit = true;
+            if (sentSelector.isBlank()) {
+                sentSelector = "#chatBox .chattingDate.chat_converse.from_me";
+            }
+            if (sentTimeoutMs <= 0) sentTimeoutMs = 10_000;
+        }
         if (urlTemplate.isBlank()
                 || (!urlTemplate.contains("{order_no}")
                 && !urlTemplate.contains("{source_order_no}"))) {
@@ -528,10 +550,11 @@ public class ChatDispatchService {
             throw ApiException.badRequest("平台未配置聊天输入框或发送按钮选择器");
         }
         boolean hasImages = messages.stream().anyMatch(message -> !message.imageUrls().isEmpty());
-        if (hasImages && fileSelector.isBlank()) {
+        if (hasImages && !barotemImageSubmit && fileSelector.isBlank()) {
             throw ApiException.badRequest("平台未配置聊天图片上传控件选择器");
         }
-        if (hasImages && !uploadAutoSend && uploadSendSelector.isBlank()) {
+        if (hasImages && !barotemImageSubmit
+                && !uploadAutoSend && uploadSendSelector.isBlank()) {
             throw ApiException.badRequest("平台未配置图片上传后的发送按钮选择器");
         }
         if (maxTextLength > 0) {
@@ -546,21 +569,33 @@ public class ChatDispatchService {
         }
 
         String encodedOrderNo = URLEncoder.encode(orderNo, StandardCharsets.UTF_8);
+        String encodedItemType = URLEncoder.encode(
+                barotemItemType(order), StandardCharsets.UTF_8);
         String url = urlTemplate
                 .replace("{order_no}", encodedOrderNo)
-                .replace("{source_order_no}", encodedOrderNo);
+                .replace("{source_order_no}", encodedOrderNo)
+                .replace("{item_type}", encodedItemType);
         validateTargetUrl(url, platform);
 
         Map<String, Object> target = new LinkedHashMap<>();
         target.put("url", url);
         target.put("input_selector", inputSelector);
         target.put("send_selector", sendSelector);
-        target.put("file_selector", fileSelector);
-        target.put("upload_auto_send", uploadAutoSend);
-        if (!uploadSendSelector.isBlank()) {
+        if (!barotemImageSubmit && !fileSelector.isBlank()) {
+            target.put("file_selector", fileSelector);
+        }
+        if (!barotemImageSubmit) {
+            target.put("upload_auto_send", uploadAutoSend);
+        }
+        if ("barotem".equals(platformCode)) {
+            target.put("conversation_resolver", "barotem_order_list");
+            target.put("order_no", orderNo);
+            target.put("barotem_image_submit", barotemImageSubmit);
+        }
+        if (!barotemImageSubmit && !uploadSendSelector.isBlank()) {
             target.put("upload_send_selector", uploadSendSelector);
         }
-        if (!uploadCloseSelector.isBlank()) {
+        if (!barotemImageSubmit && !uploadCloseSelector.isBlank()) {
             target.put("upload_close_selector", uploadCloseSelector);
         }
         if (!blockingPopupCloseSelector.isBlank()) {
@@ -580,6 +615,14 @@ public class ChatDispatchService {
         }
         target.put("order_no", orderNo);
         return target;
+    }
+
+    private String barotemItemType(GameItemOrder order) {
+        String itemType = safe(order.getPlatformItemType())
+                .trim()
+                .toLowerCase(Locale.ROOT);
+        return Set.of("money", "item", "id", "etc", "gift")
+                .contains(itemType) ? itemType : "money";
     }
 
     private void validateTargetUrl(String url, Platform platform) {

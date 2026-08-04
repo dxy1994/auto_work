@@ -15,11 +15,18 @@ from monitor.monitoring.platforms.barotem import (  # noqa: E402
     BarotemMonitor,
     BarotemOrderWorker,
     BarotemRefreshWorker,
+    NEW_CHAT_ALERT_SELECTOR,
     ORDER_CONTENT_SELECTOR,
     ORDER_LIST_URL,
     SELL_LIST_URL,
+    TRADE_VERIFICATION_SELECTOR,
+    _handle_blocking_popups,
     _parse_order_card_payload,
+    _parse_chat_view_url,
+    _parse_product_detail_html,
+    _parse_product_view_id,
     _parse_refresh_product_id,
+    _resolve_order_quantity,
     _order_list_url,
     _product_list_url,
 )
@@ -34,7 +41,182 @@ class _FakeSession:
         return False
 
 
+class _PopupLocator:
+    def __init__(self, *, name="", count=1, visible=True, text="",
+                 events=None, children=None, on_click=None):
+        self.name = name
+        self._count = count
+        self._visible = visible
+        self._text = text
+        self._events = events if events is not None else []
+        self._children = children if children is not None else {}
+        self._on_click = on_click
+        self._value = ""
+        self._checked = False
+
+    @property
+    def first(self):
+        return self
+
+    @property
+    def last(self):
+        return self
+
+    def locator(self, selector):
+        return self._children.get(
+            selector,
+            _PopupLocator(count=0, visible=False, events=self._events),
+        )
+
+    async def count(self):
+        return self._count
+
+    async def is_visible(self):
+        return self._visible
+
+    async def inner_text(self):
+        return self._text
+
+    async def click(self, **_kwargs):
+        self._events.append(f"click:{self.name}")
+        if self._on_click is not None:
+            self._on_click()
+
+    async def wait_for(self, **kwargs):
+        self._events.append(f"wait:{self.name}:{kwargs.get('state')}")
+
+    async def fill(self, value, **_kwargs):
+        self._value = value
+        self._events.append(f"fill:{self.name}:{value}")
+
+    async def check(self, **_kwargs):
+        self._checked = True
+        self._events.append(f"check:{self.name}")
+
+    async def input_value(self):
+        return self._value
+
+    async def is_checked(self):
+        return self._checked
+
+
+class _PopupPage:
+    def __init__(self, roots):
+        self._roots = roots
+
+    def locator(self, selector):
+        return self._roots.get(
+            selector,
+            _PopupLocator(count=0, visible=False),
+        )
+
+
+def _make_popup_page(*, chat=False, verification=False):
+    events = []
+    roots = {}
+    if chat:
+        chat_title = _PopupLocator(
+            name="chat-title", text="신규 채팅 알림", events=events)
+        chat_close = _PopupLocator(name="chat-close", events=events)
+        roots[NEW_CHAT_ALERT_SELECTOR] = _PopupLocator(
+            name="chat-modal",
+            events=events,
+            children={
+                "h2": chat_title,
+                ".charge_modal_close": chat_close,
+            },
+        )
+    if verification:
+        heading = _PopupLocator(
+            name="trade-title", text="안전 거래 정보 확인", events=events)
+        character = _PopupLocator(
+            name="character", text="은하수", events=events)
+        input_box = _PopupLocator(name="character-input", events=events)
+        checkbox = _PopupLocator(name="risk-checkbox", events=events)
+        checkbox_label = _PopupLocator(
+            name="risk-label",
+            events=events,
+            on_click=lambda: setattr(checkbox, "_checked", True),
+        )
+        confirm = _PopupLocator(name="trade-confirm", events=events)
+        roots[TRADE_VERIFICATION_SELECTOR] = _PopupLocator(
+            name="trade-modal",
+            events=events,
+            children={
+                ".prevention_modal_wrap > h2": heading,
+                ".chrInfo:visible .chrname": character,
+                "#chrCheck:visible": input_box,
+                "#payment_alert_chrCheck": checkbox,
+                "label[for='payment_alert_chrCheck']:visible": checkbox_label,
+                (
+                    ".btns_wrap.sellerChk:visible "
+                    ".success[onclick*='preventionchrCheck']"
+                ): confirm,
+            },
+        )
+    return _PopupPage(roots), events
+
+
+class BarotemPopupTest(unittest.IsolatedAsyncioTestCase):
+    async def test_new_chat_alert_can_appear_alone(self):
+        page, events = _make_popup_page(chat=True)
+
+        handled = await _handle_blocking_popups(page)
+
+        self.assertEqual(["new_chat_alert"], handled)
+        self.assertEqual(
+            ["click:chat-close", "wait:chat-modal:hidden"],
+            events,
+        )
+
+    async def test_trade_verification_can_appear_alone(self):
+        page, events = _make_popup_page(verification=True)
+
+        handled = await _handle_blocking_popups(page)
+
+        self.assertEqual(["trade_verification"], handled)
+        self.assertEqual([
+            "fill:character-input:은하수",
+            "click:risk-label",
+            "click:trade-confirm",
+            "wait:trade-modal:hidden",
+        ], events)
+
+    async def test_new_chat_alert_is_closed_before_trade_verification(self):
+        page, events = _make_popup_page(chat=True, verification=True)
+
+        handled = await _handle_blocking_popups(page)
+
+        self.assertEqual(
+            ["new_chat_alert", "trade_verification"],
+            handled,
+        )
+        self.assertLess(
+            events.index("click:chat-close"),
+            events.index("fill:character-input:은하수"),
+        )
+
+    async def test_popups_can_appear_in_separate_checks(self):
+        chat_page, _events = _make_popup_page(chat=True)
+        verification_page, _events = _make_popup_page(verification=True)
+
+        first = await _handle_blocking_popups(chat_page)
+        second = await _handle_blocking_popups(verification_page)
+
+        self.assertEqual(["new_chat_alert"], first)
+        self.assertEqual(["trade_verification"], second)
+
+
 class BarotemStructureTest(unittest.TestCase):
+    def test_chat_url_parser_removes_live_onclick_trailing_marker(self):
+        self.assertEqual(
+            "https://www.barotem.com/chat/view?jangNum=9161506",
+            _parse_chat_view_url(
+                "ycommon.openChat('/chat/view?jangNum=9161506>', "
+                "'happy_chating_mypage','1000','1000');"
+            ),
+        )
+
     def test_order_card_parser_matches_live_barotem_structure(self):
         parsed = _parse_order_card_payload({
             "order_no": "178522772911187596-36",
@@ -58,6 +240,60 @@ class BarotemStructureTest(unittest.TestCase):
         self.assertEqual("기어", parsed["buyer_character"])
         self.assertEqual("trading", parsed["status"])
         self.assertEqual("money", parsed["item_type"])
+
+    def test_live_lineage_order_uses_product_detail_quantity_unit(self):
+        detail = _parse_product_detail_html("""
+            <ul>
+              <li class="info"><p>서버</p><div>군터</div></li>
+              <li class="info"><p>최소수량</p><div>10만 아데나</div></li>
+              <li class="info"><p>최대수량</p><div>9,666만 아데나</div></li>
+              <li class="info"><p>상세가격</p><div>만 아데나당 980원</div></li>
+            </ul>
+        """)
+        product_id = _parse_product_view_id("productview('39182563')")
+        parsed = _parse_order_card_payload({
+            "order_no": "178583752411285073-61",
+            "game_name": "리니지 클래식",
+            "server": "군터 /",
+            "title": "❤️█❤️%아데나%❤️█❤️24시 -안전거래--❤️❤️빠른거래",
+            "amount": "10",
+            "price": "9,800 원",
+            "buyer_onclick": (
+                "dealinfo('106 121 122 49 48 50 55 ', '은하수', "
+                "'178583752411285073-61', '구매자 정보', 'itme');"
+            ),
+            "order_time": "26년 08월 04일 18:58:47",
+            "mode": "4",
+            "item_type": "money",
+            "platform_product_id": product_id,
+            **detail,
+        })
+
+        quantity = _resolve_order_quantity(
+            parsed["amount"],
+            parsed["detail_price"],
+            parsed["minimum_quantity"],
+            require_detail=True,
+        )
+        normalized = asyncio.run(
+            BarotemMonitor._build_normalized_order(
+                object.__new__(BarotemMonitor), None, parsed
+            )
+        )
+
+        self.assertEqual("39182563", parsed["platform_product_id"])
+        self.assertEqual("군터", detail["detail_server"])
+        self.assertEqual(100000, quantity)
+        self.assertIsNotNone(normalized)
+        self.assertEqual(100000, normalized.asset_amount)
+        self.assertEqual(100000, normalized.quantity)
+        self.assertEqual(100000, normalized.sale_quantity)
+
+    def test_plain_item_quantity_keeps_list_value_without_detail(self):
+        self.assertEqual(
+            3,
+            _resolve_order_quantity("3", require_detail=False),
+        )
 
     def test_order_parser_rejects_missing_buyer_character(self):
         with self.assertRaisesRegex(ValueError, "买家角色名"):
@@ -253,6 +489,26 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
         result = await worker._available_product_types()
 
         self.assertEqual(["money", "item"], result)
+
+    async def test_scheduled_product_refresh_is_disabled_but_snapshot_remains(self):
+        monitor = SimpleNamespace(
+            post_login_check=AsyncMock(return_value=False),
+        )
+        worker = BarotemRefreshWorker(_FakeSession(), None, monitor)
+        worker._prepare_refresh_action_page = AsyncMock()
+        worker._sync_sales_products = AsyncMock(return_value={"success": True})
+        worker._do_refresh = AsyncMock(return_value="refreshed")
+
+        with patch.object(
+                barotem_module,
+                "SCHEDULED_PRODUCT_REFRESH_ENABLED",
+                False):
+            result = await worker._run_refresh_cycle(10000)
+
+        self.assertEqual("scheduled_refresh_disabled", result)
+        worker._prepare_refresh_action_page.assert_awaited_once_with(10000)
+        worker._sync_sales_products.assert_awaited_once_with(10000)
+        worker._do_refresh.assert_not_awaited()
 
     async def test_order_categories_skip_zero_counts(self):
         worker, _page = self._order_worker()

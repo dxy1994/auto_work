@@ -210,8 +210,8 @@ public class MarketplaceSalesProductSyncService {
             List<Game> activeGames) {
         String value = normalize(externalGameName);
         Game matched = activeGames.stream()
-                .filter(game -> same(value, game.getCode())
-                        || same(value, game.getName()))
+                .filter(game -> sameGame(value, game.getCode())
+                        || sameGame(value, game.getName()))
                 .findFirst()
                 .orElse(null);
         if (matched != null) {
@@ -343,6 +343,11 @@ public class MarketplaceSalesProductSyncService {
 
     private static boolean same(String left, String right) {
         return left.equalsIgnoreCase(normalize(right));
+    }
+
+    private static boolean sameGame(String left, String right) {
+        return MarketplaceOrderIngestionService.samePlatformGameName(
+                left, right);
     }
 
     private record Resolution(

@@ -122,6 +122,59 @@ class MarketplaceSalesProductSyncServiceTest {
     }
 
     @Test
+    void matchesBarotemGameNameWithInternalSpaceAndKeepsOriginalText() {
+        Game game = new Game();
+        game.setId(1);
+        game.setName("天堂经典版");
+        game.setCode("리니지클래식");
+        game.setIsActive(1);
+        GameRegion region = new GameRegion();
+        region.setId(14);
+        region.setGameId(1);
+        region.setName("收穫女神帝蜜特");
+        region.setCode("군터");
+        region.setIsActive(1);
+        GameItem item = new GameItem();
+        item.setId(8);
+        item.setGameId(1);
+        item.setName("아데나");
+        item.setCode("adena");
+        item.setIsActive(1);
+
+        when(gameService.findAllActiveOrdered()).thenReturn(List.of(game));
+        when(regionService.findByGameIdActive(1))
+                .thenReturn(List.of(region));
+        when(gameItemService.findActiveByGameIdAndCodeOrName(
+                1, "아데나")).thenReturn(item);
+        when(productService.findByAccountId(11)).thenReturn(List.of());
+        when(productService.deleteMissing(any(), any())).thenReturn(0);
+
+        syncService.sync(
+                11,
+                new SalesProductsSnapshotMessage(
+                        "barotem",
+                        List.of(new SalesProductObservation(
+                                "39182563",
+                                "money",
+                                "리니지 클래식",
+                                "군터",
+                                "%아데나% 빠른거래",
+                                "10만 아데나",
+                                "9,800 원",
+                                "26년 08월 04일 18:58:47"))));
+
+        ArgumentCaptor<PlatformSalesProduct> saved =
+                ArgumentCaptor.forClass(PlatformSalesProduct.class);
+        verify(productService).save(saved.capture());
+        PlatformSalesProduct row = saved.getValue();
+        assertEquals(1, row.getGameId());
+        assertEquals(14, row.getRegionId());
+        assertEquals(8, row.getGameItemId());
+        assertEquals("리니지 클래식", row.getGameName());
+        assertEquals("matched", row.getParseStatus());
+    }
+
+    @Test
     void parseFailureIsStillInserted() {
         when(gameService.findAllActiveOrdered()).thenReturn(List.of());
         when(productService.findByAccountId(11)).thenReturn(List.of());

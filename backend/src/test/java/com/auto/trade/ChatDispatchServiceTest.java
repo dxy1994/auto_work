@@ -240,6 +240,70 @@ class ChatDispatchServiceTest {
     }
 
     @Test
+    void barotemResolvesJangNumFromTheSellerOrderList() {
+        GameItemOrder order = barotemOrder();
+        PlatformAccount account = new PlatformAccount();
+        account.setId(7);
+        account.setWebsiteId(3);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(9);
+        binding.setAccountId(7);
+
+        when(orderService.getById(44)).thenReturn(order);
+        when(accountService.getById(7)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(7))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(9)).thenReturn(9);
+        when(platformService.getById(3)).thenReturn(barotem());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap()))
+                .thenReturn(true);
+
+        service.dispatchOrderChat(
+                44,
+                List.of(Map.of("type", "text", "content", "hello")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> target =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), target.capture());
+
+        assertEquals(
+                "barotem_order_list",
+                target.getValue().get("conversation_resolver"));
+        assertEquals(
+                "178583752411285073-61",
+                target.getValue().get("order_no"));
+        assertTrue(target.getValue().get("url").toString().contains(
+                "/mypage/sellview/4"));
+        assertTrue(target.getValue().get("url").toString().contains(
+                "itemtype=money"));
+        assertEquals(
+                "#happy_chating_form #message",
+                target.getValue().get("input_selector"));
+        assertEquals(
+                "#happy_chating_form .chat_send_btn",
+                target.getValue().get("send_selector"));
+        assertEquals(
+                "#chatBox .chattingDate.chat_converse.from_me",
+                target.getValue().get("sent_selector"));
+        assertEquals(true, target.getValue().get("barotem_image_submit"));
+        assertEquals(
+                false,
+                target.getValue().containsKey("file_selector"));
+        assertEquals(
+                false,
+                target.getValue().containsKey("upload_auto_send"));
+        assertEquals(
+                false,
+                target.getValue().containsKey("upload_send_selector"));
+    }
+
+    @Test
     void itemBayDeliveryConfirmationUsesSellerOrderDetailPage() {
         GameItemOrder order = itemBayOrder();
         order.setDeliveryStatus("wait_web_confirm");
@@ -351,6 +415,28 @@ class ChatDispatchServiceTest {
         platform.setId(2);
         platform.setName("ItemBay");
         platform.setUrl("https://www.itembay.com/login");
+        platform.setIsActive(1);
+        platform.setLoginConfig(Map.of());
+        return platform;
+    }
+
+    private GameItemOrder barotemOrder() {
+        GameItemOrder order = new GameItemOrder();
+        order.setId(44);
+        order.setWebsiteId(3);
+        order.setPlatformAccountId(7);
+        order.setSourceOrderNo("178583752411285073-61");
+        order.setPlatformItemType("money");
+        order.setDeliveryStatus("greeting");
+        order.setStatus("pending");
+        return order;
+    }
+
+    private Platform barotem() {
+        Platform platform = new Platform();
+        platform.setId(3);
+        platform.setName("Barotem");
+        platform.setUrl("https://www.barotem.com/login");
         platform.setIsActive(1);
         platform.setLoginConfig(Map.of());
         return platform;

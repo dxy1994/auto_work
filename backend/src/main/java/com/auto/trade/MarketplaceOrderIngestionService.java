@@ -24,6 +24,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -75,7 +76,8 @@ public class MarketplaceOrderIngestionService {
         GameItemOrder existing = orderService.findByWebsiteIdAndSourceOrderNo(
                 account.getWebsiteId(), message.sourceOrderNo());
         if (existing != null) {
-            return existing;
+            return recoverExistingOrderMapping(
+                    machineId, accountId, account, existing, message);
         }
 
         Map<String, Object> config = account.getExtraFields();
@@ -227,6 +229,103 @@ public class MarketplaceOrderIngestionService {
         return order;
     }
 
+    private GameItemOrder recoverExistingOrderMapping(
+            int machineId,
+            int accountId,
+            PlatformAccount account,
+            GameItemOrder existing,
+            OrderDetectedMessage message) {
+        boolean needsRecovery = !positiveId(existing.getGameId())
+                || !positiveId(existing.getRegionId())
+                || "CONFIG_MISSING".equals(existing.getLastErrorCode());
+        if (!needsRecovery) {
+            return existing;
+        }
+
+        Map<String, Object> config = account.getExtraFields();
+        Integer gameId = resolveGameId(config, message);
+        Integer regionId = positiveId(gameId)
+                ? resolveRegionId(config, message.regionExternalKey(), gameId)
+                : -1;
+        if (!positiveId(gameId) || !positiveId(regionId)) {
+            return existing;
+        }
+
+        String tradeItem = parseItemFromTitle(message.productTitle());
+        String previousStatus = existing.getDeliveryStatus();
+        boolean resumeGreeting = "suspended".equals(previousStatus)
+                && "CONFIG_MISSING".equals(existing.getLastErrorCode())
+                && !tradeItem.isEmpty();
+
+        existing.setGameId(gameId);
+        existing.setRegionId(regionId);
+        existing.setBuyerCharacter(message.buyerCharacter());
+        existing.setCustomerName(message.buyerCharacter());
+        existing.setAssetType(message.assetType());
+        existing.setAssetAmount(message.assetAmount());
+        existing.setRemark(message.rawTitle());
+        existing.setProductTitle(message.productTitle());
+        existing.setQuantity(message.quantity());
+        existing.setSaleQuantity(message.saleQuantity());
+        existing.setPlatformPrice(message.platformPrice());
+        existing.setPlatformItemType(message.platformItemType());
+        if (!tradeItem.isEmpty()) {
+            existing.setTradeItemName(tradeItem);
+        }
+
+        if (resumeGreeting) {
+            existing.setDeliveryStatus("greeting");
+            existing.setLastErrorCode(null);
+            existing.setLastErrorMessage(null);
+        } else if (tradeItem.isEmpty()
+                && "CONFIG_MISSING".equals(existing.getLastErrorCode())) {
+            existing.setLastErrorCode("ITEM_NAME_PARSE_FAILED");
+            existing.setLastErrorMessage(
+                    "原因：商品标题未包含有效的 %物品名% 标记。解决方案："
+                            + "在平台商品标题中加入 %游戏中的物品名或物品编码%。");
+        }
+        orderService.updateById(existing);
+
+        if (!tradeItem.isEmpty()) {
+            try {
+                detailGenerationService.ensureDetails(existing);
+            } catch (Exception e) {
+                log.warn("[Order] 修复映射后创建子订单明细失败 order_id={}: {}",
+                        existing.getId(), e.getMessage(), e);
+            }
+        }
+
+        TradeEvent event = new TradeEvent();
+        event.setOrderId(existing.getId());
+        event.setEventType("order_configuration_recovered");
+        event.setFromStatus(previousStatus);
+        event.setToStatus(existing.getDeliveryStatus());
+        event.setMessage("平台游戏名和区服已重新匹配");
+        try {
+            eventService.save(event);
+        } catch (Exception e) {
+            log.error("[Order] 映射恢复事件记录失败 order_id={}: {}",
+                    existing.getId(), e.getMessage());
+        }
+
+        if (resumeGreeting) {
+            eventPublisher.publishEvent(new GreetingDispatchRequested(
+                    machineId,
+                    existing.getId(),
+                    gameId,
+                    regionId,
+                    account.getWebsiteId(),
+                    accountId,
+                    message.sourceOrderNo(),
+                    message.platform()));
+        }
+        return existing;
+    }
+
+    private static boolean positiveId(Integer value) {
+        return value != null && value > 0;
+    }
+
     static LocalDateTime parsePlatformOrderTime(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -280,11 +379,32 @@ public class MarketplaceOrderIngestionService {
         String name = message.gameName();
         if (name != null && !name.isEmpty()) {
             Game game = gameService.findByCode(name);
+            if (game == null) {
+                game = gameService.findAllActiveOrdered().stream()
+                        .filter(candidate -> samePlatformGameName(
+                                name, candidate.getCode())
+                                || samePlatformGameName(
+                                name, candidate.getName()))
+                        .findFirst()
+                        .orElse(null);
+            }
             if (game != null) {
                 return game.getId();
             }
         }
         return -1;
+    }
+
+    static boolean samePlatformGameName(String left, String right) {
+        String leftKey = platformGameNameKey(left);
+        return !leftKey.isEmpty()
+                && leftKey.equals(platformGameNameKey(right));
+    }
+
+    private static String platformGameNameKey(String value) {
+        return value == null
+                ? ""
+                : value.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
     }
 
     /**

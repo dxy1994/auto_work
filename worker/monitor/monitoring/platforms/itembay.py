@@ -731,11 +731,11 @@ class ItembayPresaleChatWorker(PageWorker):
         if current < self._next_alert_at:
             return False
 
-        conversation_count = len(inquiries)
+        # conversation_count = len(inquiries)
         message = (
-            f"itemBay账号{self._session.account_id}收到售前消息咨询，"
-            f"{conversation_count}个会话共{unread_total}条未读，"
-            "请及时回复"
+            f"itemBay账号{self._session.account_id}收到售前消息咨询"
+            # f"{conversation_count}个会话共{unread_total}条未读，"
+            # "请及时回复"
         )
         print(f"[{self._log_tag}] {message}；未处理将持续重复播报")
         self._next_alert_at = current + PRESALE_ALERT_INTERVAL_SECONDS

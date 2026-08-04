@@ -5,10 +5,19 @@
 """
 
 import asyncio
+import html
 import os
+import re
 import tempfile
 from typing import Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import (
+    parse_qsl,
+    unquote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlunparse,
+)
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 IMAGE_CHAT_CLOSE_DELAY_MS = 10_000
@@ -138,7 +147,11 @@ async def _do_send_chat_locked(
     try:
         page = await session.new_page()
         session.track_transient_page(page)
-        await page.goto(chat_url, wait_until="commit", timeout=10000)
+        if target.get("conversation_resolver") == "barotem_order_list":
+            chat_url = await _resolve_barotem_conversation(
+                page, target, session=session)
+        else:
+            await page.goto(chat_url, wait_until="commit", timeout=10000)
         await page.wait_for_timeout(500)
         await _dismiss_blocking_popup(page, target)
 
@@ -226,6 +239,119 @@ async def _do_send_chat_locked(
                     session.untrack_transient_page(page)
         finally:
             session.end_transient_operation()
+
+
+async def _resolve_barotem_conversation(
+        page, target: dict, session=None) -> str:
+    """Resolve Barotem's jangNum from the seller order card, then open chat."""
+    order_no = str(target.get("order_no") or "").strip()
+    if not re.fullmatch(r"\d+-\d+", order_no):
+        raise RuntimeError("Barotem 订单号无效，无法定位聊天")
+
+    cache_get = getattr(session, "cached_conversation_url", None)
+    cache_forget = getattr(session, "forget_conversation_url", None)
+    cached_url = cache_get("barotem", order_no) if callable(cache_get) else ""
+    if cached_url:
+        try:
+            _validate_barotem_chat_url(cached_url)
+            await page.goto(cached_url, wait_until="commit", timeout=10000)
+            return cached_url
+        except Exception:
+            if callable(cache_forget):
+                cache_forget("barotem", order_no)
+
+    for list_url in _barotem_order_list_candidates(target["url"]):
+        await page.goto(
+            list_url,
+            wait_until="domcontentloaded",
+            timeout=15000,
+        )
+        content = page.locator(".product_contents").first
+        try:
+            await content.wait_for(state="attached", timeout=10000)
+        except Exception:
+            continue
+
+        cards = page.locator(".product_contents .product_wrap")
+        for index in range(await cards.count()):
+            card = cards.nth(index)
+            checkbox = card.locator("input.product_checkbox").first
+            if await checkbox.count() == 0:
+                continue
+            card_order_no = str(
+                await checkbox.get_attribute("value") or ""
+            ).strip()
+            if card_order_no != order_no:
+                continue
+
+            chat_button = card.locator(
+                '[onclick*="/chat/view?jangNum="]'
+            ).first
+            if await chat_button.count() == 0:
+                raise RuntimeError(
+                    f"Barotem 订单 {order_no} 没有可用的聊天入口"
+                )
+            onclick = html.unescape(str(
+                await chat_button.get_attribute("onclick") or ""
+            ))
+            match = re.search(
+                r"(?P<path>/chat/view\?jangNum=(?P<id>\d+))",
+                onclick,
+            )
+            if not match:
+                raise RuntimeError(
+                    f"Barotem 订单 {order_no} 的聊天地址无效"
+                )
+
+            chat_url = urljoin(list_url, match.group("path"))
+            _validate_barotem_chat_url(chat_url)
+            await page.goto(chat_url, wait_until="commit", timeout=10000)
+            cache_set = getattr(session, "remember_conversation_url", None)
+            if callable(cache_set):
+                cache_set("barotem", order_no, chat_url)
+            return chat_url
+
+    raise RuntimeError(
+        f"Barotem 当前和已完成订单列表中未找到订单 {order_no} 的聊天入口"
+    )
+
+
+def _validate_barotem_chat_url(url: str) -> None:
+    parsed = urlparse(str(url or ""))
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if (
+        parsed.scheme not in {"http", "https"}
+        or (parsed.hostname or "").lower()
+        not in {"barotem.com", "www.barotem.com"}
+        or parsed.path.rstrip("/") != "/chat/view"
+        or not re.fullmatch(r"\d+", query.get("jangNum", ""))
+    ):
+        raise RuntimeError("Barotem 聊天地址域名、路径或会话编号无效")
+
+
+def _barotem_order_list_candidates(url: str) -> list[str]:
+    """Search the live order first and the completed order as a fallback."""
+    parsed = urlparse(str(url or ""))
+    candidates = []
+    for mode in ("4", "5"):
+        path = re.sub(
+            r"/mypage/sellview/\d+/?$",
+            f"/mypage/sellview/{mode}",
+            parsed.path,
+        )
+        query = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key != "mode"
+        ]
+        query.append(("mode", mode))
+        candidate = urlunparse(parsed._replace(
+            path=path,
+            query=urlencode(query),
+        ))
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 async def _do_send_chat_with_post_action(
@@ -597,15 +723,37 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
         temp_file.close()
 
         sent_before = await _sent_message_count(page, target)
+        if target.get("barotem_image_submit"):
+            try:
+                await _submit_barotem_image_via_imgchg(
+                    page, temp_file.name)
+            except _BarotemImageSubmitUnavailable as exc:
+                raise RuntimeError(
+                    f"Barotem 聊天页图片发送不可用: {exc}") from exc
+            if sent_before is None:
+                await page.wait_for_timeout(
+                    _positive_int(target.get("image_settle_ms"), 2000)
+                )
+            elif not await _wait_for_sent_message(
+                    page, target, sent_before):
+                raise RuntimeError("图片确认发送后未在会话中显示")
+            return
+
         file_input = page.locator(target["file_selector"]).first
         if await file_input.count() == 0:
             raise RuntimeError("未找到聊天图片上传控件")
         await file_input.set_input_files(temp_file.name)
 
         if not target.get("upload_auto_send", True):
-            upload_send = page.locator(target["upload_send_selector"]).first
-            await upload_send.wait_for(timeout=5000)
-            await upload_send.click(force=True, timeout=5000)
+            if not _page_is_closed(page):
+                sent_after_selection = await _sent_message_count(page, target)
+                already_sent = (
+                    sent_before is not None
+                    and sent_after_selection is not None
+                    and sent_after_selection > sent_before
+                )
+                if not already_sent:
+                    await _submit_image_upload(page, file_input, target)
 
         if sent_before is None:
             await page.wait_for_timeout(
@@ -626,6 +774,148 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
             pass
 
 
+class _BarotemImageSubmitUnavailable(RuntimeError):
+    """当前聊天页不能完成 Barotem 图片处理与确认发送流程。"""
+
+
+async def _submit_barotem_image_via_imgchg(page, file_path: str) -> None:
+    """将文件参数交给站内 imgchg()，再点击当前页图片确认按钮。"""
+    input_id = f"barotem_imgchg_file_{id(page)}"
+    trigger_id = f"barotem_imgchg_trigger_{id(page)}"
+    await page.evaluate(
+        """
+        args => {
+            document.getElementById(args.inputId)?.remove();
+            document.getElementById(args.triggerId)?.remove();
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.id = args.inputId;
+            input.accept = 'image/*';
+            input.style.display = 'none';
+            document.body.appendChild(input);
+
+            const trigger = document.createElement('button');
+            trigger.type = 'button';
+            trigger.id = args.triggerId;
+            trigger.style.cssText = [
+                'position:fixed', 'left:0', 'top:0', 'width:1px',
+                'height:1px', 'opacity:0.01', 'z-index:2147483647'
+            ].join(';');
+            const inputId = JSON.stringify(args.inputId);
+            trigger.setAttribute('onclick', `
+                try {
+                    const input = document.getElementById(${inputId});
+                    const file = input && input.files && input.files[0];
+                    if (!file) throw new Error('file missing');
+                    if (typeof imgchg !== 'function') {
+                        throw new Error('imgchg missing');
+                    }
+                    const transfer = new DataTransfer();
+                    transfer.items.add(file);
+                    imgchg({
+                        originalEvent: {clipboardData: transfer},
+                        preventDefault() {}
+                    });
+                    this.dataset.success = 'true';
+                } catch (error) {
+                    this.dataset.success = 'false';
+                    this.dataset.error = String(
+                        error && error.message ? error.message : error
+                    );
+                }
+            `);
+            document.body.appendChild(trigger);
+        }
+        """,
+        {"inputId": input_id, "triggerId": trigger_id},
+    )
+
+    try:
+        image_input = page.locator(f"#{input_id}").first
+        if await image_input.count() == 0:
+            raise _BarotemImageSubmitUnavailable(
+                "无法创建图片文件输入控件")
+        await image_input.set_input_files(file_path)
+
+        preview_items = page.locator("#imgpopup.inline .imgview li")
+        preview_before = await preview_items.count()
+        imgchg_trigger = page.locator(f"#{trigger_id}").first
+        if await imgchg_trigger.count() != 1:
+            raise _BarotemImageSubmitUnavailable(
+                "无法创建站内图片处理触发器")
+        await imgchg_trigger.click(force=True, timeout=5000)
+        imgchg_success = await imgchg_trigger.get_attribute("data-success")
+        if imgchg_success != "true":
+            imgchg_error = str(
+                await imgchg_trigger.get_attribute("data-error") or ""
+            ).strip()
+            raise _BarotemImageSubmitUnavailable(
+                imgchg_error or "imgchg 未处理图片文件")
+
+        deadline = asyncio.get_running_loop().time() + 5
+        while await preview_items.count() <= preview_before:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise _BarotemImageSubmitUnavailable(
+                    "imgchg 处理后未出现图片确认预览")
+            await page.wait_for_timeout(100)
+
+        confirm_button = page.locator(
+            '#imgpopup.inline button[onclick="confirmAndSend()"]'
+        )
+        if await confirm_button.count() != 1:
+            raise _BarotemImageSubmitUnavailable(
+                "图片确认发送按钮不存在或不唯一")
+        await confirm_button.click(force=True, timeout=5000)
+    finally:
+        try:
+            await page.evaluate(
+                """
+                args => {
+                    document.getElementById(args.inputId)?.remove();
+                    document.getElementById(args.triggerId)?.remove();
+                }
+                """,
+                {"inputId": input_id, "triggerId": trigger_id},
+            )
+        except Exception:
+            pass
+
+
+async def _submit_image_upload(upload_page, file_input, target: dict) -> None:
+    """优先执行平台上传按钮；未配置按钮时才提交文件所属表单。"""
+    upload_send_selector = str(
+        target.get("upload_send_selector") or ""
+    ).strip()
+    if upload_send_selector:
+        upload_send = upload_page.locator(upload_send_selector).first
+        await upload_send.wait_for(state="visible", timeout=5000)
+        await upload_send.click(force=True, timeout=5000)
+        return
+
+    owner_form = file_input.locator("xpath=ancestor::form[1]").first
+    if await owner_form.count() == 0:
+        raise RuntimeError("未找到图片上传表单或发送按钮")
+    await owner_form.evaluate("""
+        form => {
+            if (typeof form.requestSubmit === 'function') {
+                form.requestSubmit();
+            } else {
+                form.submit();
+            }
+        }
+    """)
+
+
+def _page_is_closed(page) -> bool:
+    is_closed = getattr(page, "is_closed", None)
+    if not callable(is_closed):
+        return False
+    try:
+        return bool(is_closed())
+    except Exception:
+        return False
+
+
 def _normalize_target(target: dict, messages: list) -> dict:
     if not isinstance(target, dict):
         raise ValueError("聊天目标配置无效")
@@ -642,13 +932,36 @@ def _normalize_target(target: dict, messages: list) -> dict:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("客户聊天地址无效")
 
+    resolver = str(result.get("conversation_resolver") or "").strip()
+    result["conversation_resolver"] = resolver
+    if resolver:
+        if resolver != "barotem_order_list":
+            raise ValueError("unsupported conversation resolver")
+        if (
+            (parsed.hostname or "").lower()
+            not in {"barotem.com", "www.barotem.com"}
+            or not re.fullmatch(r"/mypage/sellview/\d+/?", parsed.path)
+        ):
+            raise ValueError("invalid Barotem order list URL")
+        order_no = str(result.get("order_no") or "").strip()
+        if not re.fullmatch(r"\d+-\d+", order_no):
+            raise ValueError("invalid Barotem order number")
+        result["order_no"] = order_no
+
     has_images = any(
         isinstance(message, dict)
         and (message.get("image_url") or message.get("image_urls"))
         for message in (messages or [])
     )
+    result["barotem_image_submit"] = (
+        result.get("barotem_image_submit") is True
+    )
     result["file_selector"] = str(result.get("file_selector") or "").strip()
-    if has_images and not result["file_selector"]:
+    if (
+        has_images
+        and not result["barotem_image_submit"]
+        and not result["file_selector"]
+    ):
         raise ValueError("聊天图片上传控件选择器未配置")
     result["upload_auto_send"] = result.get("upload_auto_send", True) is not False
     result["upload_send_selector"] = str(
@@ -680,6 +993,7 @@ def _normalize_target(target: dict, messages: list) -> dict:
         )
     if (
         has_images
+        and not result["barotem_image_submit"]
         and not result["upload_auto_send"]
         and not result["upload_send_selector"]
     ):

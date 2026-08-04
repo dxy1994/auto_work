@@ -346,6 +346,147 @@ class ChatCommandTest(unittest.TestCase):
 
         self.assertFalse(dismissed)
 
+    def test_barotem_resolver_uses_completed_list_as_fallback(self):
+        events = []
+
+        class FakeValueLocator:
+            def __init__(self, value=None, count=1):
+                self.value = value
+                self._count = count
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return self._count
+
+            async def get_attribute(self, _name):
+                return self.value
+
+            async def wait_for(self, **_kwargs):
+                return None
+
+        class FakeCard:
+            def locator(self, selector):
+                if selector == "input.product_checkbox":
+                    return FakeValueLocator("178583752411285073-61")
+                if selector == '[onclick*="/chat/view?jangNum="]':
+                    return FakeValueLocator(
+                        "ycommon.openChat('/chat/view?jangNum=9161506>', "
+                        "'happy_chating_mypage','1000','1000');"
+                    )
+                return FakeValueLocator(count=0)
+
+        class FakeCards:
+            def __init__(self, available):
+                self.available = available
+
+            async def count(self):
+                return 1 if self.available else 0
+
+            def nth(self, _index):
+                return FakeCard()
+
+        class FakePage:
+            def __init__(self):
+                self.completed = False
+
+            async def goto(self, url, **_kwargs):
+                events.append(url)
+                self.completed = "/sellview/5" in url
+
+            def locator(self, selector):
+                if selector == ".product_contents":
+                    return FakeValueLocator()
+                if selector == ".product_contents .product_wrap":
+                    return FakeCards(self.completed)
+                raise AssertionError(selector)
+
+        list_url = (
+            "https://www.barotem.com/mypage/sellview/4?mode=4&"
+            "itemtype=money&source_order_no=178583752411285073-61"
+        )
+        chat_url = asyncio.run(sender._resolve_barotem_conversation(
+            FakePage(),
+            {
+                "url": list_url,
+                "order_no": "178583752411285073-61",
+            },
+        ))
+
+        self.assertEqual(
+            "https://www.barotem.com/chat/view?jangNum=9161506",
+            chat_url,
+        )
+        self.assertIn("/mypage/sellview/4", events[0])
+        self.assertIn("/mypage/sellview/5", events[1])
+        self.assertEqual(chat_url, events[2])
+
+    def test_barotem_resolver_opens_cached_chat_without_order_list(self):
+        chat_url = "https://www.barotem.com/chat/view?jangNum=9161506"
+        events = []
+
+        class FakeSession:
+            def cached_conversation_url(self, platform, order_no):
+                events.append(f"cache:{platform}:{order_no}")
+                return chat_url
+
+            def forget_conversation_url(self, *_args):
+                raise AssertionError("有效缓存不应被清理")
+
+        class FakePage:
+            async def goto(self, url, **_kwargs):
+                events.append(f"goto:{url}")
+
+            def locator(self, _selector):
+                raise AssertionError("命中缓存后不应扫描订单列表")
+
+        resolved = asyncio.run(sender._resolve_barotem_conversation(
+            FakePage(),
+            {
+                "url": "https://www.barotem.com/mypage/sellview/4",
+                "order_no": "178583752411285073-61",
+            },
+            session=FakeSession(),
+        ))
+
+        self.assertEqual(chat_url, resolved)
+        self.assertEqual([
+            "cache:barotem:178583752411285073-61",
+            f"goto:{chat_url}",
+        ], events)
+
+    def test_barotem_target_requires_a_real_order_number(self):
+        with self.assertRaisesRegex(ValueError, "Barotem order number"):
+            sender._normalize_target(
+                {
+                    "url": "https://www.barotem.com/mypage/sellview/4",
+                    "input_selector": "#message",
+                    "send_selector": ".chat_send_btn",
+                    "conversation_resolver": "barotem_order_list",
+                    "order_no": "not-an-order",
+                },
+                [{"content": "hello", "image_urls": []}],
+            )
+
+    def test_barotem_image_submit_needs_no_attachment_config(self):
+        target = sender._normalize_target(
+            {
+                "url": "https://www.barotem.com/mypage/sellview/4",
+                "input_selector": "#message",
+                "send_selector": ".chat_send_btn",
+                "conversation_resolver": "barotem_order_list",
+                "order_no": "178583752411285073-61",
+                "barotem_image_submit": True,
+            },
+            [{"content": "", "image_urls": ["https://example.com/a.png"]}],
+        )
+
+        self.assertTrue(target["barotem_image_submit"])
+        self.assertEqual("", target["file_selector"])
+        self.assertEqual("", target["upload_send_selector"])
+
     def test_itembay_image_selection_auto_sends_and_verifies_receipt(self):
         class FakeResponse:
             headers = {"Content-Type": "image/png"}
@@ -406,6 +547,101 @@ class ChatCommandTest(unittest.TestCase):
             ))
 
         self.assertEqual(1, page.sent_count)
+
+    def test_barotem_passes_file_to_imgchg_then_confirms_on_same_page(self):
+        events = []
+
+        class FakeResponse:
+            headers = {"Content-Type": "image/png"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, _chunk_size):
+                return iter((b"png-image",))
+
+        class FakeLocator:
+            def __init__(self, page, selector):
+                self.page = page
+                self.selector = selector
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                if self.selector == "#chatBox .from_me":
+                    return self.page.sent_count
+                if self.selector == "#imgpopup.inline .imgview li":
+                    return 1 if self.page.preview_ready else 0
+                return 1
+
+            async def set_input_files(self, _path):
+                events.append("imgchg:file-selected")
+
+            async def get_attribute(self, name):
+                if (
+                    self.selector.startswith("#barotem_imgchg_trigger_")
+                    and name == "data-success"
+                ):
+                    return "true"
+                return None
+
+            async def click(self, **_kwargs):
+                if self.selector.startswith("#barotem_imgchg_trigger_"):
+                    events.append("imgchg:file-argument")
+                    self.page.preview_ready = True
+                elif self.selector == (
+                    '#imgpopup.inline button[onclick="confirmAndSend()"]'
+                ):
+                    events.append("imgchg:confirm")
+                    self.page.sent_count += 1
+
+        class FakePage:
+            def __init__(self):
+                self.sent_count = 0
+                self.preview_ready = False
+
+            def locator(self, selector):
+                return FakeLocator(self, selector)
+
+            async def evaluate(self, script, _arg=None):
+                if "input.type = 'file'" in script:
+                    self.assert_in_memory_imgchg = (
+                        "imgchg({" in script
+                        and "ClipboardEvent" not in script
+                        and "dispatchEvent" not in script
+                    )
+                    events.append("imgchg:input-created")
+                else:
+                    events.append("imgchg:controls-removed")
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+        page = FakePage()
+        with patch("requests.get", return_value=FakeResponse()):
+            asyncio.run(sender._send_image_via_chat(
+                page,
+                "https://files.example.com/proof.png",
+                {
+                    "barotem_image_submit": True,
+                    "sent_selector": "#chatBox .from_me",
+                    "sent_timeout_ms": 1000,
+                },
+            ))
+
+        self.assertEqual(1, page.sent_count)
+        self.assertIn("imgchg:input-created", events)
+        self.assertIn("imgchg:file-argument", events)
+        self.assertIn("imgchg:confirm", events)
+        self.assertTrue(page.assert_in_memory_imgchg)
 
     def test_delivery_confirmation_closes_chat_before_opening_order_detail(self):
         events = []

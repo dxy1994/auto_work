@@ -86,6 +86,9 @@ class BrowserSession:
         self._transient_tasks: set = set()
         self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
         self._closing = False
+        # 平台订单号到聊天页的账号级缓存。订单监控会在读取列表时写入，
+        # 聊天发送器因此可以直接打开会话，不必为每条消息再次扫描订单页。
+        self._conversation_url_cache: Dict[str, Dict[str, str]] = {}
 
         # 公开属性：chat_sender 活跃时暂停检测的异步事件
         self.chat_sender_pause = asyncio.Event()
@@ -108,6 +111,35 @@ class BrowserSession:
             return True
         except Exception:
             return False
+
+    def remember_conversation_url(
+            self, platform: str, order_no: str, url: str) -> None:
+        """记录当前账号订单对应的聊天地址。"""
+        platform_key = str(platform or "").strip().lower()
+        order_key = str(order_no or "").strip()
+        conversation_url = str(url or "").strip()
+        if not platform_key or not order_key or not conversation_url:
+            return
+        self._conversation_url_cache.setdefault(platform_key, {})[
+            order_key
+        ] = conversation_url
+
+    def cached_conversation_url(
+            self, platform: str, order_no: str) -> str:
+        """读取当前账号缓存的订单聊天地址。"""
+        platform_key = str(platform or "").strip().lower()
+        order_key = str(order_no or "").strip()
+        return self._conversation_url_cache.get(platform_key, {}).get(
+            order_key, "")
+
+    def forget_conversation_url(
+            self, platform: str, order_no: str) -> None:
+        """丢弃已经不可访问的订单聊天地址。"""
+        platform_key = str(platform or "").strip().lower()
+        order_key = str(order_no or "").strip()
+        cache = self._conversation_url_cache.get(platform_key)
+        if cache is not None:
+            cache.pop(order_key, None)
 
     # ── 公共 API ──
 
