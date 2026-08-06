@@ -14,6 +14,12 @@
         text-color="#ffffffa6"
         active-text-color="#409eff"
       >
+        <el-menu-item index="/dashboard" class="dashboard-menu-entry">
+          <el-icon><DataAnalysis /></el-icon>
+          <span>运营大屏</span>
+          <span class="dashboard-menu-live" aria-label="实时数据"></span>
+        </el-menu-item>
+
         <el-sub-menu index="platform">
           <template #title>
             <el-icon><Connection /></el-icon>
@@ -419,6 +425,16 @@ html, body, #app { width: 100%; height: 100%; margin: 0; padding: 0; overflow: h
   -ms-overflow-style: none;
 }
 .sidebar-menu::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.dashboard-menu-entry { margin: 8px 10px 6px; border-radius: 6px; }
+.dashboard-menu-entry.is-active { background: linear-gradient(90deg, rgba(64, 158, 255, .22), rgba(64, 158, 255, .06)) !important; }
+.dashboard-menu-live {
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: #59d6a1;
+  box-shadow: 0 0 8px rgba(89, 214, 161, .85);
+}
 
 .main-content {
   display: flex;

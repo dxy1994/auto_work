@@ -13,7 +13,15 @@ const guide = (summary, scope, steps, concepts, troubleshooting, tips) => ({
 const routes = [
   {
     path: '/',
-    redirect: '/platforms',
+    redirect: '/dashboard',
+  },
+  {
+    path: '/dashboard',
+    name: 'DashboardHome',
+    component: () => import('../views/DashboardHome.vue'),
+    meta: {
+      title: '运营大屏',
+    },
   },
   {
     path: '/platforms',
