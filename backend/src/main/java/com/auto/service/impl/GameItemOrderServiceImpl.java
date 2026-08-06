@@ -21,15 +21,26 @@ public class GameItemOrderServiceImpl extends ServiceImpl<GameItemOrderMapper, G
         implements GameItemOrderService {
 
     @Override
-    public IPage<GameItemOrder> search(Integer gameId, String status, String deliveryStatus,
-                                       String keyword, Page<GameItemOrder> page) {
+    public IPage<GameItemOrder> search(Integer websiteId, Integer gameId, String status,
+                                       String deliveryStatus, LocalDateTime createdFrom,
+                                       LocalDateTime createdTo, String keyword,
+                                       Page<GameItemOrder> page) {
         LambdaQueryWrapper<GameItemOrder> w = new LambdaQueryWrapper<>();
-        w.eq(gameId != null, GameItemOrder::getGameId, gameId)
+        w.eq(websiteId != null, GameItemOrder::getWebsiteId, websiteId)
+                .eq(gameId != null, GameItemOrder::getGameId, gameId)
                 .eq(status != null && !status.isBlank(), GameItemOrder::getStatus, status)
                 .eq(deliveryStatus != null && !deliveryStatus.isBlank(),
                         GameItemOrder::getDeliveryStatus, deliveryStatus)
-                .and(keyword != null && !keyword.isBlank(), q -> q.like(GameItemOrder::getOrderNo, keyword)
-                        .or().like(GameItemOrder::getCustomerName, keyword))
+                .ge(createdFrom != null, GameItemOrder::getCreatedAt, createdFrom)
+                .le(createdTo != null, GameItemOrder::getCreatedAt, createdTo)
+                .and(keyword != null && !keyword.isBlank(), q -> q
+                        .like(GameItemOrder::getOrderNo, keyword)
+                        .or().like(GameItemOrder::getSourceOrderNo, keyword)
+                        .or().like(GameItemOrder::getProductTitle, keyword)
+                        .or().like(GameItemOrder::getTradeItemName, keyword)
+                        .or().like(GameItemOrder::getBuyerCharacter, keyword)
+                        .or().like(GameItemOrder::getCustomerName, keyword)
+                        .or().like(GameItemOrder::getCustomerContact, keyword))
                 .orderByDesc(GameItemOrder::getId);
         return page(page, w);
     }

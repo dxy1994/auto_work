@@ -411,7 +411,14 @@ html, body, #app { width: 100%; height: 100%; margin: 0; padding: 0; overflow: h
   font-weight: 600;
   border-bottom: 1px solid #ffffff1a;
 }
-.sidebar-menu { border-right: none; flex: 1; overflow-y: auto; }
+.sidebar-menu {
+  border-right: none;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sidebar-menu::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
 .main-content {
   display: flex;

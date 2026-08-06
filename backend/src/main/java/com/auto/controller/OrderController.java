@@ -17,6 +17,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpStatus;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import tools.jackson.databind.ObjectMapper;
@@ -135,14 +136,23 @@ public class OrderController {
 
     @GetMapping
     public Map<String, Object> list(
+            @RequestParam(name = "website_id", required = false) Integer websiteId,
             @RequestParam(name = "game_id", required = false) Integer gameId,
             @RequestParam(name = "status", required = false) String status,
             @RequestParam(name = "delivery_status", required = false) String deliveryStatus,
+            @RequestParam(name = "created_from", required = false)
+            @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdFrom,
+            @RequestParam(name = "created_to", required = false)
+            @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdTo,
             @RequestParam(name = "keyword", required = false) String keyword,
             @RequestParam(name = "page", defaultValue = "1") int page,
             @RequestParam(name = "page_size", defaultValue = "20") int pageSize) {
+        if (createdFrom != null && createdTo != null && createdFrom.isAfter(createdTo)) {
+            throw ApiException.badRequest("创建开始时间不能晚于结束时间");
+        }
         IPage<GameItemOrder> result = orderService.search(
-                gameId, status, deliveryStatus, keyword, PageRequests.of(page, pageSize));
+                websiteId, gameId, status, deliveryStatus, createdFrom, createdTo,
+                keyword, PageRequests.of(page, pageSize));
         List<Map<String, Object>> items = result.getRecords().stream()
                 .map(this::toOrderListMap)
                 .toList();

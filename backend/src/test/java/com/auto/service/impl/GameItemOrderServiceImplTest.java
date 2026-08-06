@@ -9,6 +9,8 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.time.LocalDateTime;
+
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -28,12 +30,19 @@ class GameItemOrderServiceImplTest {
         Page<GameItemOrder> page = new Page<>(1, 20);
         doReturn(page).when(service).page(eq(page), any());
 
-        service.search(7, "abnormal", "greeting", null, page);
+        service.search(3, 7, "abnormal", "greeting",
+                LocalDateTime.of(2026, 8, 1, 0, 0),
+                LocalDateTime.of(2026, 8, 6, 23, 59), "buyer", page);
 
         ArgumentCaptor<Wrapper> wrapper = ArgumentCaptor.forClass(Wrapper.class);
         verify(service).page(eq(page), wrapper.capture());
         String sql = wrapper.getValue().getSqlSegment();
+        assertTrue(sql.contains("website_id"));
         assertTrue(sql.contains("status"));
         assertTrue(sql.contains("delivery_status"));
+        assertTrue(sql.contains("created_at"));
+        assertTrue(sql.contains("source_order_no"));
+        assertTrue(sql.contains("product_title"));
+        assertTrue(sql.contains("buyer_character"));
     }
 }

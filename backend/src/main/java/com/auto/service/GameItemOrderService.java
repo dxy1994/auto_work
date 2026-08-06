@@ -5,13 +5,16 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.IService;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
 
 public interface GameItemOrderService extends IService<GameItemOrder> {
 
-    IPage<GameItemOrder> search(Integer gameId, String status, String deliveryStatus,
-                                String keyword, Page<GameItemOrder> page);
+    IPage<GameItemOrder> search(Integer websiteId, Integer gameId, String status,
+                                String deliveryStatus, LocalDateTime createdFrom,
+                                LocalDateTime createdTo, String keyword,
+                                Page<GameItemOrder> page);
 
     GameItemOrder findByWebsiteIdAndSourceOrderNo(Integer websiteId, String sourceOrderNo);
 

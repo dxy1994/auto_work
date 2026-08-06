@@ -3,8 +3,8 @@
     <summary class="page-usage-guide__summary">
       <span class="page-usage-guide__mark" aria-hidden="true">i</span>
       <span class="page-usage-guide__heading">
-        <span class="page-usage-guide__eyebrow">PAGE GUIDE · 页面说明</span>
-        <strong>{{ title }}怎么用</strong>
+        <span class="page-usage-guide__eyebrow">PAGE GUIDE · 使用说明</span>
+        <strong>{{ title }} · 使用说明</strong>
         <span class="page-usage-guide__summary-text">{{ guide.summary }}</span>
       </span>
       <span class="page-usage-guide__toggle" aria-hidden="true">
