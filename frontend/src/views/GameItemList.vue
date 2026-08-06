@@ -1,138 +1,171 @@
 <template>
   <div class="page-container">
-    <div class="toolbar">
-      <el-select v-model="filterGameId" placeholder="选择游戏" clearable style="width: 180px" @change="handleSearch">
-        <el-option v-for="g in gameList" :key="g.id" :label="g.name" :value="g.id" />
-      </el-select>
-      <el-select v-model="filterType" placeholder="全部类型" clearable style="width: 120px" @change="handleSearch">
-        <el-option label="单品" :value="0" />
-        <el-option label="套装" :value="1" />
-      </el-select>
-      <el-input v-model="keyword" placeholder="搜索物品名称..." clearable style="width: 200px" @input="handleSearch">
-        <template #prefix><el-icon><Search /></el-icon></template>
-      </el-input>
-      <el-button type="primary" @click="openItemDialog()">
-        <el-icon><Plus /></el-icon> 新增物品
-      </el-button>
-    </div>
+    <section class="item-directory">
+      <header class="item-directory__header">
+        <div class="item-directory__intro">
+          <span class="item-directory__eyebrow">物品目录</span>
+          <div class="item-directory__title-line">
+            <h1>游戏物品</h1>
+            <span class="item-directory__count">{{ total }} 件</span>
+          </div>
+          <p>维护交易物品、套装组成以及自动识别所需的图片素材。</p>
+        </div>
+        <div class="item-directory__actions">
+          <el-select v-model="filterGameId" class="item-filter item-filter--game" placeholder="全部游戏" clearable filterable @change="handleSearch">
+            <el-option v-for="g in gameList" :key="g.id" :label="g.name" :value="g.id" />
+          </el-select>
+          <el-select v-model="filterType" class="item-filter item-filter--type" placeholder="全部类型" clearable @change="handleSearch">
+            <el-option label="单品" :value="0" />
+            <el-option label="套装" :value="1" />
+          </el-select>
+          <el-input v-model="keyword" class="item-search" placeholder="搜索物品名称" clearable @input="handleSearch">
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
+          <el-button type="primary" @click="openItemDialog()">
+            <el-icon><Plus /></el-icon> 新增物品
+          </el-button>
+        </div>
+      </header>
 
-    <el-table
-      ref="tableRef"
-      :data="list"
-      border stripe
-      v-loading="loading"
-      row-key="id"
-      highlight-current-row
-      :row-class-name="tableRowClassName"
-      @current-change="onCurrentChange"
-      @expand-change="handleExpandChange"
-    >
-      <el-table-column type="expand">
-        <template #default="{ row }">
-          <div v-if="row.is_bundle" class="expand-area">
-            <div class="expand-title">套装子物品：</div>
-            <el-table :data="row._children || []" border size="small" v-loading="row._childrenLoading" highlight-current-row @current-change="onCurrentChange">
-              <el-table-column label="物品" min-width="220">
-                <template #default="{ row: child }">
-                  <div class="item-identity">
-                    <div class="item-name">{{ child.name }}</div>
-                    <div class="item-meta">
-                      <span class="item-code">{{ child.code }}</span>
-                      <span v-if="child.category">{{ child.category }}</span>
+      <div class="item-table-viewport">
+      <el-table
+        ref="tableRef"
+        class="item-table"
+        :data="list"
+        border
+        stripe
+        height="100%"
+        v-loading="loading"
+        row-key="id"
+        highlight-current-row
+        :row-class-name="tableRowClassName"
+        @current-change="onCurrentChange"
+        @expand-change="handleExpandChange"
+      >
+        <el-table-column type="expand" width="46">
+          <template #default="{ row }">
+            <div v-if="row.is_bundle" class="expand-area">
+              <div class="expand-heading">
+                <div>
+                  <strong>套装内容</strong>
+                  <span>{{ row._children?.length || 0 }} 件子物品</span>
+                </div>
+                <el-button size="small" type="primary" plain @click="openChildSelect(row)">
+                  <el-icon><Plus /></el-icon> 选择已有物品
+                </el-button>
+              </div>
+              <el-table class="child-item-table" :data="row._children || []" border size="small" v-loading="row._childrenLoading" highlight-current-row @current-change="onCurrentChange">
+                <el-table-column label="物品" min-width="240">
+                  <template #default="{ row: child }">
+                    <div class="item-identity item-identity--compact">
+                      <el-avatar :size="34" shape="square" :src="child.selected_image || child.image || undefined" class="item-avatar">{{ itemInitial(child.name) }}</el-avatar>
+                      <div class="item-identity__copy">
+                        <strong>{{ child.name }}</strong>
+                        <div class="item-meta"><code>{{ child.code }}</code><span v-if="child.category">{{ child.category }}</span></div>
+                      </div>
                     </div>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="识别素材（可选）" min-width="230">
-                <template #default="{ row: child }">
-                  <div class="recognition-panel">
-                    <div class="image-state">
-                      <span class="image-state-label">未选中</span>
-                      <el-image v-if="child.image" class="recognition-thumb" :src="child.image" :preview-src-list="[child.image]" fit="cover" preview-teleported />
-                      <div v-else class="image-placeholder">未上传</div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="识别素材" min-width="210">
+                  <template #default="{ row: child }">
+                    <div class="recognition-panel recognition-panel--compact">
+                      <div class="image-state">
+                        <span class="image-state-label">默认</span>
+                        <el-image v-if="child.image" class="recognition-thumb" :src="child.image" :preview-src-list="[child.image]" fit="cover" preview-teleported />
+                        <div v-else class="image-placeholder">未传</div>
+                      </div>
+                      <div class="image-state">
+                        <span class="image-state-label">选中</span>
+                        <el-image v-if="child.selected_image" class="recognition-thumb" :src="child.selected_image" :preview-src-list="[child.selected_image]" fit="cover" preview-teleported />
+                        <div v-else class="image-placeholder">未传</div>
+                      </div>
+                      <el-tag :type="recognitionStateType(child)" size="small" effect="plain" class="recognition-count">{{ recognitionCount(child) }}/2</el-tag>
                     </div>
-                    <div class="image-state">
-                      <span class="image-state-label">选中</span>
-                      <el-image v-if="child.selected_image" class="recognition-thumb" :src="child.selected_image" :preview-src-list="[child.selected_image]" fit="cover" preview-teleported />
-                      <div v-else class="image-placeholder">未上传</div>
-                    </div>
-                    <el-tag :type="recognitionStateType(child)" size="small" effect="plain" class="recognition-count">
-                      {{ recognitionCount(child) }}/2
-                    </el-tag>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column prop="quantity" label="数量" width="70" align="center" />
-              <el-table-column prop="price" label="参考价格" width="100" align="right" />
-              <el-table-column label="操作" width="120">
-                <template #default="{ row: child }">
-                  <el-button size="small" link type="primary" @click="openItemDialog(child)">编辑</el-button>
-                  <el-popconfirm title="确认从套装中移除？" @confirm="handleRemoveChild(row.id, child.id)">
-                    <template #reference><el-button size="small" link type="danger">移除</el-button></template>
-                  </el-popconfirm>
-                </template>
-              </el-table-column>
-            </el-table>
-            <el-button size="small" type="primary" style="margin-top:8px" @click="openChildSelect(row)">+ 选择已有物品</el-button>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="物品" min-width="240">
-        <template #default="{ row }">
-          <div class="item-identity">
-            <div class="item-name-line">
-              <span class="item-name">{{ row.name }}</span>
-              <el-tag :type="row.is_bundle ? 'warning' : 'info'" size="small" effect="plain">
-                {{ row.is_bundle ? '套装' : '单品' }}
-              </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="quantity" label="数量" width="70" align="center" />
+                <el-table-column label="参考价" width="100" align="right"><template #default="{ row: child }">{{ formatItemPrice(child.price) }}</template></el-table-column>
+                <el-table-column label="操作" width="128" align="right">
+                  <template #default="{ row: child }">
+                    <el-button size="small" link type="primary" @click="openItemDialog(child)"><el-icon><EditPen /></el-icon> 编辑</el-button>
+                    <el-popconfirm title="确认从套装中移除？" @confirm="handleRemoveChild(row.id, child.id)">
+                      <template #reference><el-button size="small" link type="danger">移除</el-button></template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+                <template #empty><el-empty description="这个套装还没有子物品" :image-size="62" /></template>
+              </el-table>
             </div>
-            <div class="item-meta">
-              <span class="item-code">{{ row.code }}</span>
-              <span v-if="row.category">{{ row.category }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="物品" min-width="260">
+          <template #default="{ row }">
+            <div class="item-identity">
+              <el-avatar :size="44" shape="square" :src="row.selected_image || row.image || undefined" class="item-avatar">{{ itemInitial(row.name) }}</el-avatar>
+              <div class="item-identity__copy">
+                <div class="item-name-line">
+                  <strong>{{ row.name }}</strong>
+                  <el-tag :type="row.is_bundle ? 'warning' : 'info'" size="small" effect="plain">{{ row.is_bundle ? '套装' : '单品' }}</el-tag>
+                </div>
+                <div class="item-meta"><code>{{ row.code }}</code><span v-if="row.category">{{ row.category }}</span></div>
+              </div>
             </div>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="所属游戏" width="120">
-        <template #default="{ row }">{{ gameNameMap[row.game_id] || '-' }}</template>
-      </el-table-column>
-      <el-table-column label="识别素材（可选）" min-width="230">
-        <template #default="{ row }">
-          <div class="recognition-panel">
-            <div class="image-state">
-              <span class="image-state-label">未选中</span>
-              <el-image v-if="row.image" class="recognition-thumb" :src="row.image" :preview-src-list="[row.image]" fit="cover" preview-teleported />
-              <div v-else class="image-placeholder">未上传</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="归属配置" min-width="145">
+          <template #default="{ row }">
+            <div class="item-context">
+              <strong>{{ gameNameMap[row.game_id] || '未关联游戏' }}</strong>
+              <span>{{ row.position ? `坐标 ${row.position}` : '未设置位置坐标' }}</span>
             </div>
-            <div class="image-state">
-              <span class="image-state-label">选中</span>
-              <el-image v-if="row.selected_image" class="recognition-thumb" :src="row.selected_image" :preview-src-list="[row.selected_image]" fit="cover" preview-teleported />
-              <div v-else class="image-placeholder">未上传</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="识别素材" min-width="220">
+          <template #default="{ row }">
+            <div class="recognition-panel">
+              <div class="image-state">
+                <span class="image-state-label">默认</span>
+                <el-image v-if="row.image" class="recognition-thumb" :src="row.image" :preview-src-list="[row.image]" fit="cover" preview-teleported />
+                <div v-else class="image-placeholder">未上传</div>
+              </div>
+              <div class="image-state">
+                <span class="image-state-label">选中</span>
+                <el-image v-if="row.selected_image" class="recognition-thumb" :src="row.selected_image" :preview-src-list="[row.selected_image]" fit="cover" preview-teleported />
+                <div v-else class="image-placeholder">未上传</div>
+              </div>
+              <div class="recognition-readiness">
+                <el-tag :type="recognitionStateType(row)" size="small" effect="plain">{{ recognitionCount(row) }}/2</el-tag>
+                <span>{{ recognitionStateLabel(row) }}</span>
+              </div>
             </div>
-            <el-tag :type="recognitionStateType(row)" size="small" effect="plain" class="recognition-count">
-              {{ recognitionCount(row) }}/2
-            </el-tag>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column prop="position" label="位置坐标" width="130">
-        <template #default="{ row }">{{ row.position || '-' }}</template>
-      </el-table-column>
-      <el-table-column prop="price" label="参考价格" width="100" align="right" />
-      <el-table-column prop="sort_order" label="排序" width="70" align="center" />
-      <el-table-column label="操作" width="150" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" link type="primary" @click="openItemDialog(row)">编辑</el-button>
-          <el-popconfirm title="确认删除？" @confirm="handleDeleteItem(row.id)">
-            <template #reference><el-button size="small" link type="danger">删除</el-button></template>
-          </el-popconfirm>
-        </template>
-      </el-table-column>
-    </el-table>
+          </template>
+        </el-table-column>
+        <el-table-column label="参考配置" width="116" align="right">
+          <template #default="{ row }">
+            <div class="item-metrics"><strong>{{ formatItemPrice(row.price) }}</strong><span>排序 {{ row.sort_order ?? 0 }}</span></div>
+          </template>
+        </el-table-column>
+        <el-table-column label="备注" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }"><span :class="['item-remark', { 'is-empty': !row.remark }]">{{ row.remark || '暂无备注' }}</span></template>
+        </el-table-column>
+        <el-table-column label="操作" width="142" fixed="right" align="right">
+          <template #default="{ row }">
+            <div class="item-row-actions">
+              <el-button size="small" link type="primary" @click="openItemDialog(row)"><el-icon><EditPen /></el-icon> 编辑</el-button>
+              <el-popconfirm title="确认删除？" @confirm="handleDeleteItem(row.id)">
+                <template #reference><el-button size="small" link type="danger"><el-icon><Delete /></el-icon> 删除</el-button></template>
+              </el-popconfirm>
+            </div>
+          </template>
+        </el-table-column>
+        <template #empty><el-empty :description="keyword || filterGameId || filterType !== null ? '没有匹配的物品' : '还没有物品，点击右上角新增'" :image-size="80" /></template>
+      </el-table>
+      </div>
 
-    <div class="pagination-wrap" v-if="total > 0">
-      <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next" @current-change="fetchList" />
-    </div>
+      <div class="pagination-wrap" v-if="total > pageSize">
+        <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next" @current-change="fetchList" />
+      </div>
+    </section>
 
     <!-- 物品编辑弹窗 -->
     <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑物品' : '新增物品'" width="620px" destroy-on-close>
@@ -358,6 +391,22 @@ function recognitionStateType(item) {
   return 'info'
 }
 
+function recognitionStateLabel(item) {
+  const count = recognitionCount(item)
+  if (count === 2) return '素材完整'
+  if (count === 1) return '待补充'
+  return '未配置'
+}
+
+function itemInitial(name) {
+  return String(name || '物').trim().charAt(0).toUpperCase()
+}
+
+function formatItemPrice(value) {
+  const price = Number(value)
+  return Number.isFinite(price) ? price.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '-'
+}
+
 function handleImageChange(file) {
   imageFile.value = file.raw
   imageFileList.value = [file]
@@ -539,44 +588,145 @@ onMounted(async () => {
 
 <style scoped>
 .page-container { padding: 0; }
-.toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
-.toolbar .el-button { margin-left: auto; }
-.pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
-.expand-area { padding: 12px 20px; }
-.expand-title { font-weight: 600; margin-bottom: 8px; color: #606266; }
-.item-identity { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.item-name-line { display: flex; align-items: center; gap: 8px; }
-.item-name { color: #303133; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
-.item-meta { display: flex; align-items: center; gap: 10px; color: #909399; font-size: 12px; }
-.item-code { color: #606266; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.recognition-panel { display: flex; align-items: flex-end; gap: 8px; }
+.item-directory {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #e3e9f1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(43, 60, 82, .045);
+}
+.item-directory__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 20px 20px;
+  border-bottom: 1px solid #e8edf3;
+}
+.item-directory__intro { min-width: 210px; }
+.item-directory__eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: #409eff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+}
+.item-directory__title-line { display: flex; align-items: center; gap: 10px; }
+.item-directory__title-line h1 { margin: 0; color: #25364a; font-size: 21px; line-height: 1.3; }
+.item-directory__count {
+  padding: 2px 8px;
+  color: #66778c;
+  border: 1px solid #dde5ee;
+  border-radius: 999px;
+  background: #f7f9fc;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.item-directory__intro p { margin: 6px 0 0; color: #8793a3; font-size: 13px; }
+.item-directory__actions { display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.item-filter--game { width: 168px; }
+.item-filter--type { width: 112px; }
+.item-search { width: 208px; }
+.item-table-viewport { min-height: 0; flex: 1; overflow: hidden; }
+.item-table { width: 100%; border-right: 0; border-left: 0; }
+.item-table :deep(.el-table__header th.el-table__cell) {
+  height: 44px;
+  color: #66778c;
+  background: #f7f9fc;
+  font-size: 12px;
+  font-weight: 600;
+}
+.item-table :deep(.el-table__body td.el-table__cell) { padding: 11px 0; }
+.item-table :deep(.el-table__row) { transition: background-color .18s ease; }
+.pagination-wrap { display: flex; justify-content: center; padding: 18px 20px; border-top: 1px solid #edf0f4; }
+.expand-area { padding: 15px 18px 18px 50px; background: linear-gradient(90deg, #f7faff 0, #fbfcfe 100%); }
+.expand-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 11px; }
+.expand-heading > div { display: flex; align-items: baseline; gap: 10px; }
+.expand-heading strong { color: #30445c; font-size: 13px; }
+.expand-heading span { color: #97a3b2; font-size: 12px; }
+.child-item-table { border-radius: 7px; }
+.item-identity { display: flex; min-width: 0; align-items: center; gap: 12px; }
+.item-identity--compact { gap: 10px; }
+.item-avatar {
+  flex: 0 0 auto;
+  color: #3278c8;
+  border: 1px solid #d8e6f7;
+  border-radius: 9px;
+  background: linear-gradient(145deg, #edf6ff, #dcecff);
+  font-weight: 700;
+}
+.item-identity__copy { min-width: 0; }
+.item-name-line { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.item-name-line strong,
+.item-identity__copy > strong { overflow: hidden; color: #25364a; font-size: 14px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.item-meta { display: flex; min-width: 0; align-items: center; gap: 9px; margin-top: 4px; color: #8a97a8; font-size: 11px; }
+.item-meta code { overflow: hidden; color: #687a8f; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.item-context,
+.item-metrics { display: grid; gap: 5px; }
+.item-context strong { overflow: hidden; color: #40546c; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.item-context span,
+.item-metrics span { color: #96a1af; font-size: 11px; }
+.item-metrics { justify-items: end; }
+.item-metrics strong { color: #30445c; font-size: 14px; font-variant-numeric: tabular-nums; }
+.recognition-panel { display: flex; min-width: 0; align-items: flex-end; gap: 8px; }
+.recognition-panel--compact { gap: 7px; }
 .image-state { display: flex; flex-direction: column; gap: 4px; }
-.image-state-label { color: #909399; font-size: 11px; line-height: 1; text-align: center; }
+.image-state-label { color: #909cac; font-size: 10px; line-height: 1; text-align: center; }
 .recognition-thumb,
 .image-placeholder {
-  width: 48px;
-  height: 48px;
-  border: 1px solid #dcdfe6;
-  border-radius: 8px;
+  width: 46px;
+  height: 46px;
+  border: 1px solid #dde5ee;
+  border-radius: 7px;
   box-sizing: border-box;
 }
 .recognition-thumb { display: block; }
 .image-placeholder {
   display: grid;
   place-items: center;
-  background: #f5f7fa;
-  color: #a8abb2;
-  font-size: 11px;
+  color: #a5afbc;
+  background: repeating-linear-gradient(135deg, #f7f9fc, #f7f9fc 6px, #f1f4f8 6px, #f1f4f8 12px);
+  font-size: 10px;
 }
-.recognition-count { margin-bottom: 13px; font-variant-numeric: tabular-nums; }
+.recognition-readiness { display: grid; gap: 4px; margin-bottom: 1px; }
+.recognition-readiness span { color: #8d99a9; font-size: 10px; white-space: nowrap; }
+.recognition-count { margin-bottom: 11px; font-variant-numeric: tabular-nums; }
+.item-remark { color: #617288; font-size: 12px; }
+.item-remark.is-empty { color: #a7b0bc; }
+.item-row-actions { display: flex; justify-content: flex-end; gap: 2px; }
+.item-row-actions .el-button + .el-button { margin-left: 5px; }
 
-@media (max-width: 900px) {
-  .toolbar .el-button { margin-left: 0; }
+@media (max-width: 1100px) {
+  .item-directory__header { align-items: flex-start; flex-direction: column; }
+  .item-directory__actions { width: 100%; justify-content: flex-start; }
+}
+@media (max-width: 700px) {
+  .item-directory__header { padding: 18px 16px; }
+  .item-directory__actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .item-filter--game,
+  .item-filter--type,
+  .item-search { width: 100%; }
+  .item-search { grid-column: 1 / -1; }
+  .item-directory__actions > .el-button { grid-column: 1 / -1; margin: 0; }
+  .expand-area { padding-left: 16px; }
+  .expand-heading { align-items: flex-start; flex-direction: column; }
+}
+@media (max-width: 430px) {
+  .item-directory__actions { grid-template-columns: 1fr; }
+  .item-search,
+  .item-directory__actions > .el-button { grid-column: auto; width: 100%; }
 }
 
 /* 隐藏非套装行的展开图标 */
 :deep(.hide-expand-icon .el-table__expand-icon) {
   visibility: hidden;
   pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .item-table :deep(.el-table__row) { transition: none; }
 }
 </style>

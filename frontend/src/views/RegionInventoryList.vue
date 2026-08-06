@@ -37,9 +37,13 @@
             highlight-current-row @current-change="onCurrentChange"
             height="100%"
           >
-            <el-table-column v-if="!filterRegionId" prop="region_name" label="大区" width="82" show-overflow-tooltip />
-            <el-table-column prop="item_name" label="物品名称" min-width="120" show-overflow-tooltip />
-            <el-table-column label="库存" width="180" align="right" header-align="center">
+            <el-table-column v-if="!filterRegionId" label="大区" width="150">
+              <template #default="{ row }">
+                <span class="region-name-cell">{{ row.region_name || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="item_name" label="物品名称" min-width="100" show-overflow-tooltip />
+            <el-table-column label="库存" width="110" align="right" header-align="center">
               <template #default="{ row }">
                 <span class="stock-number" :class="row.stock > 0 ? 'stock-positive' : 'stock-zero'">{{ row.stock }}</span>
               </template>
@@ -593,7 +597,7 @@ onMounted(() => {
 .split-layout {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
+  grid-template-columns: minmax(0, 1.22fr) minmax(0, 1fr);
   gap: 14px;
   min-height: 0;
   overflow: hidden;
@@ -659,6 +663,14 @@ onMounted(() => {
 }
 .left-panel :deep(.el-table__body tr.current-row > td.el-table__cell) {
   background: #ecf5ff;
+}
+.region-name-cell {
+  display: block;
+  color: #303133;
+  font-weight: 500;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .pagination-wrap {
   display: flex;

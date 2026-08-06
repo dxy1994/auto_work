@@ -20,28 +20,30 @@
       </el-button>
     </div>
 
-    <el-row :gutter="16">
-      <el-col v-for="w in list" :key="w.id" :xs="24" :sm="12" :md="8" :lg="6">
-        <el-card shadow="hover" class="site-card">
-          <template #header>
-            <div class="card-header">
-              <span class="site-name">{{ w.name }}</span>
-              <el-tag size="small" :type="tagType(w.login_type)">{{ typeLabel(w.login_type) }}</el-tag>
+    <div class="site-grid-viewport">
+      <el-row :gutter="16">
+        <el-col v-for="w in list" :key="w.id" :xs="24" :sm="12" :md="8" :lg="6">
+          <el-card shadow="hover" class="site-card">
+            <template #header>
+              <div class="card-header">
+                <span class="site-name">{{ w.name }}</span>
+                <el-tag size="small" :type="tagType(w.login_type)">{{ typeLabel(w.login_type) }}</el-tag>
+              </div>
+            </template>
+            <div class="site-url" :title="w.url">{{ w.url }}</div>
+            <div class="site-meta">
+              <el-tag v-if="w.category" size="small" type="info">{{ w.category }}</el-tag>
+              <span class="sort-badge" v-if="w.sort_order">排序: {{ w.sort_order }}</span>
             </div>
-          </template>
-          <div class="site-url" :title="w.url">{{ w.url }}</div>
-          <div class="site-meta">
-            <el-tag v-if="w.category" size="small" type="info">{{ w.category }}</el-tag>
-            <span class="sort-badge" v-if="w.sort_order">排序: {{ w.sort_order }}</span>
-          </div>
-          <div class="card-actions">
-            <el-button size="small" @click="openDialog(w)">编辑</el-button>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+            <div class="card-actions">
+              <el-button size="small" @click="openDialog(w)">编辑</el-button>
+            </div>
+          </el-card>
+        </el-col>
+      </el-row>
 
-    <el-empty v-if="!list.length" description="暂无网站，请先添加" />
+      <el-empty v-if="!list.length" description="暂无网站，请先添加" />
+    </div>
 
     <div class="pagination-wrap" v-if="total > pageSize">
       <el-pagination
@@ -265,9 +267,10 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.page-container { padding: 0; }
-.toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; }
+.page-container { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; padding: 0; }
+.toolbar { display: flex; flex: 0 0 auto; gap: 12px; margin-bottom: 20px; align-items: center; }
 .toolbar .el-button { margin-left: auto; }
+.site-grid-viewport { min-height: 0; flex: 1; padding: 1px 8px 0; margin: 0 -8px; overflow: auto; overscroll-behavior: contain; }
 .site-card { margin-bottom: 16px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .site-name { font-weight: 600; font-size: 15px; }

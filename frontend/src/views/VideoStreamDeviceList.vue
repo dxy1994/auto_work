@@ -9,7 +9,8 @@
       </el-button>
     </div>
 
-    <el-table :data="list" border stripe v-loading="loading" row-key="id">
+    <div class="list-table-viewport">
+    <el-table :data="list" border stripe height="100%" v-loading="loading" row-key="id">
       <el-table-column prop="id" label="ID" width="70" align="center" />
       <el-table-column prop="name" label="设备名称" min-width="150" />
       <el-table-column prop="device_type" label="设备类型" width="120" />
@@ -36,6 +37,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <div class="pagination-wrap" v-if="total > pageSize">
       <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" @current-change="fetchList" />
@@ -151,8 +153,9 @@ onMounted(fetchList)
 </script>
 
 <style scoped>
-.page-container { padding: 0; }
-.toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; }
+.page-container { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; padding: 0; }
+.toolbar { display: flex; flex: 0 0 auto; gap: 12px; margin-bottom: 20px; align-items: center; }
 .toolbar .el-button { margin-left: auto; }
+.list-table-viewport { min-height: 0; flex: 1; overflow: hidden; }
 .pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
 </style>

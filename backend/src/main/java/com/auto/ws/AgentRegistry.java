@@ -37,6 +37,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class AgentRegistry {
 
+    private static final double TASK_CONFIRMATION_GRACE_SECONDS = 30.0;
+
     private static final Logger log = LoggerFactory.getLogger(AgentRegistry.class);
 
     /** machine_id -> WebSocket 会话。 */
@@ -200,6 +202,7 @@ public class AgentRegistry {
         Set<Integer> reportedAccounts = new HashSet<>();
         List<OrderMonitorRestored> restoredEvents = new ArrayList<>();
         WebSocketSession session = agentConnections.get(machineId);
+        double nowSeconds = System.currentTimeMillis() / 1000.0;
         synchronized (taskLock) {
             for (Object itemObject : activeTasks) {
                 if (!(itemObject instanceof Map<?, ?> item)) {
@@ -265,6 +268,7 @@ public class AgentRegistry {
                 if (info != null
                         && info.machineId == machineId
                         && !reportedAccounts.contains(accountId)
+                        && !awaitingWorkerConfirmation(info, nowSeconds)
                         && accountTasks.remove(accountId, info)) {
                     accountTaskIds.remove(accountId, info.taskId);
                     taskToMachine.remove(info.taskId, machineId);
@@ -274,6 +278,15 @@ public class AgentRegistry {
             });
         }
         restoredEvents.forEach(eventPublisher::publishEvent);
+    }
+
+    private boolean awaitingWorkerConfirmation(
+            TaskInfo info, double nowSeconds) {
+        return !info.confirmedByWorker
+                && "running".equals(info.status)
+                && info.startTime > 0
+                && nowSeconds - info.startTime
+                < TASK_CONFIRMATION_GRACE_SECONDS;
     }
 
     public WorkerRuntimeStatus getRuntimeStatus(int machineId) {
@@ -443,7 +456,14 @@ public class AgentRegistry {
                 ? (Map<String, Object>) rawResult : Map.of();
         String resultStatus = str(result.get("status"));
         String resultMessage = str(result.get("message"));
-        if (accountId != null && machineId != null && !"cancelled".equals(resultStatus)) {
+        boolean duplicateTaskRejected = "failed".equals(resultStatus)
+                && resultMessage != null
+                && resultMessage.contains("该账号已有任务在运行");
+        if (duplicateTaskRejected) {
+            log.info("[Agent] 忽略重复监控任务拒绝结果 account_id={} task_id={}",
+                    accountId, taskId);
+        } else if (accountId != null && machineId != null
+                && !"cancelled".equals(resultStatus)) {
             eventPublisher.publishEvent(new OrderMonitorStopped(
                     machineId, accountId, taskId, resultStatus, resultMessage));
         }

@@ -11,7 +11,8 @@
     </div>
 
     <!-- 账号表格 -->
-    <el-table :data="list" border stripe highlight-current-row @current-change="onCurrentChange" row-key="id" style="width:100%">
+    <div class="list-table-viewport">
+    <el-table :data="list" border stripe height="100%" highlight-current-row @current-change="onCurrentChange" row-key="id" style="width:100%">
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column label="所属网站" min-width="120">
         <template #default="{ row }">
@@ -90,6 +91,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <el-empty v-if="!list.length" description="暂无账号" />
 
@@ -394,8 +396,10 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; }
+.page-container { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; }
+.toolbar { display: flex; flex: 0 0 auto; gap: 12px; margin-bottom: 20px; align-items: center; }
 .toolbar .el-button { margin-left: auto; }
+.list-table-viewport { min-height: 0; flex: 1; overflow: hidden; }
 .password-cell { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .password-value {
   display: block;

@@ -351,7 +351,10 @@ onMounted(loadPackages)
   --blue: #2f6fed;
   --blue-deep: #1f54bd;
   --teal: #0f9d84;
-  min-height: calc(100vh - 40px);
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   color: var(--ink);
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
 }

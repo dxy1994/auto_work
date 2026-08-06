@@ -115,8 +115,9 @@
         v-loading="loading"
         height="100%"
         class="sales-table"
+        :row-class-name="salesRowClassName"
       >
-        <el-table-column label="平台 / 账号" width="160" fixed="left">
+        <el-table-column label="来源" width="125" fixed="left">
           <template #default="{ row }">
             <div class="source-cell">
               <span class="platform-chip" :data-platform="row.platform">
@@ -128,38 +129,35 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="平台商品 ID" width="150">
+        <el-table-column label="平台商品" min-width="230">
           <template #default="{ row }">
-            <span class="product-id">{{ row.platform_product_id }}</span>
+            <div class="listing-cell">
+              <strong :title="row.title || ''">{{ row.title || '未提供平台标题' }}</strong>
+              <code :title="row.platform_product_id">{{ row.platform_product_id }}</code>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="游戏 / 大区" width="170">
+        <el-table-column label="匹配范围" min-width="160">
           <template #default="{ row }">
             <div class="location-cell">
-              <strong>{{ row.game_name || '-' }}</strong>
-              <span>{{ row.region_name || '-' }}</span>
+              <strong :title="row.game_name || ''">{{ row.game_name || '-' }}</strong>
+              <span :title="row.region_name || ''">{{ row.region_name || '-' }}</span>
+              <span :title="row.parsed_item_name || ''" :class="['actual-item', { 'is-unmatched': !row.parsed_item_name }]">{{ row.parsed_item_name || '物品未解析' }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="title" label="平台标题" min-width="240" show-overflow-tooltip />
-        <el-table-column label="实际商品" width="135" show-overflow-tooltip>
+        <el-table-column label="平台数据" width="135" align="right">
           <template #default="{ row }">
-            <span :class="{ 'muted-value': !row.parsed_item_name }">
-              {{ row.parsed_item_name || '未解析' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="平台库存" width="155" show-overflow-tooltip>
-          <template #default="{ row }">
-            <div class="stock-cell">
-              <span>{{ row.quantity_text || '-' }}</span>
+            <div class="platform-data-cell">
+              <strong :title="row.quantity_text || ''">{{ row.quantity_text || '-' }}</strong>
               <small v-if="row.parsed_quantity !== null && row.parsed_quantity !== undefined">
-                比对值 {{ formatStock(row.parsed_quantity) }}
+                数量 {{ formatStock(row.parsed_quantity) }}
               </small>
+              <span :title="row.price_text || ''">{{ row.price_text || '价格未记录' }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="系统库存" width="145" align="center">
+        <el-table-column label="系统库存" width="125" align="center">
           <template #default="{ row }">
             <div class="inventory-cell">
               <strong v-if="row.inventory_stock !== null && row.inventory_stock !== undefined">
@@ -177,30 +175,18 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="price_text" label="平台价格" width="120" show-overflow-tooltip>
+        <el-table-column label="状态 / 时间" width="130">
           <template #default="{ row }">
-            <span class="price-value">{{ row.price_text || '-' }}</span>
+            <div class="parse-state-cell">
+              <el-tooltip :content="row.parse_error || '游戏、大区和实际商品均已匹配'" placement="top">
+                <span :class="['parse-state', `is-${parseVisualTone(row.parse_status)}`]">{{ parseStatusLabel(row.parse_status) }}</span>
+              </el-tooltip>
+              <small :title="row.platform_registered_at || ''">登记 {{ compactTime(row.platform_registered_at) }}</small>
+              <small :title="row.updated_at || ''">同步 {{ compactTime(row.updated_at) }}</small>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="解析状态" width="128" align="center">
-          <template #default="{ row }">
-            <el-tooltip
-              :content="row.parse_error || '游戏、大区和实际商品均已匹配'"
-              placement="top"
-            >
-              <el-tag :type="parseStatusType(row.parse_status)" size="small">
-                {{ parseStatusLabel(row.parse_status) }}
-              </el-tag>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-        <el-table-column prop="platform_registered_at" label="平台登记时间" width="150">
-          <template #default="{ row }">{{ row.platform_registered_at || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="同步时间" width="160">
-          <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="120" align="center" fixed="right">
+        <el-table-column label="操作" width="104" align="center" fixed="right">
           <template #default="{ row }">
             <el-tooltip
               v-if="row.parse_status === 'matched'"
@@ -331,6 +317,18 @@ function parseStatusType(status) {
   }[status] || 'info'
 }
 
+function parseVisualTone(status) {
+  if (status === 'matched') return 'success'
+  if (status === 'title_parse_failed') return 'danger'
+  return 'warning'
+}
+
+function salesRowClassName({ row }) {
+  if (row.inventory_comparison_status === 'mismatch' || row.parse_status === 'title_parse_failed') return 'sales-row--danger'
+  if (row.parse_status === 'matched') return 'sales-row--success'
+  return 'sales-row--warning'
+}
+
 function inventoryStatusLabel(status) {
   return {
     matched: '一致',
@@ -370,6 +368,12 @@ function syncButtonHint(row) {
 function formatTime(value) {
   if (!value) return '-'
   return String(value).replace('T', ' ').slice(0, 19)
+}
+
+function compactTime(value) {
+  if (!value) return '-'
+  const normalized = String(value).replace('T', ' ')
+  return normalized.length >= 16 ? normalized.slice(5, 16) : normalized
 }
 
 async function loadReferences() {
@@ -480,40 +484,41 @@ onMounted(async () => {
   --ledger-green: #2f855a;
   --ledger-amber: #b7791f;
   --ledger-ink: #182230;
-  min-height: calc(100vh - 40px);
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
 }
 
 .page-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 2px 2px 0;
+  gap: 18px;
+  padding: 0 2px;
 }
 
 .heading-kicker {
-  margin-bottom: 5px;
+  margin-bottom: 2px;
   color: var(--ledger-blue);
-  font: 700 11px/1.2 "SFMono-Regular", Consolas, monospace;
+  font: 700 10px/1.2 "SFMono-Regular", Consolas, monospace;
   letter-spacing: .16em;
 }
 
 .page-heading h1 {
   margin: 0;
   color: var(--ledger-ink);
-  font-size: 25px;
+  font-size: 22px;
   line-height: 1.25;
   letter-spacing: -.02em;
 }
 
 .page-heading p {
-  margin: 7px 0 0;
+  margin: 3px 0 0;
   color: #606b78;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .sync-ledger {
@@ -529,48 +534,48 @@ onMounted(async () => {
 
 .ledger-cell {
   min-width: 0;
-  padding: 14px 18px;
+  padding: 7px 14px;
   border-right: 1px solid #e6ebf1;
 }
 
 .ledger-cell:last-child { border-right: 0; }
 .ledger-cell span, .ledger-cell small { display: block; }
-.ledger-cell span { color: #7a8592; font-size: 12px; }
+.ledger-cell span { color: #7a8592; font-size: 10px; }
 .ledger-cell strong {
   display: inline-block;
-  margin: 5px 0 3px;
+  margin: 2px 0;
   color: var(--ledger-navy);
-  font-size: 24px;
+  font-size: 19px;
   line-height: 1;
 }
 .ledger-cell small {
   overflow: hidden;
   color: #98a1ac;
-  font-size: 11px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ledger-cell .matched-number { color: var(--ledger-green); }
 .ledger-cell .warning-number { color: var(--ledger-amber); }
-.ledger-time strong { font: 700 15px/1.6 "SFMono-Regular", Consolas, monospace; }
+.ledger-time strong { font: 700 13px/1.35 "SFMono-Regular", Consolas, monospace; }
 
 .filter-panel {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 8px;
   border: 1px solid #e0e5eb;
   border-radius: 8px;
   background: #fff;
 }
 
-.filter-control { width: 160px; }
-.filter-account { width: 210px; }
-.keyword-input { min-width: 250px; flex: 1; }
+.filter-control { width: 122px; }
+.filter-account { width: 168px; }
+.keyword-input { min-width: 190px; flex: 1; }
 
 .table-shell {
-  min-height: 360px;
+  min-height: 0;
   flex: 1;
   overflow: hidden;
   border: 1px solid #dfe4ea;
@@ -579,24 +584,32 @@ onMounted(async () => {
 }
 
 .sales-table { width: 100%; }
+.sales-table :deep(.el-table__header th.el-table__cell) { height: 40px; color: #596879; background: #f5f8fb; font-size: 12px; }
+.sales-table :deep(.cell) { line-height: 1.35; }
+.sales-table :deep(.el-table__body td.el-table__cell) { padding: 5px 0; }
+.sales-table :deep(.sales-row--danger > td:first-child) { box-shadow: inset 3px 0 0 #d84a4a; }
+.sales-table :deep(.sales-row--warning > td:first-child) { box-shadow: inset 3px 0 0 #d69a2d; }
+.sales-table :deep(.sales-row--success > td:first-child) { box-shadow: inset 3px 0 0 #2b9669; }
 .source-cell, .location-cell {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 .source-cell > span:last-child,
 .location-cell span {
   overflow: hidden;
   color: #697481;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .location-cell strong {
   overflow: hidden;
   color: #263241;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -607,7 +620,7 @@ onMounted(async () => {
   border-radius: 3px;
   background: #eaf2fb;
   color: #245f99;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1.35;
 }
@@ -615,37 +628,64 @@ onMounted(async () => {
 .platform-chip[data-platform="itembay"] { background: #edf2ff; color: #3f51a2; }
 .platform-chip[data-platform="barotem"] { background: #e8f7f0; color: #217657; }
 
-.product-id {
-  color: #253750;
-  font: 600 12px/1.4 "SFMono-Regular", Consolas, monospace;
-}
-.price-value { color: #8b4b13; font-weight: 650; }
 .muted-value { color: #a4acb5; }
-.stock-cell, .inventory-cell {
+.listing-cell,
+.platform-data-cell,
+.parse-state-cell,
+.inventory-cell {
   display: flex;
+  min-width: 0;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
-.stock-cell small { color: #7d8792; font-size: 11px; }
+.listing-cell strong { display: -webkit-box; overflow: hidden; color: #26364a; font-size: 12px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.listing-cell code { overflow: hidden; color: #54708d; font: 600 10px/1.3 "SFMono-Regular", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.actual-item { color: #28765a !important; font-weight: 600; }
+.actual-item.is-unmatched { color: #b66c18 !important; font-weight: 600; }
+.platform-data-cell { align-items: flex-end; }
+.platform-data-cell strong { max-width: 100%; overflow: hidden; color: #26364a; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.platform-data-cell small { color: #7d8792; font-size: 9px; }
+.platform-data-cell span { max-width: 100%; overflow: hidden; color: #8b4b13; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .inventory-cell { align-items: center; }
 .inventory-cell strong {
   color: var(--ledger-navy);
   font: 650 12px/1.4 "SFMono-Regular", Consolas, monospace;
 }
+.parse-state-cell { align-items: flex-start; }
+.parse-state {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 7px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.parse-state.is-success { color: #247a56; border-color: #bfe0cf; background: #edf8f2; }
+.parse-state.is-warning { color: #a86d12; border-color: #ecd4a5; background: #fff8e8; }
+.parse-state.is-danger { color: #b93838; border-color: #efc3c3; background: #fff1f0; }
+.parse-state-cell small { color: #8c98a5; font-size: 9px; line-height: 1.2; white-space: nowrap; }
 
 .table-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  min-height: 36px;
+  gap: 14px;
   color: #7d8792;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 @media (max-width: 1100px) {
   .sync-ledger { grid-template-columns: repeat(2, 1fr); }
   .ledger-cell:nth-child(2) { border-right: 0; }
   .ledger-cell:nth-child(-n+2) { border-bottom: 1px solid #e6ebf1; }
+  .filter-panel { flex-wrap: wrap; }
   .table-footer { align-items: flex-start; flex-direction: column; }
 }
 

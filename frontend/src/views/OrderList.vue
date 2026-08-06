@@ -1,155 +1,207 @@
 <template>
   <div class="page-container">
-    <div class="toolbar">
-      <el-select v-model="filterGameId" placeholder="选择游戏" clearable style="width: 160px" @change="handleSearch">
-        <el-option v-for="g in gameList" :key="g.id" :label="g.name" :value="g.id" />
-      </el-select>
-      <el-select v-model="filterStatus" placeholder="订单状态" clearable style="width: 120px" @change="handleSearch">
-        <el-option label="待分配" value="pending" />
-        <el-option label="已分配" value="assigned" />
-        <el-option label="处理中" value="processing" />
-        <el-option label="异常" value="abnormal" />
-        <el-option label="已完成" value="completed" />
-        <el-option label="已取消" value="cancelled" />
-      </el-select>
-      <el-select v-model="filterDeliveryStatus" placeholder="交付状态" clearable style="width: 140px" @change="handleSearch">
-        <el-option label="招呼阶段" value="greeting" />
-        <el-option label="排队中" value="queued" />
-        <el-option label="等待指派" value="waiting_assignment" />
-        <el-option label="已发送指派" value="offered" />
-        <el-option label="交易执行中" value="assigned" />
-        <el-option label="等待网站确认" value="wait_web_confirm" />
-        <el-option label="待人工复核" value="review_required" />
-        <el-option label="已挂起" value="suspended" />
-        <el-option label="已完成" value="completed" />
-        <el-option label="已取消" value="cancelled" />
-      </el-select>
-      <el-input v-model="keyword" placeholder="搜索订单号/客户..." clearable style="width: 220px" @input="handleSearch">
-        <template #prefix><el-icon><Search /></el-icon></template>
-      </el-input>
-      <div class="toolbar-actions">
-        <div class="auto-refresh-controls">
-          <span class="auto-refresh-label">刷新间隔</span>
-          <el-input-number
-            v-model="refreshIntervalSeconds"
-            :min="1"
-            :max="3600"
-            :step="1"
-            controls-position="right"
-            style="width: 100px"
-            aria-label="自动刷新间隔秒数"
-          />
-          <span class="auto-refresh-unit">秒</span>
-          <el-button :type="autoRefreshEnabled ? 'danger' : 'success'" plain @click="toggleAutoRefresh">
-            <el-icon><RefreshRight /></el-icon>
-            {{ autoRefreshEnabled ? '关闭自动刷新' : '开启自动刷新' }}
+    <section class="order-directory">
+      <header class="order-directory__header">
+        <div class="order-directory__intro">
+          <span class="order-directory__eyebrow">交易流水</span>
+          <div class="order-directory__title-line">
+            <h1>订单管理</h1>
+            <span class="order-directory__count">{{ total }} 笔</span>
+          </div>
+          <p>按平台订单跟踪商品、买家和自动交付进度。</p>
+        </div>
+        <div :class="['order-live', { 'is-active': autoRefreshEnabled }]">
+          <span class="order-live__dot" aria-hidden="true"></span>
+          <span class="order-live__state">{{ autoRefreshEnabled ? '自动刷新中' : '自动刷新已暂停' }}</span>
+          <el-input-number v-model="refreshIntervalSeconds" :min="1" :max="3600" :step="1" size="small" controls-position="right" aria-label="自动刷新间隔秒数" />
+          <span class="order-live__unit">秒</span>
+          <el-button size="small" text :type="autoRefreshEnabled ? 'danger' : 'success'" @click="toggleAutoRefresh">
+            <el-icon><RefreshRight /></el-icon>{{ autoRefreshEnabled ? '暂停' : '开启' }}
           </el-button>
         </div>
+      </header>
+
+      <div class="order-filters">
+        <el-select v-model="filterGameId" class="order-filter order-filter--game" placeholder="全部游戏" clearable filterable @change="handleSearch">
+          <el-option v-for="g in gameList" :key="g.id" :label="g.name" :value="g.id" />
+        </el-select>
+        <el-select v-model="filterStatus" class="order-filter" placeholder="订单状态" clearable @change="handleSearch">
+          <el-option label="待分配" value="pending" />
+          <el-option label="已分配" value="assigned" />
+          <el-option label="处理中" value="processing" />
+          <el-option label="异常" value="abnormal" />
+          <el-option label="已完成" value="completed" />
+          <el-option label="已取消" value="cancelled" />
+        </el-select>
+        <el-select v-model="filterDeliveryStatus" class="order-filter order-filter--delivery" placeholder="交付进度" clearable @change="handleSearch">
+          <el-option label="招呼阶段" value="greeting" />
+          <el-option label="排队中" value="queued" />
+          <el-option label="等待指派" value="waiting_assignment" />
+          <el-option label="已发送指派" value="offered" />
+          <el-option label="交易执行中" value="assigned" />
+          <el-option label="等待网站确认" value="wait_web_confirm" />
+          <el-option label="待人工复核" value="review_required" />
+          <el-option label="已挂起" value="suspended" />
+          <el-option label="已完成" value="completed" />
+          <el-option label="已取消" value="cancelled" />
+        </el-select>
+        <el-input v-model="keyword" class="order-search" placeholder="搜索平台订单号或客户" clearable @input="handleSearch">
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
       </div>
-    </div>
 
-    <el-table :data="list" border stripe v-loading="loading" highlight-current-row @current-change="onCurrentChange" row-key="id">
-      <el-table-column prop="order_no" label="订单号" width="160" show-overflow-tooltip />
-      <el-table-column label="来源" width="80">
-        <template #default="{ row }">{{ websiteNameMap[row.website_id] || row.website_id || '-' }}</template>
-      </el-table-column>
-      <el-table-column label="游戏" width="80">
-        <template #default="{ row }">{{ gameNameMap[row.game_id] || row.game_id }}</template>
-      </el-table-column>
-      <el-table-column prop="product_title" label="商品标题" min-width="180" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.product_title || row.remark || '-' }}</template>
-      </el-table-column>
-      <el-table-column prop="trade_item_name" label="交易物品" width="120" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.trade_item_name || '-' }}</template>
-      </el-table-column>
-      <el-table-column label="资产类型" width="90">
-        <template #default="{ row }">{{ row.asset_type || '-' }}</template>
-      </el-table-column>
-      <el-table-column prop="buyer_character" label="买家" width="90" show-overflow-tooltip />
-      <el-table-column prop="platform_price" label="平台售价" width="110" align="right">
-        <template #default="{ row }">
-          <span v-if="row.platform_price">₩ {{ Number(row.platform_price).toLocaleString() }}</span>
-          <span v-else>-</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="80" align="center">
-        <template #default="{ row }">
-          <el-tag :type="orderStatusType(row.status)" size="small">{{ orderStatusLabel(row.status) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="当前步骤" width="140" align="center">
-        <template #default="{ row }">
-          <el-tooltip
-            :content="orderErrorMessage(row) || retryActionLabel(row)"
-            :disabled="!orderErrorMessage(row) && !row.retryable"
-            placement="top"
-          >
-            <el-tag :type="deliveryStatusType(row)" size="small">{{ deliveryStatusLabel(row) }}</el-tag>
-          </el-tooltip>
-        </template>
-      </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="150" />
-      <el-table-column label="操作" width="400" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" link type="primary" @click="openDetailDrawer(row)">明细</el-button>
-          <el-button size="small" link type="primary" @click="openOrderLogs(row)">日志</el-button>
-          <el-button size="small" link type="primary" @click="openChatDialog(row)">聊天</el-button>
-          <el-button
-            size="small"
-            link
-            type="primary"
-            :loading="copyLoadingOrderId === row.id"
-            @click="openCopyDialog(row)"
-          >复制</el-button>
-          <el-button
-            v-if="canRetryOrder(row)"
-            size="small"
-            link
-            type="warning"
-            :loading="retryingOrderId === row.id"
-            @click="handleRetryOrder(row)"
-          >重新尝试</el-button>
-          <el-popconfirm
-            v-if="canCompleteOrder(row)"
-            width="320"
-            :title="completeConfirmTitle(row)"
-            confirm-button-text="确认完成"
-            cancel-button-text="返回"
-            @confirm="handleTerminalOrder(row, 'complete')"
-          >
-            <template #reference>
-              <el-button size="small" link type="success" :loading="terminalActionKey === `complete:${row.id}`">{{ completeActionLabel(row) }}</el-button>
-            </template>
-          </el-popconfirm>
-          <el-popconfirm
-            v-if="canCancelOrder(row)"
-            width="300"
-            :title="cancelConfirmTitle(row)"
-            confirm-button-text="确认取消"
-            cancel-button-text="返回"
-            @confirm="handleTerminalOrder(row, 'cancel')"
-          >
-            <template #reference>
-              <el-button size="small" link type="warning" :loading="terminalActionKey === `cancel:${row.id}`">{{ cancelActionLabel(row) }}</el-button>
-            </template>
-          </el-popconfirm>
-          <el-popconfirm
-            v-if="canDeleteOrder(row)"
-            width="300"
-            title="删除后订单及全部子订单将无法恢复，确认删除？"
-            confirm-button-text="确认删除"
-            cancel-button-text="返回"
-            @confirm="handleDeleteOrder(row.id)"
-          >
-            <template #reference><el-button size="small" link type="danger">删除</el-button></template>
-          </el-popconfirm>
-        </template>
-      </el-table-column>
-    </el-table>
+      <div ref="orderTableViewport" class="order-table-viewport">
+      <el-table class="order-table" :data="list" border stripe height="100%" v-loading="loading" highlight-current-row :row-class-name="orderRowClassName" @current-change="onCurrentChange" @row-dblclick="openOrderLogs" row-key="id" aria-label="订单列表，双击订单行查看操作日志">
+        <el-table-column label="平台订单" width="132">
+          <template #default="{ row }">
+            <div class="order-identity">
+              <button type="button" class="order-identity__number" :title="row.source_order_no || '未提供平台订单号'" @click="openDetailDrawer(row)" @dblclick.stop>{{ compactOrderNo(row.source_order_no) }}</button>
+              <div class="order-identity__meta">
+                <span>{{ websiteNameMap[row.website_id] || '未知来源' }}</span>
+                <time :title="String(row.created_at || '')">{{ formatOrderTime(row.created_at) }}</time>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="商品与游戏" :width="orderColumnWidths.product">
+          <template #default="{ row }">
+            <div class="order-product">
+              <strong :title="row.product_title || row.trade_item_name || row.remark || ''">{{ row.product_title || row.trade_item_name || row.remark || '未提供商品标题' }}</strong>
+              <div class="order-product__meta">
+                <el-tag size="small" effect="plain">{{ gameNameMap[row.game_id] || '未知游戏' }}</el-tag>
+                <span v-if="row.trade_item_name" :title="row.trade_item_name">{{ row.trade_item_name }}</span>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="买家与资产" :width="orderColumnWidths.buyer">
+          <template #default="{ row }">
+            <div class="order-buyer">
+              <strong :title="row.buyer_character || row.customer_name || ''">{{ row.buyer_character || row.customer_name || '未提供买家' }}</strong>
+              <span :title="formatAssetSummary(row)">{{ formatAssetSummary(row) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="平台售价" width="168" align="right">
+          <template #default="{ row }">
+            <div class="order-price">
+              <strong>{{ formatPlatformPrice(row.platform_price) }}</strong>
+              <span v-if="row.quantity != null || row.sale_quantity != null">售出 {{ formatOrderQuantity(row.sale_quantity) }}/{{ formatOrderQuantity(row.quantity) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="订单进度" :width="orderColumnWidths.progress">
+          <template #default="{ row }">
+            <el-tooltip :content="orderErrorMessage(row) || retryActionLabel(row)" :disabled="!orderErrorMessage(row) && !row.retryable" placement="top">
+              <div :class="['order-progress', `tone-${orderVisualTone(row)}`]">
+                <div class="order-progress__main">
+                  <i aria-hidden="true"></i>
+                  <strong>{{ deliveryStatusLabel(row) }}</strong>
+                </div>
+                <div class="order-progress__meta">
+                  <span>{{ orderStatusLabel(row.status) }}</span>
+                  <span v-if="row.retryable">可重新尝试</span>
+                </div>
+              </div>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="252" fixed="right" align="right" class-name="order-action-cell" label-class-name="order-action-header">
+          <template #default="{ row }">
+            <div class="order-row-actions" @dblclick.stop>
+              <el-tooltip v-if="canRetryOrder(row)" :content="retryActionLabel(row)" placement="top">
+                <el-button
+                  size="small"
+                  link
+                  type="warning"
+                  :loading="retryingOrderId === row.id"
+                  :disabled="retryingOrderId !== null && retryingOrderId !== row.id"
+                  @click.stop="handleRetryOrder(row)"
+                >重新尝试</el-button>
+              </el-tooltip>
+              <el-popconfirm
+                v-if="canCompleteOrder(row)"
+                width="320"
+                :title="completeConfirmTitle(row)"
+                confirm-button-text="确认完成"
+                cancel-button-text="返回"
+                @confirm="handleTerminalOrder(row, 'complete')"
+              >
+                <template #reference>
+                  <el-button
+                    size="small"
+                    link
+                    type="success"
+                    :loading="terminalActionKey === `complete:${row.id}`"
+                    :disabled="Boolean(terminalActionKey) && terminalActionKey !== `complete:${row.id}`"
+                  >{{ completeActionLabel(row) }}</el-button>
+                </template>
+              </el-popconfirm>
+              <el-popconfirm
+                v-if="canCancelOrder(row)"
+                width="300"
+                :title="cancelConfirmTitle(row)"
+                confirm-button-text="确认取消"
+                cancel-button-text="返回"
+                @confirm="handleTerminalOrder(row, 'cancel')"
+              >
+                <template #reference>
+                  <el-button
+                    size="small"
+                    link
+                    type="danger"
+                    :loading="terminalActionKey === `cancel:${row.id}`"
+                    :disabled="Boolean(terminalActionKey) && terminalActionKey !== `cancel:${row.id}`"
+                  >{{ cancelActionLabel(row) }}</el-button>
+                </template>
+              </el-popconfirm>
+              <template v-if="orderOverflowActions(row).length < 4">
+                <el-tooltip
+                  v-for="action in orderOverflowActions(row)"
+                  :key="action.command"
+                  :content="action.label"
+                  placement="top"
+                >
+                  <el-button
+                    class="order-overflow-action"
+                    size="small"
+                    link
+                    :type="overflowActionButtonType(action)"
+                    :aria-label="action.label"
+                    :loading="action.command === 'copy' && copyLoadingOrderId === row.id"
+                    :disabled="action.disabled"
+                    @click.stop="handleOrderCommand(row, action.command)"
+                  >
+                    <el-icon><component :is="action.icon" /></el-icon>
+                  </el-button>
+                </el-tooltip>
+              </template>
+              <el-dropdown v-else trigger="click" @command="handleOrderCommand(row, $event)">
+                <el-button size="small" link type="primary">更多 <el-icon><ArrowDown /></el-icon></el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      v-for="action in orderOverflowActions(row)"
+                      :key="action.command"
+                      :command="action.command"
+                      :icon="action.icon"
+                      :disabled="action.disabled"
+                      :divided="action.divided"
+                    >{{ action.label }}</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </template>
+        </el-table-column>
+        <template #empty><el-empty :description="keyword || filterGameId || filterStatus || filterDeliveryStatus ? '没有匹配的订单' : '当前还没有订单'" :image-size="80" /></template>
+      </el-table>
+      </div>
 
-    <div class="pagination-wrap" v-if="total > pageSize">
-      <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" @current-change="fetchList" />
-    </div>
+      <div class="pagination-wrap" v-if="total > pageSize">
+        <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next" @current-change="fetchList" />
+      </div>
+    </section>
 
     <!-- 复制订单弹窗：复制业务信息，重置交易运行态 -->
     <el-dialog v-model="copyDialogVisible" title="复制订单" width="1080px" destroy-on-close top="4vh">
@@ -163,17 +215,12 @@
       <el-form :model="copyForm" label-width="110px" ref="copyFormRef" :rules="copyRules">
         <el-divider content-position="left">编号与初始状态</el-divider>
         <el-row :gutter="16">
-          <el-col :span="8">
-            <el-form-item label="订单号" prop="order_no">
-              <el-input v-model="copyForm.order_no" maxlength="50" show-word-limit />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item label="平台订单号" prop="source_order_no">
               <el-input v-model="copyForm.source_order_no" maxlength="100" show-word-limit />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item label="初始步骤" prop="initial_state">
               <el-select v-model="copyForm.initial_state" style="width:100%">
                 <el-option label="招呼已完成，等待交易指派" value="waiting_assignment" />
@@ -290,7 +337,7 @@
     </el-dialog>
 
     <!-- 订单明细抽屉（子表联动） -->
-    <el-drawer v-model="detailDrawerVisible" :title="`订单明细 - ${currentOrder?.order_no || ''}`" size="700px" destroy-on-close>
+    <el-drawer v-model="detailDrawerVisible" :title="`订单明细 - ${currentOrder?.source_order_no || '未提供平台订单号'}`" size="700px" destroy-on-close>
       <!-- 平台信息 -->
       <el-descriptions :column="2" border size="small" title="平台信息" class="detail-section">
         <el-descriptions-item label="来源平台">{{ websiteNameMap[currentOrder?.website_id] || currentOrder?.website_id || '-' }}</el-descriptions-item>
@@ -577,7 +624,7 @@
     <!-- 订单自动交付日志 -->
     <el-dialog
       v-model="orderLogsDialogVisible"
-      :title="`订单日志 · ${orderLogTarget?.order_no || orderLogTarget?.source_order_no || orderLogTarget?.id || ''}`"
+      :title="`订单日志 · ${orderLogTarget?.source_order_no || '未提供平台订单号'}`"
       width="780px"
       append-to-body
       destroy-on-close
@@ -630,8 +677,8 @@
 <script setup>
 import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { RefreshRight } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ChatDotRound, CopyDocument, Delete, RefreshRight } from '@element-plus/icons-vue'
 import {
   getAllGames, getAllRegions, getAllMachines, getAllItems, getAllWebsites,
   getAllAccounts, getAllGameAccounts,
@@ -658,6 +705,20 @@ const filterStatus = ref('')
 const filterDeliveryStatus = ref('')
 const loading = ref(false)
 const route = useRoute()
+const orderTableViewport = ref(null)
+const orderTableWidth = ref(1018)
+let orderTableResizeObserver = null
+
+const orderColumnWidths = computed(() => {
+  const extraWidth = Math.max(0, Math.floor(orderTableWidth.value) - 1018)
+  const productExtra = Math.round(extraWidth * 0.5)
+  const buyerExtra = Math.round(extraWidth * 0.25)
+  return {
+    product: 166 + productExtra,
+    buyer: 130 + buyerExtra,
+    progress: 170 + extraWidth - productExtra - buyerExtra,
+  }
+})
 
 const currentRow = ref(null)
 function onCurrentChange(row) { currentRow.value = row }
@@ -672,6 +733,30 @@ function orderStatusLabel(s) { return { pending: '待分配', assigned: '已分�
 function orderStatusType(s) { return { pending: 'warning', assigned: 'primary', processing: '', abnormal: 'danger', completed: 'success', cancelled: 'info' }[s] || '' }
 function detailStatusLabel(s) { return { pending: '待处理', processing: '处理中', completed: '已完成', cancelled: '已取消', failed: '失败' }[s] || s }
 function detailStatusType(s) { return { pending: 'warning', processing: '', completed: 'success', cancelled: 'info', failed: 'danger' }[s] || '' }
+function formatOrderTime(value) {
+  if (!value) return '时间未记录'
+  const normalized = String(value).replace('T', ' ')
+  return normalized.length >= 16 ? normalized.slice(5, 16) : normalized
+}
+function compactOrderNo(value) {
+  const orderNo = String(value || '').trim()
+  if (!orderNo) return '未提供订单号'
+  if (orderNo.length <= 13) return orderNo
+  return `${orderNo.slice(0, 6)}…${orderNo.slice(-5)}`
+}
+function formatPlatformPrice(value) {
+  const price = Number(value)
+  return Number.isFinite(price) && price > 0 ? `₩ ${price.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}` : '-'
+}
+function formatOrderQuantity(value) {
+  const quantity = Number(value)
+  return Number.isFinite(quantity) ? quantity.toLocaleString('zh-CN') : '0'
+}
+function formatAssetSummary(order) {
+  const type = order?.asset_type || '资产未设置'
+  const amount = Number(order?.asset_amount)
+  return Number.isFinite(amount) && amount > 0 ? `${type} · ${amount.toLocaleString('zh-CN')}` : type
+}
 function errorCodeLabel(code) {
   return {
     SUB_ORDER_MISSING: '子订单生成失败',
@@ -687,6 +772,9 @@ function errorCodeLabel(code) {
     TRADE_RESULT_UNCERTAIN: '交易结果待复核',
     WEBSITE_DELIVERY_DISPATCH_FAILED: '网站交付确认指令下发失败',
     WEBSITE_DELIVERY_CONFIRM_FAILED: '网站商品交付确认失败',
+    CONFIG_MISSING: '配置缺失',
+    ITEM_NAME_PARSE_FAILED: '物品解析失败',
+    INVENTORY_RECONCILIATION_REQUIRED: '库存待核对',
   }[code] || code || '未知异常'
 }
 function orderErrorMessage(order) {
@@ -706,6 +794,15 @@ function deliveryStatusType(order) {
   if (order.last_error_code || (order.delivery_status === 'greeting' && order.status === 'abnormal')) return 'danger'
   return { greeting: 'warning', detected: 'info', queued: 'warning', waiting_assignment: 'warning', offered: 'primary', assigned: 'primary', delivering: '', delivered: 'success', wait_web_confirm: 'warning', review_required: 'danger', suspended: 'danger', completed: 'success', cancelled: 'info', failed: 'danger' }[order.delivery_status] || 'info'
 }
+function orderVisualTone(order) {
+  if (!order) return 'neutral'
+  if (order.last_error_code || order.status === 'abnormal' || ['review_required', 'failed'].includes(order.delivery_status)) return 'danger'
+  if (order.status === 'completed' || ['completed', 'delivered'].includes(order.delivery_status)) return 'success'
+  if (order.status === 'cancelled' || order.delivery_status === 'cancelled') return 'neutral'
+  if (['offered', 'assigned', 'delivering'].includes(order.delivery_status) || ['assigned', 'processing'].includes(order.status)) return 'active'
+  return 'warning'
+}
+function orderRowClassName({ row }) { return `order-row--${orderVisualTone(row)}` }
 function canRetryOrder(order) { return Boolean(order?.retryable) }
 function isTerminalOrder(order) { return ['completed', 'cancelled'].includes(order?.status) }
 function canCompleteOrder(order) { return Boolean(order) && !isTerminalOrder(order) }
@@ -741,6 +838,32 @@ function canDeleteOrder(order) {
   if (order.status === 'cancelled') return true
   return ['pending', 'abnormal'].includes(order.status)
     && !['queued', 'offered', 'assigned', 'review_required', 'wait_web_confirm'].includes(order.delivery_status)
+}
+function orderOverflowActions(order) {
+  const actions = [
+    { command: 'chat', label: '客户聊天', icon: ChatDotRound, disabled: false, divided: false },
+    { command: 'copy', label: '复制订单', icon: CopyDocument, disabled: copyLoadingOrderId.value === order?.id, divided: false },
+  ]
+  if (canDeleteOrder(order)) {
+    actions.push({ command: 'delete', label: '删除订单', icon: Delete, disabled: false, divided: true })
+  }
+  return actions
+}
+function overflowActionButtonType(action) { return action?.command === 'delete' ? 'danger' : 'primary' }
+async function handleOrderCommand(order, command) {
+  if (command === 'chat') return openChatDialog(order)
+  if (command === 'copy') return openCopyDialog(order)
+
+  try {
+    if (command === 'delete') {
+      await ElMessageBox.confirm('删除后订单及全部子订单将无法恢复，确认删除？', '删除订单', {
+        confirmButtonText: '确认删除', cancelButtonText: '返回', type: 'error',
+      })
+      return handleDeleteOrder(order.id)
+    }
+  } catch (action) {
+    if (action !== 'cancel' && action !== 'close') throw action
+  }
 }
 function retryActionLabel(order) {
   return {
@@ -1009,7 +1132,6 @@ const copyLoadingOrderId = ref(null)
 const copySourceOrderId = ref(null)
 const copyFormRef = ref(null)
 const copyRules = {
-  order_no: [{ required: true, message: '请输入新订单号', trigger: 'blur' }],
   game_id: [{ required: true, message: '请选择游戏', trigger: 'change' }],
   region_id: [{ required: true, message: '请选择大区', trigger: 'change' }],
   initial_state: [{ required: true, message: '请选择初始步骤', trigger: 'change' }],
@@ -1343,6 +1465,13 @@ async function handleRetryOrder(row, refreshDetail = false) {
 }
 
 onMounted(async () => {
+  const tableViewport = orderTableViewport.value
+  if (tableViewport) {
+    const updateTableWidth = () => { orderTableWidth.value = tableViewport.clientWidth || 1018 }
+    updateTableWidth()
+    orderTableResizeObserver = new ResizeObserver(updateTableWidth)
+    orderTableResizeObserver.observe(tableViewport)
+  }
   const [games, regions, machines, items, websites, platformAccounts, gameAccounts] = await Promise.all([
     getAllGames(), getAllRegions(), getAllMachines(), getAllItems(), getAllWebsites(),
     getAllAccounts(), getAllGameAccounts(),
@@ -1359,16 +1488,153 @@ onMounted(async () => {
   startAutoRefreshTimer()
 })
 
-onBeforeUnmount(clearAutoRefreshTimer)
+onBeforeUnmount(() => {
+  clearAutoRefreshTimer()
+  orderTableResizeObserver?.disconnect()
+})
 </script>
 
 <style scoped>
 .page-container { padding: 0; }
-.toolbar { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
-.toolbar-actions { display: flex; gap: 12px; align-items: center; margin-left: auto; }
-.auto-refresh-controls { display: flex; gap: 8px; align-items: center; }
-.auto-refresh-label, .auto-refresh-unit { color: #606266; font-size: 13px; white-space: nowrap; }
-.pagination-wrap { display: flex; justify-content: center; margin-top: 20px; }
+.order-directory {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #e3e9f1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(43, 60, 82, .045);
+}
+.order-directory__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 18px 11px;
+}
+.order-directory__intro { min-width: 0; }
+.order-directory__eyebrow {
+  display: block;
+  margin-bottom: 2px;
+  color: #409eff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+}
+.order-directory__title-line { display: flex; align-items: center; gap: 10px; }
+.order-directory__title-line h1 { margin: 0; color: #25364a; font-size: 21px; line-height: 1.3; }
+.order-directory__count {
+  padding: 2px 8px;
+  color: #66778c;
+  border: 1px solid #dde5ee;
+  border-radius: 999px;
+  background: #f7f9fc;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.order-directory__intro p { margin: 3px 0 0; color: #8793a3; font-size: 12px; }
+.order-live {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px 5px 10px;
+  color: #7b8796;
+  border: 1px solid #e1e7ee;
+  border-radius: 8px;
+  background: #fafbfd;
+  font-size: 12px;
+}
+.order-live__dot { width: 7px; height: 7px; border-radius: 50%; background: #aab3bf; }
+.order-live.is-active .order-live__dot { background: #32b875; box-shadow: 0 0 0 4px rgba(50, 184, 117, .1); animation: order-live-pulse 2.2s ease-in-out infinite; }
+.order-live.is-active .order-live__state { color: #37815f; }
+.order-live :deep(.el-input-number) { width: 78px; }
+.order-live__unit { margin-left: -3px; }
+.order-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #edf0f4;
+  border-bottom: 1px solid #e6ebf1;
+  background: #fafbfd;
+}
+.order-filter { width: 130px; }
+.order-filter--game { width: 166px; }
+.order-filter--delivery { width: 148px; }
+.order-search { width: min(260px, 100%); margin-left: auto; }
+.order-table-viewport { min-height: 0; flex: 1; overflow: hidden; }
+.order-table { width: 100%; border-right: 0; border-left: 0; }
+.order-table :deep(.el-table__header th.el-table__cell) {
+  height: 40px;
+  color: #66778c;
+  background: #f7f9fc;
+  font-size: 12px;
+  font-weight: 600;
+}
+.order-table :deep(.el-table__body td.el-table__cell) { padding: 7px 0; }
+.order-table :deep(td.order-action-cell .cell),
+.order-table :deep(th.order-action-header .cell) { padding-right: 6px; padding-left: 6px; }
+.order-table :deep(.el-table__row) { cursor: pointer; transition: background-color .18s ease; }
+.order-table :deep(.order-row--danger > td:first-child) { box-shadow: inset 3px 0 0 #d84a4a; }
+.order-table :deep(.order-row--warning > td:first-child) { box-shadow: inset 3px 0 0 #d69a2d; }
+.order-table :deep(.order-row--active > td:first-child) { box-shadow: inset 3px 0 0 #3f7fd5; }
+.order-table :deep(.order-row--success > td:first-child) { box-shadow: inset 3px 0 0 #2b9669; }
+.order-identity,
+.order-product,
+.order-buyer,
+.order-price { display: grid; min-width: 0; gap: 3px; }
+.order-identity__number {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  color: #2f6fb9;
+  border: 0;
+  background: transparent;
+  font: 650 13px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.order-identity__number:hover { color: #409eff; text-decoration: underline; text-underline-offset: 3px; }
+.order-identity__number:focus-visible { outline: 2px solid #91caff; outline-offset: 3px; border-radius: 2px; }
+.order-identity__meta { display: flex; min-width: 0; align-items: center; gap: 5px; color: #8b98a8; font-size: 10px; white-space: nowrap; }
+.order-identity__meta span { padding-right: 5px; border-right: 1px solid #dfe5ec; }
+.order-identity__meta time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.order-product strong,
+.order-buyer strong { overflow: hidden; color: #30445c; font-size: 12px; line-height: 1.35; text-overflow: ellipsis; }
+.order-product strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
+.order-buyer strong { white-space: nowrap; }
+.order-product__meta { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.order-product__meta span { overflow: hidden; color: #8895a5; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.order-buyer span { overflow: hidden; color: #8c98a8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.order-price { justify-items: end; }
+.order-price strong { color: #30445c; font-size: 14px; font-variant-numeric: tabular-nums; }
+.order-price span { color: #939eac; font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.order-progress { display: grid; width: 100%; max-width: 280px; min-width: 0; gap: 3px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; }
+.order-progress__main { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.order-progress__main i { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent); }
+.order-progress__main strong { overflow: hidden; font-size: 11px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.order-progress__meta { display: flex; gap: 7px; padding-left: 13px; color: #748195; font-size: 9px; line-height: 1.2; }
+.order-progress.tone-danger { color: #b93838; border-color: #f1caca; background: #fff1f0; }
+.order-progress.tone-warning { color: #a86d12; border-color: #efd9ae; background: #fff8e8; }
+.order-progress.tone-active { color: #2f6fbe; border-color: #c8dcf5; background: #edf5ff; }
+.order-progress.tone-success { color: #247a56; border-color: #c8e5d7; background: #edf8f2; }
+.order-progress.tone-neutral { color: #697586; border-color: #dde3ea; background: #f5f7fa; }
+.order-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap; }
+.order-row-actions :deep(.el-button) { margin-left: 0; padding-right: 1px; padding-left: 1px; }
+.order-row-actions :deep(.order-overflow-action) { width: 20px; padding: 0; }
+.order-row-actions .el-dropdown { vertical-align: middle; }
+.pagination-wrap { display: flex; justify-content: center; padding: 10px 16px; border-top: 1px solid #edf0f4; }
+@keyframes order-live-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(50, 184, 117, .08); }
+  50% { box-shadow: 0 0 0 6px rgba(50, 184, 117, .14); }
+}
 .detail-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
 .order-action-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 .total-line { text-align: right; font-weight: 600; font-size: 15px; margin-top: 12px; color: #e6a23c; }
@@ -1426,8 +1692,31 @@ onBeforeUnmount(clearAutoRefreshTimer)
 .order-log-meta span { color: #606266; font-family: Consolas, "SFMono-Regular", monospace; }
 .order-log-payload { margin-top: 8px; }
 .order-log-payload pre { max-height: 220px; margin: 0; padding: 10px; overflow: auto; color: #d6deeb; border-radius: 5px; background: #17212b; font: 12px/1.55 Consolas, "SFMono-Regular", monospace; }
+@media (max-width: 900px) {
+  .order-directory__header { align-items: flex-start; flex-direction: column; }
+  .order-live { align-self: stretch; width: fit-content; }
+  .order-filters { flex-wrap: wrap; }
+  .order-search { flex: 1 1 240px; margin-left: 0; }
+}
 @media (max-width: 760px) {
+  .order-directory__header { padding: 18px 16px 15px; }
+  .order-live { width: 100%; box-sizing: border-box; flex-wrap: wrap; }
+  .order-live__state { margin-right: auto; }
+  .order-filters { display: grid; grid-template-columns: 1fr 1fr; padding: 12px 16px; }
+  .order-filter,
+  .order-filter--game,
+  .order-filter--delivery,
+  .order-search { width: 100%; }
+  .order-search { grid-column: 1 / -1; }
   .chat-target, .chat-dialog-footer { align-items: flex-start; flex-direction: column; }
   .chat-target-meta { align-items: flex-start; flex-direction: column; gap: 4px; }
+}
+@media (max-width: 430px) {
+  .order-filters { grid-template-columns: 1fr; }
+  .order-search { grid-column: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .order-live.is-active .order-live__dot { animation: none; }
+  .order-table :deep(.el-table__row) { transition: none; }
 }
 </style>

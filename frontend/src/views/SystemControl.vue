@@ -276,7 +276,10 @@ onMounted(loadControls)
   --green: #16a34a;
   --amber: #d97706;
   max-width: 1040px;
+  height: 100%;
   margin: 0 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   color: var(--ink);
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
 }

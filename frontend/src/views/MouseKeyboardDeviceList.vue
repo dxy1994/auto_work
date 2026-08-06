@@ -1018,7 +1018,7 @@ onBeforeUnmount(() => {
   --live: #1f9d68;
   --warn: #d88a18;
   display: flex;
-  height: calc(100vh - 40px);
+  height: 100%;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;

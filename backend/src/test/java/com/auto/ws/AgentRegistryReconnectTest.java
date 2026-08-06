@@ -6,6 +6,7 @@ import com.auto.service.WirelessHidDeviceManager;
 import com.auto.service.WirelessHidDeviceManager.WorkerBinding;
 import com.auto.trade.MachineSessionRestored;
 import com.auto.trade.OrderMonitorRestored;
+import com.auto.trade.OrderMonitorStopped;
 import com.auto.trade.TradeOffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -176,6 +177,47 @@ class AgentRegistryReconnectTest {
                         && restored.machineId() == 7
                         && restored.accountId() == 4
                         && "order-new-4".equals(restored.taskId())));
+    }
+
+    @Test
+    void firstEmptyHeartbeatKeepsNewDispatchDuringConfirmationGrace() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        registry.bindAgent(7, session);
+        registry.dispatchOrderCheck(
+                7, "order-new-4", "https://example.com/login",
+                "seller", "password", "form", Map.of(), 3, 4);
+
+        registry.updateHeartbeat(7, Map.of("runtime", Map.of(
+                "role", "monitor",
+                "active_tasks", List.of())));
+
+        AgentRegistry.TaskInfo task = registry.getAccountTask(4);
+        assertNotNull(task);
+        assertEquals("order-new-4", task.taskId);
+        assertFalse(task.confirmedByWorker);
+    }
+
+    @Test
+    void duplicateTaskRejectionDoesNotPublishStoppedAlert() throws Exception {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        registry.bindAgent(7, session);
+        registry.dispatchOrderCheck(
+                7, "order-duplicate-4", "https://example.com/login",
+                "seller", "password", "form", Map.of(), 3, 4);
+
+        registry.handleTaskResult(Map.of(
+                "task_id", "order-duplicate-4",
+                "account_id", 4,
+                "result", Map.of(
+                        "status", "failed",
+                        "message", "该账号已有任务在运行")), session);
+
+        verify(eventPublisher, never()).publishEvent(argThat((Object event) ->
+                event instanceof OrderMonitorStopped));
     }
 
     @Test

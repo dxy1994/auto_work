@@ -483,8 +483,8 @@ onMounted(fetchList)
   --danger: #d84a4a;
   --warning: #c47b18;
   --success: #168778;
-  height: calc(100vh - 40px);
-  min-height: 640px;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;

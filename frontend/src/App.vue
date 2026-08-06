@@ -127,13 +127,17 @@
           待处理提醒
         </el-button>
       </el-badge>
-      <PageUsageGuide
-        v-if="currentPageGuide"
-        :key="route.path"
-        :title="String(route.meta.title || '当前页面')"
-        :guide="currentPageGuide"
-      />
-      <router-view />
+      <div class="page-stage">
+        <PageUsageGuide
+          v-if="currentPageGuide"
+          :key="route.path"
+          :title="String(route.meta.title || '当前页面')"
+          :guide="currentPageGuide"
+        />
+        <div class="page-stage__view">
+          <router-view />
+        </div>
+      </div>
     </el-main>
   </el-container>
 
@@ -386,9 +390,9 @@ onBeforeUnmount(() => manualAlerts.stop())
 <style>
 /* 全局样式 */
 *, *::before, *::after { box-sizing: border-box; }
-html, body, #app { height: 100%; margin: 0; padding: 0; }
+html, body, #app { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
 
-.app-wrapper { height: 100vh; }
+.app-wrapper { width: 100%; height: 100dvh; min-height: 0; overflow: hidden; }
 
 .sidebar {
   background-color: #001529;
@@ -410,10 +414,57 @@ html, body, #app { height: 100%; margin: 0; padding: 0; }
 .sidebar-menu { border-right: none; flex: 1; overflow-y: auto; }
 
 .main-content {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
   background: #f0f2f5;
   padding: 20px;
-  overflow-y: auto;
+  overflow: hidden;
   position: relative;
+}
+
+.page-stage {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+.page-stage > .page-usage-guide { flex: 0 0 auto; }
+.page-stage > .page-usage-guide[open] { max-height: 48%; overflow-y: auto; overscroll-behavior: contain; }
+.page-stage__view {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.page-stage__view > .page-container,
+.page-stage__view > .alert-log-page,
+.page-stage__view > .sales-products-page,
+.page-stage__view > .distribution-page,
+.page-stage__view > .whid-console {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.page-stage__view > .distribution-page,
+.page-stage__view > .control-page {
+  max-height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.page-stage__view > .control-page { height: 100%; }
+.page-stage__view .pagination-wrap { flex: 0 0 auto; }
+
+@media (max-width: 1180px) {
+  .page-stage__view {
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
 }
 
 .global-alert-trigger {
