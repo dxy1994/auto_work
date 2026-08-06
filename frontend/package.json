@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test:unit": "node --test src/utils/softwareRelease.test.js",
+    "test:unit": "node --test src/utils/softwareRelease.test.js src/utils/manualAlertSpeech.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

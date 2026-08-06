@@ -29,7 +29,7 @@
             <el-icon><Grid /></el-icon>
             <span>交易平台</span>
           </el-menu-item>
-          <el-menu-item index="/platform-accounts">
+          <el-menu-item index="/platform-accounts" class="feature-menu feature-platform">
             <el-icon><User /></el-icon>
             <span>平台账号</span>
           </el-menu-item>
@@ -40,7 +40,7 @@
             <el-icon><Trophy /></el-icon>
             <span>游戏配置</span>
           </template>
-          <el-menu-item index="/games">
+          <el-menu-item index="/games" class="feature-menu feature-game">
             <el-icon><Trophy /></el-icon>
             <span>游戏管理</span>
           </el-menu-item>
@@ -59,11 +59,11 @@
             <el-icon><Monitor /></el-icon>
             <span>机器管理</span>
           </template>
-          <el-menu-item index="/machines">
+          <el-menu-item index="/machines" class="feature-menu feature-machine">
             <el-icon><Monitor /></el-icon>
             <span>机器列表</span>
           </el-menu-item>
-          <el-menu-item index="/game-accounts">
+          <el-menu-item index="/game-accounts" class="feature-menu feature-account">
             <el-icon><Avatar /></el-icon>
             <span>游戏账号</span>
           </el-menu-item>
@@ -434,6 +434,58 @@ html, body, #app { width: 100%; height: 100%; margin: 0; padding: 0; overflow: h
   border-radius: 50%;
   background: #59d6a1;
   box-shadow: 0 0 8px rgba(89, 214, 161, .85);
+}
+
+/* 关键业务入口使用固定语义色，便于值守人员快速定位。 */
+.feature-platform {
+  --menu-accent: #45d7ff;
+  --menu-surface: rgba(69, 215, 255, .09);
+  --menu-active: rgba(45, 167, 209, .26);
+}
+.feature-game {
+  --menu-accent: #ffc45c;
+  --menu-surface: rgba(255, 196, 92, .09);
+  --menu-active: rgba(211, 146, 36, .25);
+}
+.feature-machine {
+  --menu-accent: #5ce0a3;
+  --menu-surface: rgba(92, 224, 163, .09);
+  --menu-active: rgba(43, 174, 117, .24);
+}
+.feature-account {
+  --menu-accent: #b39aff;
+  --menu-surface: rgba(179, 154, 255, .09);
+  --menu-active: rgba(126, 92, 225, .25);
+}
+.sidebar-menu .feature-menu .el-icon {
+  color: var(--menu-accent);
+  filter: drop-shadow(0 0 5px var(--menu-accent));
+}
+.sidebar-menu .feature-menu {
+  position: relative;
+  color: var(--menu-accent) !important;
+  background: linear-gradient(90deg, var(--menu-surface), transparent 86%);
+}
+.sidebar-menu .feature-menu::after {
+  position: absolute;
+  top: 50%;
+  right: 15px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--menu-accent);
+  box-shadow: 0 0 8px var(--menu-accent);
+  content: '';
+  transform: translateY(-50%);
+}
+.sidebar-menu .feature-menu:hover {
+  color: #fff !important;
+  background: linear-gradient(90deg, var(--menu-active), rgba(255, 255, 255, .025) 90%) !important;
+}
+.sidebar-menu .feature-menu.is-active {
+  color: #fff !important;
+  background: linear-gradient(90deg, var(--menu-active), rgba(64, 158, 255, .08) 92%) !important;
+  box-shadow: inset 3px 0 0 var(--menu-accent);
 }
 
 .main-content {

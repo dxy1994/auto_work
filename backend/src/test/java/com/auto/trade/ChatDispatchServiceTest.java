@@ -304,6 +304,69 @@ class ChatDispatchServiceTest {
     }
 
     @Test
+    void barotemDeliveryConfirmationUsesTheResolvedChatReceiptRequest() {
+        GameItemOrder order = barotemOrder();
+        order.setDeliveryStatus("wait_web_confirm");
+        order.setStatus("processing");
+        order.setGameTradeScreenshot(
+                "/uploads/trade-screenshots/2026/08/06/barotem-proof.png");
+        PlatformAccount account = new PlatformAccount();
+        account.setId(7);
+        account.setWebsiteId(3);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(9);
+        binding.setAccountId(7);
+
+        when(orderService.getById(44)).thenReturn(order);
+        when(accountService.getById(7)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(7))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(9)).thenReturn(9);
+        when(platformService.getById(3)).thenReturn(barotem());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap(), anyMap()))
+                .thenReturn(true);
+
+        service.dispatchDeliveryConfirmation(44);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> action =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap(), action.capture());
+
+        assertTrue(action.getValue().get("detail_url").toString().contains(
+                "/mypage/sellview/4"));
+        assertTrue(action.getValue().get("detail_url").toString().contains(
+                "itemtype=money"));
+        assertEquals(
+                "barotem_order_list",
+                action.getValue().get("conversation_resolver"));
+        assertEquals(
+                "178583752411285073-61",
+                action.getValue().get("order_no"));
+        assertEquals("#state5", action.getValue().get("open_confirm_selector"));
+        assertEquals(
+                "#commonAlert .common_alert_check",
+                action.getValue().get("confirm_selector"));
+        assertEquals(
+                "#commonAlert .common_alert_wrap h2",
+                action.getValue().get("success_selector"));
+        assertEquals(
+                List.of("구매자에게 인수확인 요청하였습니다."),
+                action.getValue().get("success_texts"));
+        assertEquals(
+                ".chat_info_process > div",
+                action.getValue().get("stage_selector"));
+        assertEquals("on", action.getValue().get("stage_active_class"));
+        assertEquals(2, action.getValue().get("pending_stage"));
+        assertEquals(true, action.getValue().get("success_before_reload"));
+    }
+
+    @Test
     void itemBayDeliveryConfirmationUsesSellerOrderDetailPage() {
         GameItemOrder order = itemBayOrder();
         order.setDeliveryStatus("wait_web_confirm");

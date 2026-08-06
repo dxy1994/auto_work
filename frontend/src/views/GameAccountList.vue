@@ -139,13 +139,15 @@
           </div>
 
           <div v-if="selectedRegions.length" class="region-access-grid">
-            <article v-for="(region, index) in selectedRegions" :key="region.id" class="region-access-card">
-              <span class="region-sequence">{{ String(index + 1).padStart(2, '0') }}</span>
+            <article v-for="region in selectedRegions" :key="region.id" class="region-access-card">
               <div class="region-icon"><el-icon><Location /></el-icon></div>
-              <div>
+              <div class="region-access-copy">
                 <strong>{{ region.name }}</strong>
                 <small>大区 ID #{{ region.id }}</small>
               </div>
+              <el-button class="region-script-link" link type="warning" @click="openRegionScriptManager(region)">
+                <el-icon><ChatDotRound /></el-icon>大区话术
+              </el-button>
             </article>
           </div>
           <el-empty v-else description="尚未关联大区">
@@ -242,6 +244,14 @@
           </div>
         </div>
 
+        <div class="region-script-reminder">
+          <el-icon><Warning /></el-icon>
+          <div>
+            <strong>关联后请检查大区话术</strong>
+            <span>大区专属招呼、促单或售后内容不会随账号关联自动生成；保存后可从账号详情直接进入配置。</span>
+          </div>
+        </div>
+
         <div class="region-picker-heading">
           <div>
             <strong>选择可用大区</strong>
@@ -290,11 +300,14 @@
 
 <script setup>
 import { ref, reactive, onMounted, computed, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElNotification } from 'element-plus'
 import {
   getAllGames, getAllRegions,
   getGameAccounts, createGameAccount, updateGameAccount, deleteGameAccount,
 } from '../api'
+
+const router = useRouter()
 
 const gameList = ref([])
 const regionList = ref([])
@@ -343,6 +356,30 @@ const extraFieldEntries = computed(() => Object.entries(currentRow.value?.extra_
   key,
   value: value === null || value === undefined || value === '' ? '-' : String(value),
 })))
+
+function openRegionScriptManager(region) {
+  if (!currentRow.value?.game_id || !region?.id) return
+  router.push({
+    path: '/games',
+    query: {
+      script_game_id: currentRow.value.game_id,
+      script_region_id: region.id,
+    },
+  })
+}
+
+function remindRegionScripts(regionIds) {
+  const names = regionIds
+    .map(id => regionNameMap.value[id] || linkRegionList.value.find(region => region.id === id)?.name || `大区 #${id}`)
+    .join('、')
+  ElNotification({
+    title: '请继续完善大区话术',
+    message: `${names} 已完成关联。请在账号详情点击“大区话术”，检查或补充该大区的专属内容。`,
+    type: 'warning',
+    duration: 7000,
+    position: 'bottom-right',
+  })
+}
 
 async function fetchList() {
   loading.value = true
@@ -440,9 +477,16 @@ async function handleSubmit() {
       delete data.region_ids
       if (!data.password) delete data.password
     }
-    if (isEdit.value) { await updateGameAccount(editId.value, data); ElMessage.success('更新成功') }
-    else { await createGameAccount(data); ElMessage.success('添加成功') }
-    dialogVisible.value = false; fetchList()
+    if (isEdit.value) {
+      await updateGameAccount(editId.value, data)
+      ElMessage.success('更新成功')
+    } else {
+      await createGameAccount(data)
+      ElMessage.success('添加成功')
+      if (data.region_ids?.length) remindRegionScripts(data.region_ids)
+    }
+    dialogVisible.value = false
+    fetchList()
   } catch (e) { ElMessage.error(e.message) } finally { submitting.value = false }
 }
 
@@ -496,10 +540,13 @@ async function saveLinkedRegions() {
   }
   regionSubmitting.value = true
   try {
+    const previousIds = new Set(regionAccount.value.region_ids || [])
+    const addedRegionIds = linkedRegionIds.value.filter(id => !previousIds.has(id))
     await updateGameAccount(regionAccount.value.id, { region_ids: linkedRegionIds.value })
     ElMessage.success('大区关联已更新')
     regionDialogVisible.value = false
-    fetchList()
+    await fetchList()
+    if (addedRegionIds.length) remindRegionScripts(addedRegionIds)
   } catch (e) { ElMessage.error(e.message) } finally { regionSubmitting.value = false }
 }
 
@@ -885,12 +932,12 @@ onMounted(async () => {
   gap: 10px;
 }
 .region-access-card {
-  position: relative;
-  display: flex;
+  display: grid;
   min-width: 0;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   align-items: center;
   gap: 11px;
-  padding: 13px 40px 13px 13px;
+  padding: 12px 13px;
   border: 1px solid #e1e3eb;
   border-radius: 8px;
   background: #fbfbfd;
@@ -898,13 +945,6 @@ onMounted(async () => {
 .region-access-card:hover {
   border-color: #c9c4e8;
   background: #f8f7ff;
-}
-.region-sequence {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  color: #c1bdde;
-  font: 700 10px/1 Consolas, "SFMono-Regular", monospace;
 }
 .region-icon {
   width: 34px;
@@ -918,7 +958,7 @@ onMounted(async () => {
   color: #675bb0;
   font-size: 17px;
 }
-.region-access-card > div:last-child { min-width: 0; }
+.region-access-copy { min-width: 0; }
 .region-access-card strong,
 .region-access-card small {
   display: block;
@@ -935,6 +975,13 @@ onMounted(async () => {
   color: #929aa5;
   font: 10px/1.3 Consolas, "SFMono-Regular", monospace;
 }
+.region-script-link {
+  margin-left: 0 !important;
+  padding: 5px 3px !important;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.region-script-link .el-icon { margin-right: 3px; }
 .extra-heading { margin-top: 24px; }
 .extra-field-grid {
   display: grid;
@@ -989,6 +1036,27 @@ onMounted(async () => {
   align-items: center;
   gap: 11px;
 }
+.region-script-reminder {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #f0d7a9;
+  border-radius: 7px;
+  color: #a66515;
+  background: #fff9ec;
+}
+.region-script-reminder > .el-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  font-size: 16px;
+}
+.region-script-reminder div { min-width: 0; }
+.region-script-reminder strong,
+.region-script-reminder span { display: block; }
+.region-script-reminder strong { font-size: 12px; }
+.region-script-reminder span { margin-top: 3px; color: #9a784a; font-size: 10px; line-height: 1.5; }
 .region-picker-icon {
   width: 36px;
   height: 36px;

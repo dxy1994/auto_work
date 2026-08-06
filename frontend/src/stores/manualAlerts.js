@@ -7,11 +7,16 @@ import {
   getSystemAlerts,
   reportSystemAlertEvent as sendSystemAlertEvent,
 } from '../api'
+import {
+  buildManualAlertSpeech,
+  compareManualAlerts,
+  manualAlertReminderInterval,
+} from '../utils/manualAlertSpeech'
 
 const POLL_INTERVAL_MS = 5000
-const REMINDER_INTERVAL_MS = 20000
 const VOICE_CONSENT_KEY = 'auto_work_voice_alert_consent_v1'
 const VOICE_CONSENT_GRANTED = 'granted'
+const SPEECH_START_TIMEOUT_MS = 3000
 
 export const useManualAlertStore = defineStore('manual-alerts', () => {
   const items = ref([])
@@ -31,6 +36,9 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
   let requestPending = false
   let lastSignature = ''
   let lastSpokenAt = 0
+  let nextBuyerReviewIndex = 0
+  let speechStartTimer = null
+  let activeUtterance = null
   let started = false
   const presentedAlertIds = new Set()
   const presentingAlertIds = new Set()
@@ -52,12 +60,14 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     )).join('|')}`
   }
 
-  function reminderText() {
-    if (!hasAlerts.value) return ''
-    return String(items.value[0]?.title || '异常提醒').trim()
+  function nextReminder() {
+    return buildManualAlertSpeech(items.value, nextBuyerReviewIndex)
   }
 
   function cancelSpeech() {
+    window.clearTimeout(speechStartTimer)
+    speechStartTimer = null
+    activeUtterance = null
     if (speechSupported.value) window.speechSynthesis.cancel()
   }
 
@@ -90,6 +100,8 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     if (synth.speaking || synth.pending) return false
 
     const utterance = new window.SpeechSynthesisUtterance(text)
+    activeUtterance = utterance
+    let startedSpeaking = false
     utterance.lang = 'zh-CN'
     utterance.rate = 0.92
     utterance.pitch = 1
@@ -98,13 +110,20 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     const chineseVoice = voices.find(voice => /^zh(-|_)/i.test(voice.lang))
     if (chineseVoice) utterance.voice = chineseVoice
     utterance.onstart = () => {
+      startedSpeaking = true
+      window.clearTimeout(speechStartTimer)
+      speechStartTimer = null
       needsInteraction.value = false
       reportSystemEvent(trackedItem, 'voice_started', '中控开始语音播报告警')
     }
     utterance.onend = () => {
+      activeUtterance = null
       reportSystemEvent(trackedItem, 'voice_completed', '中控语音播报完成')
     }
     utterance.onerror = (event) => {
+      window.clearTimeout(speechStartTimer)
+      speechStartTimer = null
+      activeUtterance = null
       if (!['canceled', 'interrupted'].includes(event.error)) {
         needsInteraction.value = true
       }
@@ -115,6 +134,16 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
       )
     }
     synth.speak(utterance)
+    // 部分浏览器在未获得用户交互权限时不会触发 error，只会静默丢弃 speak。
+    // 超时后将状态显式反馈到页面，并在下一次点击或按键时立即重试。
+    window.clearTimeout(speechStartTimer)
+    speechStartTimer = window.setTimeout(() => {
+      if (!startedSpeaking && !synth.speaking) {
+        needsInteraction.value = true
+        activeUtterance = null
+      }
+      speechStartTimer = null
+    }, SPEECH_START_TIMEOUT_MS)
     if (markReminder) lastSpokenAt = Date.now()
     return true
   }
@@ -134,10 +163,13 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     voiceConsentRequired.value = false
     needsInteraction.value = false
     cancelSpeech()
+    const reminder = nextReminder()
     const confirmation = hasAlerts.value
-      ? reminderText()
+      ? reminder.text
       : '语音提醒已开启。出现需要人工处理的异常时，系统将持续播报。'
-    return speakText(confirmation, hasAlerts.value, items.value[0] || null)
+    const accepted = speakText(confirmation, hasAlerts.value, reminder.item)
+    if (accepted && reminder.kind === 'buyer_review') nextBuyerReviewIndex += 1
+    return accepted
   }
 
   function loadVoiceConsent() {
@@ -159,8 +191,12 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     }
     if (!hasAlerts.value || !speechSupported.value) return false
     const now = Date.now()
-    if (!force && now - lastSpokenAt < REMINDER_INTERVAL_MS) return false
-    return speakText(reminderText(), true, items.value[0] || null)
+    const interval = manualAlertReminderInterval(items.value)
+    if (!force && now - lastSpokenAt < interval) return false
+    const reminder = nextReminder()
+    const accepted = speakText(reminder.text, true, reminder.item)
+    if (accepted && reminder.kind === 'buyer_review') nextBuyerReviewIndex += 1
+    return accepted
   }
 
   async function refresh() {
@@ -172,11 +208,15 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
         getManualAlerts(),
         getSystemAlerts(),
       ])
+      const previousItemIds = new Set(items.value.map(item => item.id))
       const nextItems = [
         ...(Array.isArray(orderResponse.items) ? orderResponse.items : []),
         ...(Array.isArray(systemResponse.items) ? systemResponse.items : []),
-      ].sort((a, b) => String(a.occurred_at || '').localeCompare(String(b.occurred_at || '')))
+      ].sort(compareManualAlerts)
       const nextTotal = nextItems.length
+      const hasNewBuyerReview = nextItems.some(item => (
+        item.entity_type === 'buyer_review' && !previousItemIds.has(item.id)
+      ))
       const nextSignature = signatureOf(nextItems, nextTotal)
       const changed = nextSignature !== lastSignature
       items.value = nextItems
@@ -194,9 +234,15 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
       if (!nextTotal) {
         if (!voiceConsentRequired.value) cancelSpeech()
         lastSpokenAt = 0
+        nextBuyerReviewIndex = 0
         needsInteraction.value = false
-      } else if (changed) {
+      } else if (hasNewBuyerReview) {
         speak(true)
+      } else if (changed && !currentBuyerReview.value) {
+        speak(true)
+      } else {
+        // 系统告警发生变化时不抢占或加速 OCR 播报，OCR 仍按自己的高频节奏轮换。
+        speak(false)
       }
     } catch (error) {
       // 轮询失败不清空上次异常，防止后端短暂断线导致语音被静默。

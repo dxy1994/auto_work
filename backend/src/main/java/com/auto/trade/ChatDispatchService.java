@@ -318,6 +318,7 @@ public class ChatDispatchService {
                 config, "blocking_popup_close_selector");
         List<String> successTexts = configStringList(config, "success_texts");
         String stageSelector = configString(config, "stage_selector");
+        String stageActiveClass = configString(config, "stage_active_class");
         int pendingStage = configInt(config, "pending_stage", 0);
         boolean singleClick = configBoolean(config, "single_click", false);
 
@@ -367,6 +368,36 @@ public class ChatDispatchService {
             singleClick = configBoolean(config, "single_click", true);
         }
 
+        if ("barotem".equals(platformCode)) {
+            if (urlTemplate.isBlank()) {
+                urlTemplate = BAROTEM_ORDER_LIST_URL_TEMPLATE;
+            }
+            if (openConfirmSelector.isBlank()) {
+                openConfirmSelector = "#state5";
+            }
+            if (confirmSelector.isBlank()) {
+                confirmSelector = "#commonAlert .common_alert_check";
+            }
+            if (readySelector.isBlank()) {
+                readySelector = ".chat_info_process";
+            }
+            if (successSelector.isBlank()) {
+                successSelector = "#commonAlert .common_alert_wrap h2";
+            }
+            if (successTexts.isEmpty()) {
+                successTexts = List.of("구매자에게 인수확인 요청하였습니다.");
+            }
+            if (stageSelector.isBlank()) {
+                stageSelector = ".chat_info_process > div";
+            }
+            if (stageActiveClass.isBlank()) {
+                stageActiveClass = "on";
+            }
+            if (pendingStage <= 0) {
+                pendingStage = 2;
+            }
+        }
+
         String orderNo = normalizeOrderNo(order.getSourceOrderNo());
         if (orderNo.isBlank()) {
             throw ApiException.badRequest("订单缺少平台订单号，无法确认商品交付");
@@ -393,7 +424,12 @@ public class ChatDispatchService {
         String encodedOrderNo = URLEncoder.encode(orderNo, StandardCharsets.UTF_8);
         String detailUrl = urlTemplate
                 .replace("{order_no}", encodedOrderNo)
-                .replace("{source_order_no}", encodedOrderNo);
+                .replace("{source_order_no}", encodedOrderNo)
+                .replace(
+                        "{item_type}",
+                        URLEncoder.encode(
+                                barotemItemType(order),
+                                StandardCharsets.UTF_8));
         validateTargetUrl(detailUrl, platform);
 
         Map<String, Object> action = new LinkedHashMap<>();
@@ -430,6 +466,14 @@ public class ChatDispatchService {
         if (!stageSelector.isBlank()) {
             action.put("stage_selector", stageSelector);
             action.put("pending_stage", pendingStage);
+            if (!stageActiveClass.isBlank()) {
+                action.put("stage_active_class", stageActiveClass);
+            }
+        }
+        if ("barotem".equals(platformCode)) {
+            action.put("conversation_resolver", "barotem_order_list");
+            action.put("order_no", orderNo);
+            action.put("success_before_reload", true);
         }
         return action;
     }

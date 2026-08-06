@@ -481,8 +481,12 @@
 
 <script setup>
 import { computed, ref, reactive, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getGames, createGame, updateGame, deleteGame, getGameRegions, createRegion, updateRegion, deleteRegion, getGameScripts, getAllGameScripts, createGameScript, updateGameScript, deleteGameScript, getRegionScripts, createRegionScript, updateRegionScript, deleteRegionScript, uploadFile } from '../api'
+import { getGames, getGame, createGame, updateGame, deleteGame, getGameRegions, createRegion, updateRegion, deleteRegion, getGameScripts, getAllGameScripts, createGameScript, updateGameScript, deleteGameScript, getRegionScripts, createRegionScript, updateRegionScript, deleteRegionScript, uploadFile } from '../api'
+
+const route = useRoute()
+const router = useRouter()
 
 // ── 游戏列表 ──
 const list = ref([])
@@ -889,7 +893,46 @@ function copyRegionScript(row) {
   regionScriptIsEdit.value = false
 }
 
-onMounted(fetchList)
+function positiveRouteId(value) {
+  const raw = Array.isArray(value) ? value[0] : value
+  const id = Number(raw)
+  return Number.isInteger(id) && id > 0 ? id : null
+}
+
+async function openRegionScriptsFromRoute() {
+  const gameId = positiveRouteId(route.query.script_game_id)
+  const regionId = positiveRouteId(route.query.script_region_id)
+  if (!gameId || !regionId) return
+
+  try {
+    const game = list.value.find(item => Number(item.id) === gameId) || await getGame(gameId)
+    scriptGame.value = game
+    currentGame.value = game
+    scriptActiveTab.value = 'region'
+    scriptRegionId.value = regionId
+    regionScriptList.value = []
+    scriptDrawerVisible.value = true
+    await Promise.all([fetchRegions(game), fetchGameScripts()])
+    const targetRegion = regionList.value.find(region => Number(region.id) === regionId)
+    if (!targetRegion) {
+      ElMessage.warning('该大区已不存在或不属于当前游戏')
+      return
+    }
+    await fetchRegionScripts()
+  } catch (e) {
+    ElMessage.error('打开大区话术失败: ' + e.message)
+  } finally {
+    const nextQuery = { ...route.query }
+    delete nextQuery.script_game_id
+    delete nextQuery.script_region_id
+    router.replace({ query: nextQuery })
+  }
+}
+
+onMounted(async () => {
+  await fetchList()
+  await openRegionScriptsFromRoute()
+})
 </script>
 
 <style scoped>

@@ -759,6 +759,152 @@ class ChatCommandTest(unittest.TestCase):
         self.assertIn("click:#trade_btn", events)
         self.assertIn("click:#delivery-confirm", events)
 
+    def test_barotem_delivery_confirmation_reopens_chat_and_requests_receipt(self):
+        events = []
+
+        class StageLocator:
+            def __init__(self, page, index=None):
+                self.page = page
+                self.index = index
+
+            @property
+            def first(self):
+                return StageLocator(self.page, 0)
+
+            async def wait_for(self, **_kwargs):
+                return None
+
+            async def count(self):
+                return 3
+
+            def nth(self, index):
+                return StageLocator(self.page, index)
+
+            async def get_attribute(self, name):
+                if name == "class":
+                    return "on" if self.index == 1 else ""
+                return None
+
+            async def inner_text(self):
+                return ("거래 대기", "결제 완료", "거래 완료")[self.index]
+
+        class ActionLocator:
+            def __init__(self, selector, page):
+                self.selector = selector
+                self.page = page
+
+            @property
+            def first(self):
+                return self
+
+            async def wait_for(self, **_kwargs):
+                return None
+
+            async def click(self, **_kwargs):
+                events.append(f"click:{self.selector}")
+                if self.selector == "#commonAlert .common_alert_check":
+                    self.page.status_text = (
+                        "구매자에게 인수확인 요청하였습니다."
+                    )
+
+            async def count(self):
+                return 1
+
+            async def is_visible(self):
+                return True
+
+            async def inner_text(self):
+                return self.page.status_text
+
+        class FakePage:
+            def __init__(self):
+                self.status_text = ""
+
+            async def wait_for_timeout(self, milliseconds):
+                events.append(f"wait:{milliseconds}")
+
+            def locator(self, selector):
+                if selector == ".chat_info_process > div":
+                    return StageLocator(self)
+                return ActionLocator(selector, self)
+
+            def on(self, _event, _callback):
+                return None
+
+            async def close(self):
+                events.append("close")
+
+        class FakeSession:
+            def __init__(self):
+                self.page = FakePage()
+
+            def begin_transient_operation(self):
+                return True
+
+            async def new_page(self):
+                return self.page
+
+            def track_transient_page(self, _page):
+                return None
+
+            def untrack_transient_page(self, _page):
+                return None
+
+            def end_transient_operation(self):
+                return None
+
+        async def resolve_chat(page, target, session=None):
+            self.assertIsNotNone(session)
+            self.assertEqual(
+                "178602140511313632-34",
+                target["order_no"],
+            )
+            events.append("resolve-chat")
+            return "https://www.barotem.com/chat/view?jangNum=9187651"
+
+        with patch.object(
+                sender, "_resolve_barotem_conversation", resolve_chat):
+            result = asyncio.run(sender._do_confirm_delivery(
+                FakeSession(),
+                {
+                    "type": "confirm_delivery",
+                    "detail_url": (
+                        "https://www.barotem.com/mypage/sellview/4"
+                        "?mode=4&itemtype=money&page=1&limit=500"
+                    ),
+                    "conversation_resolver": "barotem_order_list",
+                    "order_no": "178602140511313632-34",
+                    "ready_selector": ".chat_info_process",
+                    "open_confirm_selector": "#state5",
+                    "confirm_selector": (
+                        "#commonAlert .common_alert_check"
+                    ),
+                    "success_selector": (
+                        "#commonAlert .common_alert_wrap h2"
+                    ),
+                    "success_texts": [
+                        "구매자에게 인수확인 요청하였습니다.",
+                    ],
+                    "success_before_reload": True,
+                    "stage_selector": ".chat_info_process > div",
+                    "stage_active_class": "on",
+                    "pending_stage": 2,
+                },
+            ))
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["already_completed"])
+        self.assertEqual(
+            "구매자에게 인수확인 요청하였습니다.",
+            result["website_status"],
+        )
+        self.assertEqual(1, events.count("resolve-chat"))
+        self.assertIn("click:#state5", events)
+        self.assertIn(
+            "click:#commonAlert .common_alert_check",
+            events,
+        )
+
     def test_itembay_delivery_confirmation_uses_seller_detail_button(self):
         events = []
         delivery_selector = (

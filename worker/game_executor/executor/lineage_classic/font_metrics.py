@@ -90,12 +90,26 @@ ENGLISH_OCR_HIGH_RISK_EQUIVALENTS = MappingProxyType({
     "z": frozenset({"z", ":", ";"}),
 })
 
-# 1280x960 的韩文点阵字在 OCR 模型中存在少量稳定的视觉混淆。规则只在订单
-# 对应位置明确期望左侧音节时单向启用，不会改写整段 OCR 文本。
+# 用户确认的常见韩文字形混淆按组双向匹配。规则仍只在订单姓名的对应位置
+# 生效，不会先对 OCR 文本做全局替换。
+KOREAN_OCR_BIDIRECTIONAL_GROUPS = (
+    frozenset({"훅", "혹"}),
+    frozenset({"당", "탕", "댱", "턍"}),
+    frozenset({"옥", "욱", "종", "중"}),
+    frozenset({"쭉", "쪽"}),
+    frozenset({"횽", "흉"}),
+)
+
+# 1280x960 实机标定规则保留原有单向关系；用户指定的组则允许组内双向匹配。
 KOREAN_OCR_HIGH_RISK_EQUIVALENTS = MappingProxyType({
     "샤": frozenset({"사"}),
     "뚱": frozenset({"풍"}),
     "빵": frozenset({"방"}),
+    **{
+        expected: frozenset(group - {expected})
+        for group in KOREAN_OCR_BIDIRECTIONAL_GROUPS
+        for expected in group
+    },
 })
 
 # 只保留上表明确配置过的 OCR 标点结果。订单昵称本身仍只允许英文和韩文；
@@ -172,14 +186,21 @@ def character_ocr_match_is_high_risk(
     )
 
 
+def korean_ocr_visual_equivalents(char: str) -> frozenset[str]:
+    """返回订单期望韩文字在当前位置允许的 OCR 视觉结果。"""
+    return frozenset({str(char or "")}) | KOREAN_OCR_HIGH_RISK_EQUIVALENTS.get(
+        char,
+        frozenset(),
+    )
+
+
 def korean_ocr_text_matches(expected: str, observed: str) -> bool:
-    """按订单字符位置比较韩文，并允许实机标定出的单向视觉等价字。"""
+    """按订单字符位置比较韩文，并允许已配置的视觉等价字。"""
     expected_value = str(expected or "")
     observed_value = str(observed or "")
     if len(expected_value) != len(observed_value):
         return False
     return all(
-        actual == wanted
-        or actual in KOREAN_OCR_HIGH_RISK_EQUIVALENTS.get(wanted, frozenset())
+        actual in korean_ocr_visual_equivalents(wanted)
         for wanted, actual in zip(expected_value, observed_value)
     )

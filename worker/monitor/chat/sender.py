@@ -260,7 +260,13 @@ async def _resolve_barotem_conversation(
             if callable(cache_forget):
                 cache_forget("barotem", order_no)
 
-    for list_url in _barotem_order_list_candidates(target["url"]):
+    list_target = str(
+        target.get("url") or target.get("detail_url") or ""
+    ).strip()
+    if not list_target:
+        raise RuntimeError("Barotem 订单列表地址未配置")
+
+    for list_url in _barotem_order_list_candidates(list_target):
         await page.goto(
             list_url,
             wait_until="domcontentloaded",
@@ -417,11 +423,7 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
 
             on_event("dialog", accept_dialog)
 
-        await page.goto(
-            normalized["detail_url"],
-            wait_until="domcontentloaded",
-            timeout=15000,
-        )
+        await _open_delivery_page(page, normalized, session)
         await page.wait_for_timeout(1000)
         if await _delivery_url_is_complete(
                 page, normalized, timeout=0):
@@ -485,6 +487,21 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
             await confirm.click(force=True, timeout=10000)
         await page.wait_for_timeout(1500)
 
+        immediate_status = (
+            await _wait_for_delivery_success_text(
+                page, normalized, timeout=10000
+            )
+            if normalized["success_before_reload"]
+            else ""
+        )
+        if immediate_status:
+            return {
+                "success": True,
+                "message": "截图已发送，平台商品交付确认已提交",
+                "website_status": immediate_status,
+                "already_completed": False,
+            }
+
         if await _delivery_url_is_complete(
                 page, normalized, timeout=5000):
             return {
@@ -497,11 +514,7 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
             }
 
         # 重新进入交付页，以服务器最终状态作为成功依据，避免只凭点击判断。
-        await page.goto(
-            normalized["detail_url"],
-            wait_until="domcontentloaded",
-            timeout=15000,
-        )
+        await _open_delivery_page(page, normalized, session)
         if await _delivery_url_is_complete(
                 page, normalized, timeout=2000):
             return {
@@ -587,6 +600,25 @@ async def _do_confirm_delivery(session, action: dict) -> dict:
             session.end_transient_operation()
 
 
+async def _open_delivery_page(page, normalized: dict, session) -> str:
+    """打开交付页面；Barotem 复用订单列表解析器进入对应聊天会话。"""
+    if normalized.get("conversation_resolver") == "barotem_order_list":
+        return await _resolve_barotem_conversation(
+            page,
+            {
+                **normalized,
+                "url": normalized["detail_url"],
+            },
+            session=session,
+        )
+    await page.goto(
+        normalized["detail_url"],
+        wait_until="domcontentloaded",
+        timeout=15000,
+    )
+    return normalized["detail_url"]
+
+
 async def _wait_for_delivery_ready(
         page, normalized: dict, timeout: int) -> None:
     selector = normalized.get("ready_selector")
@@ -640,12 +672,15 @@ async def _try_read_delivery_stage(
     try:
         stages = page.locator(selector)
         await stages.first.wait_for(state="visible", timeout=timeout)
+        active_class = str(
+            normalized.get("stage_active_class") or "active"
+        ).strip()
         for index in range(await stages.count()):
             stage = stages.nth(index)
             class_names = str(
                 await stage.get_attribute("class") or ""
             ).split()
-            if "active" in class_names:
+            if active_class in class_names:
                 return index + 1, (await stage.inner_text()).strip()
     except Exception:
         return None, ""
@@ -681,6 +716,29 @@ def _delivery_status_text_is_complete(
         expected in status_text
         for expected in normalized.get("success_texts", [])
     )
+
+
+async def _wait_for_delivery_success_text(
+        page, normalized: dict, timeout: int) -> str:
+    """等待二次确认后的成功文案，避免刷新页面丢失瞬时结果弹窗。"""
+    selector = normalized.get("success_selector")
+    expected_texts = normalized.get("success_texts", [])
+    if not selector or not expected_texts:
+        return ""
+
+    status = page.locator(selector).first
+    deadline = asyncio.get_running_loop().time() + max(0, timeout) / 1000
+    while True:
+        try:
+            if await status.count() > 0 and await status.is_visible():
+                status_text = (await status.inner_text()).strip()
+                if any(expected in status_text for expected in expected_texts):
+                    return status_text
+        except Exception:
+            return ""
+        if asyncio.get_running_loop().time() >= deadline:
+            return ""
+        await page.wait_for_timeout(250)
 
 
 async def _send_image_via_chat(page, image_url: str, target: dict):
@@ -1108,6 +1166,9 @@ def _normalize_delivery_action(action: dict) -> dict:
         )
     )
     result["single_click"] = result.get("single_click") is True
+    result["success_before_reload"] = (
+        result.get("success_before_reload") is True
+    )
     result["open_confirm_selector"] = str(
         result.get("open_confirm_selector") or ""
     ).strip()
@@ -1174,10 +1235,15 @@ def _normalize_delivery_action(action: dict) -> dict:
     result["stage_selector"] = str(
         result.get("stage_selector") or ""
     ).strip()
+    result["stage_active_class"] = str(
+        result.get("stage_active_class") or "active"
+    ).strip()
     pending_stage = result.get("pending_stage")
     if result["stage_selector"] or pending_stage is not None:
         if not result["stage_selector"]:
             raise ValueError("交付阶段选择器未配置")
+        if not result["stage_active_class"]:
+            raise ValueError("交付阶段激活类名未配置")
         try:
             result["pending_stage"] = int(pending_stage)
         except (TypeError, ValueError):

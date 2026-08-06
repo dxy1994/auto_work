@@ -13,6 +13,9 @@ from game_executor.executor.lineage_classic.player_name_ocr import (
     segment_expected_name,
     split_expected_name,
 )
+from game_executor.executor.lineage_classic.font_metrics import (
+    korean_ocr_text_matches,
+)
 
 
 class PlayerNameOcrTest(unittest.TestCase):
@@ -619,6 +622,76 @@ class PlayerNameOcrTest(unittest.TestCase):
         self.assertEqual("TT석사TT", result.text)
         self.assertEqual("w석사ㅠ이(가]", result.visual_observed)
         self.assertAlmostEqual(86.7, result.confidence)
+        self.assertTrue(result.verified)
+        self.assertEqual("korean_visual_constrained", result.strategy)
+
+    def test_configured_korean_visual_groups_are_bidirectional(self):
+        groups = (
+            ("훅", "혹"),
+            ("당", "탕", "댱", "턍"),
+            ("옥", "욱", "종", "중"),
+            ("쭉", "쪽"),
+            ("횽", "흉"),
+        )
+        for group in groups:
+            for expected in group:
+                for observed in group:
+                    with self.subTest(expected=expected, observed=observed):
+                        self.assertTrue(korean_ocr_text_matches(
+                            expected,
+                            observed,
+                        ))
+
+    def test_korean_visual_groups_are_expected_position_scoped(self):
+        self.assertTrue(korean_ocr_text_matches(
+            "훅당옥쭉횽",
+            "혹턍중쪽흉",
+        ))
+        self.assertFalse(korean_ocr_text_matches(
+            "보라훅설탕",
+            "보라핫설탕",
+        ))
+        self.assertFalse(korean_ocr_text_matches(
+            "당옥",
+            "욱탕",
+        ))
+
+    def test_real_buyer_name_accepts_constrained_korean_vowel_confusion(self):
+        image = np.zeros((35, 200, 3), dtype=np.uint8)
+        cv2.rectangle(image, (5, 8), (128, 25), (220, 220, 220), 1)
+
+        def recognize(_prepared, language):
+            self.assertEqual("korean", language)
+            return "보라혹설탕이", 89.93
+
+        result = recognize_expected_player_name(
+            image,
+            "보라훅설탕",
+            recognizer=recognize,
+        )
+
+        self.assertEqual("보라훅설탕", result.text)
+        self.assertEqual("보라혹설탕이", result.visual_observed)
+        self.assertAlmostEqual(89.93, result.confidence)
+        self.assertTrue(result.verified)
+        self.assertEqual("korean_visual_constrained", result.strategy)
+
+    def test_all_configured_korean_groups_work_in_constrained_line_ocr(self):
+        image = np.zeros((35, 160, 3), dtype=np.uint8)
+        cv2.rectangle(image, (5, 8), (88, 25), (220, 220, 220), 1)
+
+        def recognize(_prepared, language):
+            self.assertEqual("korean", language)
+            return "턍중쪽흉이", 91.7
+
+        result = recognize_expected_player_name(
+            image,
+            "당옥쭉횽",
+            recognizer=recognize,
+        )
+
+        self.assertEqual("당옥쭉횽", result.text)
+        self.assertEqual("턍중쪽흉이", result.visual_observed)
         self.assertTrue(result.verified)
         self.assertEqual("korean_visual_constrained", result.strategy)
 

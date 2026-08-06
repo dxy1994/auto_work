@@ -19,6 +19,7 @@ from game_executor.executor.lineage_classic.font_metrics import (
     character_ocr_visual_equivalents,
     character_pair_advance_adjustment,
     korean_ocr_text_matches,
+    korean_ocr_visual_equivalents,
 )
 from game_executor.executor.lineage_classic.paddle_ocr import recognize_text_line
 
@@ -415,49 +416,41 @@ def _mixed_key(value: str) -> str:
     )
 
 
-def _expected_korean_visual_keys(expected_name: str) -> frozenset[str]:
-    """生成韩文模型对已知姓名可能产生的严格等价视觉串。
-
-    天堂的小号像素字体会把连续 ``TT`` 识别为 ``ㅠ``、``ㅜ`` 或
-    拉丁小写 ``w``。这里只替换订单姓名中明确存在的 ``TT`` 对，
-    其他字符仍必须逐字一致。
-    """
-    value = str(expected_name)
-    keys = {""}
-    index = 0
-    while index < len(value):
-        if (
-            index + 1 < len(value)
-            and value[index].casefold() == "t"
-            and value[index + 1].casefold() == "t"
-        ):
-            keys = {
-                prefix + visual
-                for prefix in keys
-                for visual in ("ㅠ", "ㅜ", "w", "tt")
-            }
-            index += 2
-            continue
-        keys = {
-            prefix + value[index].casefold()
-            for prefix in keys
-        }
-        index += 1
-    return frozenset(keys)
-
-
 def _is_expected_korean_visual(
     observed: str,
     expected_name: str,
 ) -> bool:
+    """逐位置匹配视觉等价字，避免多组容错组合产生指数级候选串。"""
     observed_key = _mixed_key(observed)
+    expected_value = str(expected_name or "")
+    positions = {0}
+    index = 0
+    while index < len(expected_value) and positions:
+        if (
+            index + 1 < len(expected_value)
+            and expected_value[index].casefold() == "t"
+            and expected_value[index + 1].casefold() == "t"
+        ):
+            visuals = ("ㅠ", "ㅜ", "w", "tt")
+            index += 2
+        else:
+            char = expected_value[index]
+            visuals = (
+                korean_ocr_visual_equivalents(char)
+                if "\uac00" <= char <= "\ud7a3"
+                else frozenset({char.casefold()})
+            )
+            index += 1
+        positions = {
+            position + len(visual)
+            for position in positions
+            for visual in visuals
+            if observed_key.startswith(visual, position)
+        }
+
     # 姓名后只允许天堂交易提示使用的主格助词，不能接受任意长前缀匹配。
     allowed_suffixes = {"", "이", "가", "이가"}
-    return any(
-        observed_key.startswith(expected_key)
-        and observed_key[len(expected_key):] in allowed_suffixes
-        for expected_key in _expected_korean_visual_keys(expected_name)
-    )
+    return any(observed_key[position:] in allowed_suffixes for position in positions)
 
 
 def _recognize_korean_constrained_candidate(
