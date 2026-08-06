@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game_executor.executor.lineage_classic.navigation import (
     ClientWindow,
+    DisconnectedClient,
     LineageSessionNavigator,
     NavigationError,
     RegionSessionCache,
@@ -18,6 +19,7 @@ from game_executor.executor.lineage_classic.navigation import (
     TemplateVision,
     Ui,
     WINDOW_TITLE_RE,
+    detect_disconnected_client,
     region_text_matches,
 )
 import game_executor.executor.lineage_classic.navigation as lineage_navigation
@@ -354,6 +356,62 @@ class RuntimeProbeTest(unittest.TestCase):
             "相同的管理员权限.*未锁屏",
         ):
             window.focus(timeout=0.2)
+
+    def test_disconnect_detection_uses_dedicated_dialog_template(self):
+        window = mock.Mock(spec=ClientWindow)
+        window.client_size.return_value = (1280, 960)
+        window.process_id.return_value = 4321
+        window.account = "lineage@example.com"
+        vision = mock.Mock()
+        vision.find_with_confidence.return_value = ((640, 480), 0.973)
+
+        with mock.patch.object(
+            lineage_navigation.ClientWindow,
+            "find",
+            return_value=window,
+        ), mock.patch.object(
+            lineage_navigation,
+            "TemplateVision",
+            return_value=vision,
+        ):
+            detected = detect_disconnected_client()
+
+        self.assertIsInstance(detected, DisconnectedClient)
+        self.assertEqual(4321, detected.process_id)
+        self.assertEqual("lineage@example.com", detected.account)
+        window.validate_size.assert_called_once_with((1280, 960))
+        vision.find_with_confidence.assert_called_once_with(
+            Ui.DISCONNECTED_DIALOG,
+            Ui.DISCONNECTED_DIALOG_REGION,
+            threshold=0.88,
+        )
+
+    def test_disconnect_closes_only_the_pid_still_owned_by_window(self):
+        window = ClientWindow(
+            123,
+            "Lineage Classic - 1.0 [LIVE] - Login [account]",
+        )
+        fake_api = mock.Mock()
+        fake_api.OpenProcess.return_value = "process-handle"
+        fake_process = mock.Mock()
+        fake_process.GetWindowThreadProcessId.return_value = (22, 4321)
+        fake_con = SimpleNamespace(PROCESS_TERMINATE=0x0001)
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32api",
+            fake_api,
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32process",
+            fake_process,
+        ), mock.patch(
+            "game_executor.executor.lineage_classic.navigation.win32con",
+            fake_con,
+        ):
+            window.terminate_process(4321)
+
+        fake_api.OpenProcess.assert_called_once_with(0x0001, False, 4321)
+        fake_api.TerminateProcess.assert_called_once_with("process-handle", 1)
+        fake_api.CloseHandle.assert_called_once_with("process-handle")
 
 
 class _Window:

@@ -355,6 +355,7 @@ class ManiaRefreshWorker(PageWorker):
         super().__init__(session, stop_event, name="ManiaRefresh")
         self._monitor = monitor
         self._last_refresh = datetime.datetime.now()
+        self._coupon_required_alert_count = 0
 
     async def run(self):
         wait_timeout = self._monitor.get_order_cfg().get("wait_timeout", 10000)
@@ -387,11 +388,15 @@ class ManiaRefreshWorker(PageWorker):
                             f"mania账号{self._session.account_id}"
                             "重新上架次数不足，请购买"
                         )
-                        print(
-                            f"[{self._log_tag}] ItemMania 重新上架次数"
-                            "已用完，已恢复到上架页并发出语音提醒"
-                        )
-                        await play_alert_audio_async(text=message)
+                        if self._consume_coupon_required_alert():
+                            print(
+                                f"[{self._log_tag}] ItemMania 重新上架次数"
+                                "已用完，已恢复到上架页并发出语音提醒 "
+                                f"({self._coupon_required_alert_count}/3)"
+                            )
+                            await play_alert_audio_async(text=message)
+                    elif result == "refreshed":
+                        self._coupon_required_alert_count = 0
                     if actions_on_page >= REFRESH_PAGE_MAX_ACTIONS:
                         await self.recycle_page(
                             f"上架页已执行 {actions_on_page} 次刷新，"
@@ -406,6 +411,13 @@ class ManiaRefreshWorker(PageWorker):
                             "上架页已不可用，需要重建标签"
                         ) from e
             await asyncio.sleep(5)
+
+    def _consume_coupon_required_alert(self) -> bool:
+        """同一次连续次数不足最多播报三次，成功上架后重新计数。"""
+        if self._coupon_required_alert_count >= 3:
+            return False
+        self._coupon_required_alert_count += 1
+        return True
 
     async def _do_refresh(self, timeout: int):
         """翻到最后一页 → 点击「재등록」。"""
@@ -558,8 +570,15 @@ class ManiaRefreshWorker(PageWorker):
                 empty_rows: rows.filter(
                     row => row.querySelector('.empty_item')
                 ).length,
+                inactive_rows: rows.filter(row => (
+                    !row.querySelector('.empty_item')
+                    && !row.querySelector('.list_icon.hide')
+                )).length,
                 products: rows
-                    .filter(row => !row.querySelector('.empty_item'))
+                    .filter(row => (
+                        !row.querySelector('.empty_item')
+                        && row.querySelector('.list_icon.hide')
+                    ))
                     .map(row => {
                     const cells = Array.from(row.cells || []);
                     return {
@@ -597,10 +616,13 @@ class ManiaRefreshWorker(PageWorker):
             })
         """)
         payloads = snapshot.get("products", [])
-        if not payloads and (
-                snapshot.get("total_rows", 0) == 0
-                or snapshot.get("empty_rows", 0)
-                != snapshot.get("total_rows", 0)):
+        recognized_rows = (
+            len(payloads)
+            + snapshot.get("empty_rows", 0)
+            + snapshot.get("inactive_rows", 0)
+        )
+        if (snapshot.get("total_rows", 0) == 0
+                or recognized_rows != snapshot.get("total_rows", 0)):
             raise RuntimeError(
                 "ItemMania 上架表格没有商品行或明确空状态，"
                 "停止同步以避免误删")

@@ -76,4 +76,25 @@ public class InventoryChangeLogServiceImpl extends ServiceImpl<InventoryChangeLo
         save(log);
         return log;
     }
+
+    @Override
+    public InventoryChangeLog logSystemSync(GameRegionInventory inv, long stockBefore,
+                                            String reason, String operator) {
+        InventoryChangeLog log = new InventoryChangeLog();
+        log.setInventoryId(inv.getId());
+        log.setGameId(inv.getGameId());
+        log.setRegionId(inv.getRegionId());
+        log.setItemId(inv.getItemId());
+        log.setChangeType("system_sync");
+        log.setStockBefore(stockBefore);
+        log.setStockAfter(inv.getStock());
+        log.setStockDelta(inv.getStock() - stockBefore);
+        log.setAvgPriceBefore(inv.getPurchasePrice());
+        log.setAvgPriceAfter(inv.getPurchasePrice());
+        log.setChangeReason(reason);
+        log.setOperator(operator);
+        log.setCreatedAt(LocalDateTime.now());
+        save(log);
+        return log;
+    }
 }

@@ -464,6 +464,12 @@ class BaseOrderMonitor:
                           "解决方案：浏览器保持打开，5 秒后自动重启该 Worker。")
             except Exception as e:
                 if not self._stopped():
+                    if BrowserSession.is_driver_connection_error(e):
+                        worker.session.mark_unhealthy(
+                            f"浏览器驱动连接已断开: {e}"
+                        )
+                    elif worker.session.is_alive():
+                        await worker.session.probe_connection()
                     if not worker.session.is_alive():
                         raise RuntimeError("浏览器进程或持久化上下文已退出") from e
                     print(f"[{worker._log_tag}] Worker 异常。原因：{e}；"
@@ -526,9 +532,24 @@ class BaseOrderMonitor:
         timeout = health_interval * 2
         while not self._stopped():
             # 分段等待，让用户终止不必被完整的健康检查周期阻塞。
-            for _ in range(health_interval):
+            for elapsed in range(health_interval):
                 if self._stopped():
                     return
+                if self._session is None or not self._session.is_alive():
+                    reason = (
+                        self._session.disconnect_reason
+                        if self._session is not None
+                        else "浏览器会话不存在"
+                    )
+                    raise RuntimeError(
+                        reason or "浏览器进程或持久化上下文已退出"
+                    )
+                if elapsed % 5 == 0:
+                    if not await self._session.probe_connection():
+                        raise RuntimeError(
+                            self._session.disconnect_reason
+                            or "浏览器驱动连接已断开"
+                        )
                 await asyncio.sleep(1)
             now = time.time()
             for w in workers:

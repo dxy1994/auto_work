@@ -302,6 +302,16 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("重新上架次数不足，请购买", source)
         self.assertIn("play_alert_audio_async", source)
 
+    def test_coupon_required_alert_is_limited_to_three_per_episode(self):
+        worker = ManiaRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(navigation_lock=asyncio.Lock()))
+
+        self.assertEqual(
+            [True, True, True, False, False],
+            [worker._consume_coupon_required_alert() for _ in range(5)],
+        )
+
     def test_refresh_worker_uses_locators_instead_of_element_handles(self):
         source = inspect.getsource(ManiaRefreshWorker._do_refresh)
 

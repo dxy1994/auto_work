@@ -99,6 +99,10 @@
             <el-icon><Files /></el-icon>
             <span>系统工具</span>
           </template>
+          <el-menu-item index="/system-alert-logs">
+            <el-icon><Bell /></el-icon>
+            <span>系统告警日志</span>
+          </el-menu-item>
           <el-menu-item index="/system-controls">
             <el-icon><Operation /></el-icon>
             <span>系统控制</span>

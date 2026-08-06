@@ -953,6 +953,7 @@ class BarotemRefreshWorker(_BarotemWorker):
         counts = await self._product_category_counts()
         products = []
         seen_product_ids = set()
+        scanned_total = 0
 
         for item_type in PRODUCT_TYPES:
             total = counts[item_type]
@@ -995,17 +996,18 @@ class BarotemRefreshWorker(_BarotemWorker):
                             raise RuntimeError(
                                 "抓取销售商品时登录恢复失败")
 
-                page_products = await self._extract_sales_products_page(
+                page_snapshot = await self._extract_sales_products_page(
                     item_type)
+                page_products = page_snapshot["products"]
                 expected = min(
                     PRODUCT_PAGE_SIZE,
                     total - collected_for_type,
                 )
-                if len(page_products) != expected:
+                if page_snapshot["total_cards"] != expected:
                     raise RuntimeError(
                         f"商品分类 {item_type} 第 {page_number} 页"
                         f"数量不一致: expected={expected}, "
-                        f"actual={len(page_products)}；"
+                        f"actual={page_snapshot['total_cards']}；"
                         "停止完整快照同步以避免误删"
                     )
                 for product in page_products:
@@ -1015,7 +1017,8 @@ class BarotemRefreshWorker(_BarotemWorker):
                             f"完整快照出现重复商品 ID: {product_id}")
                     seen_product_ids.add(product_id)
                     products.append(product)
-                collected_for_type += len(page_products)
+                collected_for_type += page_snapshot["total_cards"]
+                scanned_total += page_snapshot["total_cards"]
 
             if collected_for_type != total:
                 raise RuntimeError(
@@ -1023,17 +1026,21 @@ class BarotemRefreshWorker(_BarotemWorker):
                     f"expected={total}, actual={collected_for_type}")
 
         expected_total = sum(counts.values())
-        if len(products) != expected_total:
+        if scanned_total != expected_total:
             raise RuntimeError(
                 f"销售商品完整快照数量不一致: "
-                f"expected={expected_total}, actual={len(products)}")
+                f"expected={expected_total}, actual={scanned_total}")
         return products
 
     async def _extract_sales_products_page(
-            self, item_type: str) -> List[dict]:
-        payloads = await self.page.locator(
+            self, item_type: str) -> dict:
+        snapshot = await self.page.locator(
             REFRESH_CARD_SELECTOR).evaluate_all("""
-            cards => cards.map(card => {
+            cards => ({
+              total_cards: cards.length,
+              products: cards
+                .filter(card => !card.classList.contains('on'))
+                .map(card => {
                 const heading = card.querySelector(
                     '.product_detail_info h4'
                 );
@@ -1083,13 +1090,17 @@ class BarotemRefreshWorker(_BarotemWorker):
                             '.product_title time'
                         )?.innerText || ''
                     )
-                };
+                  };
+                })
             })
         """)
-        return [
-            _parse_sales_product_card_payload(payload, item_type)
-            for payload in payloads
-        ]
+        return {
+            "total_cards": snapshot.get("total_cards", 0),
+            "products": [
+                _parse_sales_product_card_payload(payload, item_type)
+                for payload in snapshot.get("products", [])
+            ],
+        }
 
     async def _prepare_refresh_action_page(self, timeout: int):
         recovery = await self._recover_login_if_needed(

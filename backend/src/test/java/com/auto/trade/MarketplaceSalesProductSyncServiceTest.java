@@ -33,6 +33,8 @@ class MarketplaceSalesProductSyncServiceTest {
     private GameService gameService;
     private GameRegionService regionService;
     private GameItemService gameItemService;
+    private MarketplaceInventoryReconciliationService
+            inventoryReconciliationService;
     private MarketplaceSalesProductSyncService syncService;
 
     @BeforeEach
@@ -42,12 +44,15 @@ class MarketplaceSalesProductSyncServiceTest {
         gameService = mock(GameService.class);
         regionService = mock(GameRegionService.class);
         gameItemService = mock(GameItemService.class);
+        inventoryReconciliationService = mock(
+                MarketplaceInventoryReconciliationService.class);
         syncService = new MarketplaceSalesProductSyncService(
                 accountService,
                 productService,
                 gameService,
                 regionService,
-                gameItemService);
+                gameItemService,
+                inventoryReconciliationService);
 
         PlatformAccount account = new PlatformAccount();
         account.setId(11);
@@ -110,6 +115,8 @@ class MarketplaceSalesProductSyncServiceTest {
         assertEquals("matched", row.getParseStatus());
         assertEquals(1, result.insertedCount());
         assertEquals(2, result.deletedCount());
+        verify(inventoryReconciliationService)
+                .reconcileSnapshotProducts(List.of(row));
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Collection<String>> observed =
@@ -294,8 +301,12 @@ class MarketplaceSalesProductSyncServiceTest {
 
     @Test
     void emptyCompleteSnapshotPhysicallyDeletesAllAccountProducts() {
+        PlatformSalesProduct removed = new PlatformSalesProduct();
+        removed.setPlatformAccountId(11);
+        removed.setPlatformProductId("removed-product");
         when(gameService.findAllActiveOrdered()).thenReturn(List.of());
-        when(productService.findByAccountId(11)).thenReturn(List.of());
+        when(productService.findByAccountId(11))
+                .thenReturn(List.of(removed));
         when(productService.deleteMissing(any(), any())).thenReturn(4);
 
         SalesProductsSyncResult result = syncService.sync(
@@ -311,5 +322,7 @@ class MarketplaceSalesProductSyncServiceTest {
                 observed.capture());
         assertTrue(observed.getValue().isEmpty());
         assertEquals(4, result.deletedCount());
+        verify(inventoryReconciliationService)
+                .dismissRemovedProduct(removed);
     }
 }

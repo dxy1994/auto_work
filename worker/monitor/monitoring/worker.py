@@ -162,6 +162,11 @@ class PageWorker(ABC):
 
     def page_failure_requires_rebuild(self, error: Exception) -> bool:
         """识别 renderer crash；这类标签常保持打开状态但已无法执行脚本。"""
+        if BrowserSession.is_driver_connection_error(error):
+            self._session.mark_unhealthy(
+                f"浏览器驱动连接已断开: {error}"
+            )
+            return True
         if self._page_crashed or self._page is None:
             return True
         try:

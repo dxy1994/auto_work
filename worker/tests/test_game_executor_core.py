@@ -19,10 +19,12 @@ from game_executor.main import (
     _retry_pending_game_recovery,
     _run_trade_assignment,
     _send_runtime_heartbeat,
+    _watch_game_disconnects,
 )
 from game_executor.hardware_binding import WirelessHidBinding
 from game_executor.status import RuntimeStatus
 from game_executor.audio import speak_text
+from game_executor.executor.lineage_classic.navigation import DisconnectedClient
 from common.context import AppContext
 
 
@@ -276,6 +278,59 @@ class GameExecutorDispatchAsyncTest(unittest.IsolatedAsyncioTestCase):
             alert = await _probe_connected_games(ctx)
 
         self.assertEqual("", alert)
+
+    async def test_disconnect_guard_notifies_before_closing_exact_game_pid(self):
+        ctx = AppContext(asyncio.get_running_loop())
+        ctx.runtime_status = RuntimeStatus()
+        ctx.runtime_status.update(game_account_id=19)
+        events = []
+        closed = asyncio.Event()
+
+        async def send(message):
+            events.append(("send", message))
+
+        # terminate() 会在 asyncio.to_thread 中运行，保存主循环供线程安全唤醒。
+        loop = asyncio.get_running_loop()
+
+        def terminate_from_thread(process_id):
+            events.append(("terminate", process_id))
+            loop.call_soon_threadsafe(closed.set)
+
+        window = SimpleNamespace(terminate_process=terminate_from_thread)
+        detected = DisconnectedClient(
+            window=window,
+            process_id=4321,
+            account="lineage@example.com",
+            confidence=0.973,
+            matched_point=(640, 480),
+        )
+        client = SimpleNamespace(send=send, local_ip="192.168.1.27")
+
+        with patch(
+            "game_executor.main.detect_disconnected_client",
+            return_value=detected,
+        ), patch(
+            "game_executor.main.game_executor_config.DISCONNECT_POLL_SECONDS",
+            0,
+        ), patch(
+            "game_executor.main.game_executor_config.DISCONNECT_CONFIRMATIONS",
+            2,
+        ):
+            task = asyncio.create_task(_watch_game_disconnects(client, ctx))
+            await asyncio.wait_for(closed.wait(), timeout=1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        self.assertEqual("send", events[0][0])
+        self.assertEqual("game_client_disconnected", events[0][1]["type"])
+        self.assertEqual(4321, events[0][1]["process_id"])
+        self.assertEqual(19, events[0][1]["game_account_id"])
+        self.assertEqual(("terminate", 4321), events[1])
+        self.assertEqual(
+            "disconnected",
+            ctx.runtime_status.snapshot()["client_status"],
+        )
 
     async def test_connected_probe_only_says_recovering_when_recovery_is_pending(self):
         registry = ExecutorRegistry()

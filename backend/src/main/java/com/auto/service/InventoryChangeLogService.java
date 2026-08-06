@@ -22,4 +22,8 @@ public interface InventoryChangeLogService extends IService<InventoryChangeLog> 
     /** 记录风控参数变更日志。 */
     InventoryChangeLog logFluctuationUpdate(GameRegionInventory inv, String field, String oldVal,
                                             String newVal, String operator);
+
+    /** 记录平台抓取库存覆盖系统库存。 */
+    InventoryChangeLog logSystemSync(GameRegionInventory inv, long stockBefore,
+                                     String reason, String operator);
 }

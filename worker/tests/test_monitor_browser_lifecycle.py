@@ -12,6 +12,7 @@ sys.path.insert(0, str(WORKER_ROOT))
 
 from monitor.browser.session import BrowserSession  # noqa: E402
 from monitor.main import _active_order_task_snapshot, _heartbeat  # noqa: E402
+from monitor.monitoring.base import BaseOrderMonitor  # noqa: E402
 from monitor.monitoring.worker import PageWorker  # noqa: E402
 
 
@@ -113,6 +114,73 @@ class MonitorBrowserLifecycleTest(unittest.TestCase):
         self.assertIn("async def reset_after_crash", session_source)
         self.assertIn("not self._session.is_alive()", monitor_source)
         self.assertIn("await self._session.reset_after_crash()", monitor_source)
+
+    def test_context_close_event_marks_session_dead(self):
+        session = BrowserSession(account_id=4)
+        callbacks = {}
+        session._playwright = object()
+        session._browser = SimpleNamespace(
+            is_connected=MagicMock(return_value=True),
+            on=lambda event, callback: callbacks.__setitem__(event, callback),
+        )
+        session._context = SimpleNamespace(
+            pages=[],
+            on=lambda event, callback: callbacks.__setitem__(event, callback),
+        )
+
+        session._bind_lifecycle_events()
+        self.assertTrue(session.is_alive())
+
+        callbacks["close"]()
+
+        self.assertFalse(session.is_alive())
+        self.assertEqual("浏览器上下文已关闭", session.disconnect_reason)
+
+    def test_driver_connection_error_is_detected_through_exception_chain(self):
+        driver_error = RuntimeError(
+            "Page.goto: Connection closed while reading from the driver"
+        )
+        try:
+            raise RuntimeError("Barotem 页面导航后关键区域未就绪") \
+                from driver_error
+        except RuntimeError as wrapped:
+            self.assertTrue(
+                BrowserSession.is_driver_connection_error(wrapped)
+            )
+
+    def test_driver_probe_marks_cached_session_state_dead(self):
+        session = BrowserSession(account_id=4)
+        session._playwright = object()
+        session._browser = SimpleNamespace(
+            is_connected=MagicMock(return_value=True),
+            on=MagicMock(),
+        )
+        session._context = SimpleNamespace(
+            pages=[],
+            cookies=AsyncMock(side_effect=RuntimeError(
+                "Connection closed while reading from the driver"
+            )),
+            on=MagicMock(),
+        )
+        session._bind_lifecycle_events()
+
+        self.assertFalse(asyncio.run(session.probe_connection()))
+        self.assertFalse(session.is_alive())
+        self.assertIn("驱动连接探测失败", session.disconnect_reason)
+
+    def test_health_monitor_escalates_browser_exit_immediately(self):
+        monitor = SimpleNamespace(
+            _session=SimpleNamespace(
+                is_alive=MagicMock(return_value=False),
+                disconnect_reason="浏览器进程已退出",
+            ),
+            _stopped=MagicMock(return_value=False),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "浏览器进程已退出"):
+            asyncio.run(BaseOrderMonitor._health_monitor(
+                monitor, [], health_interval=30
+            ))
 
     def test_browser_launch_avoids_unsupported_automation_flag(self):
         session_source = (

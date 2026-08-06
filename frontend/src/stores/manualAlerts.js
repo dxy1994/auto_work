@@ -5,6 +5,7 @@ import {
   dismissSystemAlert as sendSystemAlertDismiss,
   getManualAlerts,
   getSystemAlerts,
+  reportSystemAlertEvent as sendSystemAlertEvent,
 } from '../api'
 
 const POLL_INTERVAL_MS = 5000
@@ -31,6 +32,8 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
   let lastSignature = ''
   let lastSpokenAt = 0
   let started = false
+  const presentedAlertIds = new Set()
+  const presentingAlertIds = new Set()
 
   const speechSupported = computed(() => (
     typeof window !== 'undefined'
@@ -45,6 +48,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
   function signatureOf(nextItems, nextTotal) {
     return `${nextTotal}|${nextItems.map(item => (
       `${item.id}:${item.delivery_status}:${item.error_code || ''}:${item.occurred_at || ''}`
+      + `:${item.last_occurred_at || ''}:${item.occurrence_count || ''}`
     )).join('|')}`
   }
 
@@ -57,7 +61,30 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     if (speechSupported.value) window.speechSynthesis.cancel()
   }
 
-  function speakText(text, markReminder = false) {
+  function reportSystemEvent(item, eventType, details = '') {
+    if (item?.entity_type !== 'system' || !item.alert_id) return Promise.resolve(null)
+    return sendSystemAlertEvent(item.alert_id, {
+      event_type: eventType,
+      details,
+    }).catch((error) => {
+      console.warn(`告警通知事件记录失败: ${eventType}`, error)
+      return null
+    })
+  }
+
+  function reportPresented(item) {
+    if (item?.entity_type !== 'system' || !item.alert_id
+        || presentedAlertIds.has(item.alert_id)
+        || presentingAlertIds.has(item.alert_id)) return
+    presentingAlertIds.add(item.alert_id)
+    reportSystemEvent(item, 'presented', '告警已进入中控待处理提醒列表')
+      .then((response) => {
+        if (response) presentedAlertIds.add(item.alert_id)
+      })
+      .finally(() => presentingAlertIds.delete(item.alert_id))
+  }
+
+  function speakText(text, markReminder = false, trackedItem = null) {
     if (!text || !speechSupported.value) return false
     const synth = window.speechSynthesis
     if (synth.speaking || synth.pending) return false
@@ -70,11 +97,22 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     const voices = synth.getVoices()
     const chineseVoice = voices.find(voice => /^zh(-|_)/i.test(voice.lang))
     if (chineseVoice) utterance.voice = chineseVoice
-    utterance.onstart = () => { needsInteraction.value = false }
+    utterance.onstart = () => {
+      needsInteraction.value = false
+      reportSystemEvent(trackedItem, 'voice_started', '中控开始语音播报告警')
+    }
+    utterance.onend = () => {
+      reportSystemEvent(trackedItem, 'voice_completed', '中控语音播报完成')
+    }
     utterance.onerror = (event) => {
       if (!['canceled', 'interrupted'].includes(event.error)) {
         needsInteraction.value = true
       }
+      reportSystemEvent(
+        trackedItem,
+        'voice_failed',
+        `中控语音播报失败: ${event.error || 'unknown'}`,
+      )
     }
     synth.speak(utterance)
     if (markReminder) lastSpokenAt = Date.now()
@@ -99,7 +137,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     const confirmation = hasAlerts.value
       ? reminderText()
       : '语音提醒已开启。出现需要人工处理的异常时，系统将持续播报。'
-    return speakText(confirmation, hasAlerts.value)
+    return speakText(confirmation, hasAlerts.value, items.value[0] || null)
   }
 
   function loadVoiceConsent() {
@@ -122,7 +160,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
     if (!hasAlerts.value || !speechSupported.value) return false
     const now = Date.now()
     if (!force && now - lastSpokenAt < REMINDER_INTERVAL_MS) return false
-    return speakText(reminderText(), true)
+    return speakText(reminderText(), true, items.value[0] || null)
   }
 
   async function refresh() {
@@ -143,6 +181,7 @@ export const useManualAlertStore = defineStore('manual-alerts', () => {
       const changed = nextSignature !== lastSignature
       items.value = nextItems
       total.value = nextTotal
+      nextItems.forEach(reportPresented)
       lastSignature = nextSignature
       fetchError.value = ''
       lastUpdatedAt.value = systemResponse.polled_at || orderResponse.polled_at || new Date().toISOString()

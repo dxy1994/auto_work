@@ -13,3 +13,13 @@ STORAGE_PATH_STYLE = os.getenv("STORAGE_PATH_STYLE", "true").lower() in (
     "1",
     "yes",
 )
+
+# 空闲和交易期间均检测服务器断线弹窗。至少连续两帧命中才执行关进程。
+DISCONNECT_POLL_SECONDS = max(
+    1.0,
+    float(os.getenv("GAME_DISCONNECT_POLL_SECONDS", "3")),
+)
+DISCONNECT_CONFIRMATIONS = max(
+    2,
+    int(os.getenv("GAME_DISCONNECT_CONFIRMATIONS", "2")),
+)

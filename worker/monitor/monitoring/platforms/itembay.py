@@ -934,9 +934,18 @@ class ItembayRefreshWorker(PageWorker):
                     && row.querySelector('td[colspan]')
                     && (row.innerText || '').trim()
                 )).length,
+                inactive_rows: rows.filter(row => (
+                    row.querySelector('input[name="chkRemove"]')
+                    && !row.querySelector(
+                        '.lt1_edit a[title="수정"]'
+                    )
+                )).length,
                 products: rows
-                    .filter(row => row.querySelector(
-                        'input[name="chkRemove"]'
+                    .filter(row => (
+                        row.querySelector('input[name="chkRemove"]')
+                        && row.querySelector(
+                            '.lt1_edit a[title="수정"]'
+                        )
                     ))
                     .map(row => ({
                     platform_product_id: (
@@ -973,10 +982,13 @@ class ItembayRefreshWorker(PageWorker):
             })
         """)
         payloads = snapshot.get("products", [])
-        if not payloads and (
-                snapshot.get("total_rows", 0) == 0
-                or snapshot.get("empty_rows", 0)
-                != snapshot.get("total_rows", 0)):
+        recognized_rows = (
+            len(payloads)
+            + snapshot.get("empty_rows", 0)
+            + snapshot.get("inactive_rows", 0)
+        )
+        if (snapshot.get("total_rows", 0) == 0
+                or recognized_rows != snapshot.get("total_rows", 0)):
             raise RuntimeError(
                 "ItemBay 上架表格没有商品行或明确空状态，"
                 "停止同步以避免误删")

@@ -55,6 +55,8 @@ export const getAllAccounts = () => request.get('/platform-accounts/all')
 // ── 平台当前在售商品 ──────────────────────────────────────
 export const getPlatformSalesProducts = (params) =>
   request.get('/platform-sales-products', { params })
+export const syncPlatformSalesProductInventory = (productId) =>
+  request.post(`/platform-sales-products/${productId}/sync-inventory`)
 
 // ── 订单查询与提醒 ────────────────────────────────────────
 export const orderCheck = (accountId) =>
@@ -191,7 +193,10 @@ export const deleteGameAccount = (id) => request.delete(`/game-accounts/${id}`)
 export const getOrders = (params) => request.get('/orders', { params })
 export const getManualAlerts = () => request.get('/orders/manual-alerts')
 export const getSystemAlerts = () => request.get('/system-alerts')
+export const getSystemAlertHistory = (params) => request.get('/system-alerts/history', { params })
+export const getSystemAlertEvents = (alertId) => request.get(`/system-alerts/${alertId}/events`)
 export const dismissSystemAlert = (alertId) => request.post(`/system-alerts/${alertId}/dismiss`)
+export const reportSystemAlertEvent = (alertId, data) => request.post(`/system-alerts/${alertId}/events`, data)
 export const decideBuyerReview = (orderId, data) => request.post(`/orders/${orderId}/buyer-review`, data)
 export const getOrder = (id) => request.get(`/orders/${id}`)
 export const getOrderLogs = (id) => request.get(`/orders/${id}/logs`)

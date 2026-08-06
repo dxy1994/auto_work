@@ -25,8 +25,17 @@ public class SystemAlert {
     private String title;
     private String message;
     private String status;
+    private Integer occurrenceCount;
     private LocalDateTime occurredAt;
+    private LocalDateTime lastOccurredAt;
     private LocalDateTime dismissedAt;
+    private Integer presentationCount;
+    private LocalDateTime lastPresentedAt;
+    private Integer voiceNotificationCount;
+    private LocalDateTime lastVoiceNotifiedAt;
+    private String closeType;
+    private String closeReason;
+    private String closedBy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

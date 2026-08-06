@@ -18,14 +18,20 @@ from common import clock
 from common import config
 from common.context import AppContext
 from common.client import AgentClient
+from common.protocol import game_client_disconnected_msg
 from common.reporter import Reporter
 from common.autostart import handle_autostart_args
 from game_executor.audio import speak_text
+from game_executor import config as game_executor_config
 from game_executor.status import RuntimeStatus
 from game_executor.gate import TradeTaskGate
 from game_executor.executor.registry import EXECUTOR_REGISTRY
 from game_executor.executor.hardware.controller import HardwareController
 from game_executor.executor.lineage_classic import LineageClassicExecutor
+from game_executor.executor.lineage_classic.navigation import (
+    NavigationError,
+    detect_disconnected_client,
+)
 from game_executor.executor.lineage_classic.policy import execution_timeout_seconds
 from game_executor.hardware_binding import WirelessHidBinding
 
@@ -613,6 +619,106 @@ async def _send_runtime_heartbeat(client, ctx: AppContext) -> None:
     })
 
 
+async def _watch_game_disconnects(client, ctx: AppContext) -> None:
+    """连续确认断线弹窗；先通知总控，再关闭命中窗口所属游戏进程。"""
+    candidate_pid = None
+    consecutive_hits = 0
+    notified_pids: set[int] = set()
+    closed_pids: set[int] = set()
+    last_probe_error = ""
+
+    while True:
+        await asyncio.sleep(game_executor_config.DISCONNECT_POLL_SECONDS)
+        try:
+            detected = await asyncio.to_thread(detect_disconnected_client)
+            last_probe_error = ""
+        except NavigationError as exc:
+            detected = None
+            error = str(exc)
+            if error != last_probe_error and "未找到 Lineage Classic" not in error:
+                print(f"[GameExecutor][掉线检测] 本轮无法检查: {error}", flush=True)
+            last_probe_error = error
+        except Exception as exc:
+            detected = None
+            error = str(exc)
+            if error != last_probe_error:
+                print(f"[GameExecutor][掉线检测] 检查异常: {error}", flush=True)
+            last_probe_error = error
+
+        if detected is None:
+            candidate_pid = None
+            consecutive_hits = 0
+            continue
+
+        process_id = detected.process_id
+        if process_id in closed_pids:
+            continue
+        if candidate_pid == process_id:
+            consecutive_hits += 1
+        else:
+            candidate_pid = process_id
+            consecutive_hits = 1
+        if consecutive_hits < game_executor_config.DISCONNECT_CONFIRMATIONS:
+            print(
+                "[GameExecutor][掉线检测] 候选画面待复核 "
+                f"pid={process_id} hits={consecutive_hits}/"
+                f"{game_executor_config.DISCONNECT_CONFIRMATIONS}",
+                flush=True,
+            )
+            continue
+
+        snapshot = ctx.runtime_status.snapshot()
+        ctx.runtime_status.update(
+            client_status="disconnected",
+            ui_health="unhealthy",
+        )
+        if process_id not in notified_pids:
+            notification = game_client_disconnected_msg(
+                game_code="lineage_classic",
+                game_name="天堂经典版",
+                account=detected.account,
+                game_account_id=snapshot.get("game_account_id"),
+                process_id=process_id,
+                confidence=detected.confidence,
+            )
+            try:
+                await client.send(notification)
+            except Exception as exc:
+                print(
+                    "[GameExecutor][掉线检测] 通知总控失败，暂不关闭游戏，"
+                    f"下轮重试: {exc}",
+                    flush=True,
+                )
+                continue
+            notified_pids.add(process_id)
+            print(
+                "[GameExecutor][掉线检测] 已通知总控，准备关闭游戏进程 "
+                f"pid={process_id}",
+                flush=True,
+            )
+
+        active = ctx.active_trade()
+        if active is not None:
+            active["executor"].cancel()
+        try:
+            await asyncio.to_thread(
+                detected.window.terminate_process,
+                process_id,
+            )
+        except Exception as exc:
+            print(
+                f"[GameExecutor][掉线检测] 关闭游戏进程失败 pid={process_id}: {exc}",
+                flush=True,
+            )
+            continue
+        closed_pids.add(process_id)
+        print(
+            f"[GameExecutor][掉线检测] 游戏进程已关闭 pid={process_id}",
+            flush=True,
+        )
+        await _send_runtime_heartbeat(client, ctx)
+
+
 # ═══════════════════════════════════════════════════════════
 # 连接管理
 # ═══════════════════════════════════════════════════════════
@@ -643,6 +749,7 @@ async def _connect_once(ctx: AppContext):
         hb = asyncio.create_task(_heartbeat(client, ctx))
         background_tasks: set[asyncio.Task] = set()
         binding_poll_task = None
+        disconnect_watch_task = None
         hardware_runtime_started = False
         try:
             async for raw in ws:
@@ -656,6 +763,18 @@ async def _connect_once(ctx: AppContext):
                         print(
                             f"[GameExecutor] 注册成功 machine_id={msg.get('machine_id')}"
                         )
+                        if (
+                            disconnect_watch_task is None
+                            or disconnect_watch_task.done()
+                        ):
+                            disconnect_watch_task = asyncio.create_task(
+                                _watch_game_disconnects(client, ctx),
+                                name="game-disconnect-watch",
+                            )
+                            background_tasks.add(disconnect_watch_task)
+                            disconnect_watch_task.add_done_callback(
+                                background_tasks.discard
+                            )
                     hardware_ready = await _try_configure_hardware(msg, ctx)
                     if not hardware_ready:
                         await _send_runtime_heartbeat(client, ctx)

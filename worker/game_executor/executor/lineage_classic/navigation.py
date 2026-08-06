@@ -138,6 +138,8 @@ class Ui:
     SERVER_PAGE_SPACING_X = 40
     SERVER_VISIBLE_PAGE_COUNT = 6
     FULL_CLIENT = (0, 0, 1280, 960)
+    # 服务器断线弹窗固定出现在客户区中央；搜索区留出少量位置容差。
+    DISCONNECTED_DIALOG_REGION = (420, 330, 860, 640)
 
     INVENTORY_BUTTON = "物品栏按钮.png"
     INVENTORY_OPEN = "物品栏已打开.png"
@@ -150,6 +152,7 @@ class Ui:
     SERVER_SCREEN = "选择服务器界面判断.png"
     ACCOUNT_CONFIRM_BUTTON = "选中大区后的确认按钮.png"
     SERVER_CONFIRM = ACCOUNT_CONFIRM_BUTTON
+    DISCONNECTED_DIALOG = "服务器连接已断开.png"
 
 
 class NavigationError(RuntimeError):
@@ -487,6 +490,39 @@ class ClientWindow:
     def client_size(self) -> tuple[int, int]:
         left, top, right, bottom = win32gui.GetClientRect(self.hwnd)
         return right - left, bottom - top
+
+    def process_id(self) -> int:
+        """返回当前窗口所属 PID，供掉线后只关闭这一份游戏客户端。"""
+        if win32process is None:
+            raise NavigationError("当前环境无法读取游戏窗口进程")
+        _thread_id, process_id = win32process.GetWindowThreadProcessId(
+            self.hwnd
+        )
+        process_id = int(process_id or 0)
+        if process_id <= 0:
+            raise NavigationError("游戏窗口未返回有效进程 ID")
+        return process_id
+
+    def terminate_process(self, expected_process_id: int) -> None:
+        """复核窗口 PID 后强制结束对应游戏进程，避免误杀其他实例。"""
+        if win32api is None or win32con is None:
+            raise NavigationError("当前环境无法关闭游戏进程")
+        actual_process_id = self.process_id()
+        if actual_process_id != int(expected_process_id):
+            raise NavigationError(
+                "游戏窗口进程已变化，拒绝关闭："
+                f"expected={expected_process_id} actual={actual_process_id}"
+            )
+        process_terminate = getattr(win32con, "PROCESS_TERMINATE", 0x0001)
+        handle = win32api.OpenProcess(
+            process_terminate,
+            False,
+            actual_process_id,
+        )
+        try:
+            win32api.TerminateProcess(handle, 1)
+        finally:
+            win32api.CloseHandle(handle)
 
     def validate_size(self, size: Optional[tuple[int, int]] = None) -> None:
         size = size or self.client_size()
@@ -1284,6 +1320,46 @@ class TemplateVision:
             )
             return point
         return None
+
+
+@dataclass(frozen=True)
+class DisconnectedClient:
+    """已由专用模板确认的掉线游戏窗口。"""
+
+    window: ClientWindow
+    process_id: int
+    account: str
+    confidence: float
+    matched_point: tuple[int, int]
+
+
+def detect_disconnected_client(account: str = "") -> Optional[DisconnectedClient]:
+    """只截图识别断线弹窗，不激活窗口、不操作键鼠。"""
+    window = ClientWindow.find(account=account)
+    size = window.client_size()
+    window.validate_size(size)
+    point, confidence = TemplateVision(window).find_with_confidence(
+        Ui.DISCONNECTED_DIALOG,
+        Ui.DISCONNECTED_DIALOG_REGION,
+        threshold=0.88,
+    )
+    if point is None:
+        return None
+    process_id = window.process_id()
+    print(
+        "[Lineage][掉线检测] 已连续检测候选画面："
+        f"account={window.account or '-'} pid={process_id} "
+        f"confidence={confidence:.4f} "
+        f"coordinate=({point[0]},{point[1]})",
+        flush=True,
+    )
+    return DisconnectedClient(
+        window=window,
+        process_id=process_id,
+        account=window.account,
+        confidence=float(confidence),
+        matched_point=point,
+    )
 
 
 def _normalized_region(value: str) -> str:

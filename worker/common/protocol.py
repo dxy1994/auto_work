@@ -23,6 +23,7 @@ TYPE_TRADE_OFFER_DECISION = "trade_offer_decision"
 TYPE_TRADE_STATUS = "trade_status"
 TYPE_TRADE_BUYER_REVIEW = "trade_buyer_review"
 TYPE_TRADE_GAME_SCREENSHOT = "trade_game_screenshot"
+TYPE_GAME_CLIENT_DISCONNECTED = "game_client_disconnected"
 TYPE_GREETING_RESULT = "greeting_result"
 TYPE_CHAT_RESULT = "chat_result"
 
@@ -153,6 +154,22 @@ def trade_game_screenshot_msg(
         "assignment_id": assignment_id,
         "request_id": request_id,
         "screenshot_path": screenshot_path,
+    }
+
+
+def game_client_disconnected_msg(
+        *, game_code: str, game_name: str, account: str,
+        process_id: int, confidence: float,
+        game_account_id: Optional[int] = None) -> dict:
+    return {
+        "type": TYPE_GAME_CLIENT_DISCONNECTED,
+        "game_code": game_code,
+        "game_name": game_name,
+        "account": account,
+        "game_account_id": game_account_id,
+        "process_id": int(process_id),
+        "confidence": float(confidence),
+        "reason": "server_connection_lost_dialog",
     }
 
 

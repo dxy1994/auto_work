@@ -4,7 +4,7 @@
       <div>
         <div class="heading-kicker">LIVE LISTING LEDGER</div>
         <h1>平台在售商品</h1>
-        <p>核对平台实际在售记录与系统解析结果。只有完整快照确认后，列表才会新增、更新或移除。</p>
+        <p>仅核对平台“上架中”的商品；范围库存按最高值比对，可将平台抓取值同步到系统库存。</p>
       </div>
       <el-button type="primary" :loading="loading" @click="fetchList">
         <el-icon><Refresh /></el-icon>
@@ -149,8 +149,33 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column prop="quantity_text" label="数量" width="120" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.quantity_text || '-' }}</template>
+        <el-table-column label="平台库存" width="155" show-overflow-tooltip>
+          <template #default="{ row }">
+            <div class="stock-cell">
+              <span>{{ row.quantity_text || '-' }}</span>
+              <small v-if="row.parsed_quantity !== null && row.parsed_quantity !== undefined">
+                比对值 {{ formatStock(row.parsed_quantity) }}
+              </small>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="系统库存" width="145" align="center">
+          <template #default="{ row }">
+            <div class="inventory-cell">
+              <strong v-if="row.inventory_stock !== null && row.inventory_stock !== undefined">
+                {{ formatStock(row.inventory_stock) }}
+              </strong>
+              <span v-else>-</span>
+              <el-tag
+                v-if="row.parse_status === 'matched'"
+                :type="inventoryStatusType(row.inventory_comparison_status)"
+                size="small"
+                effect="plain"
+              >
+                {{ inventoryStatusLabel(row.inventory_comparison_status) }}
+              </el-tag>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column prop="price_text" label="平台价格" width="120" show-overflow-tooltip>
           <template #default="{ row }">
@@ -175,11 +200,34 @@
         <el-table-column label="同步时间" width="160">
           <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
         </el-table-column>
+        <el-table-column label="操作" width="120" align="center" fixed="right">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.parse_status === 'matched'"
+              :content="syncButtonHint(row)"
+              placement="left"
+            >
+              <span>
+                <el-button
+                  type="warning"
+                  plain
+                  size="small"
+                  :loading="syncingId === row.id"
+                  :disabled="row.inventory_comparison_status !== 'mismatch'"
+                  @click="handleSyncInventory(row)"
+                >
+                  同步库存
+                </el-button>
+              </span>
+            </el-tooltip>
+            <span v-else class="muted-value">待解析</span>
+          </template>
+        </el-table-column>
       </el-table>
     </div>
 
     <div class="table-footer">
-      <span>平台商品消失后，会在下一次成功的完整快照中从此处同步移除。</span>
+      <span>下架或隐藏商品会在下一次成功的完整快照中移除；“同步库存”会以平台抓取值覆盖系统库存。</span>
       <el-pagination
         v-model:current-page="page"
         v-model:page-size="pageSize"
@@ -195,12 +243,13 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getAllAccounts,
   getAllGames,
   getAllWebsites,
   getPlatformSalesProducts,
+  syncPlatformSalesProductInventory,
 } from '../api'
 
 const websites = ref([])
@@ -211,6 +260,7 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
 const loading = ref(false)
+const syncingId = ref(null)
 
 const filterWebsiteId = ref(null)
 const filterAccountId = ref(null)
@@ -281,6 +331,42 @@ function parseStatusType(status) {
   }[status] || 'info'
 }
 
+function inventoryStatusLabel(status) {
+  return {
+    matched: '一致',
+    mismatch: '不一致',
+    quantity_unavailable: '数量未解析',
+    inventory_missing: '库存未配置',
+    not_matched: '待解析',
+  }[status] || '未核对'
+}
+
+function inventoryStatusType(status) {
+  return {
+    matched: 'success',
+    mismatch: 'danger',
+    quantity_unavailable: 'info',
+    inventory_missing: 'warning',
+  }[status] || 'info'
+}
+
+function formatStock(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return String(value ?? '-')
+  return new Intl.NumberFormat('zh-CN', {
+    maximumFractionDigits: 0,
+  }).format(numeric)
+}
+
+function syncButtonHint(row) {
+  return {
+    matched: '平台库存与系统库存一致，无需同步',
+    mismatch: '以平台抓取库存覆盖系统库存',
+    quantity_unavailable: '平台数量无法解析，不能同步',
+    inventory_missing: '未配置对应的大区物品库存，不能同步',
+  }[row.inventory_comparison_status] || '当前商品不能同步库存'
+}
+
 function formatTime(value) {
   if (!value) return '-'
   return String(value).replace('T', ' ').slice(0, 19)
@@ -345,6 +431,36 @@ function handleWebsiteChange() {
 function handlePageSizeChange() {
   page.value = 1
   fetchList()
+}
+
+async function handleSyncInventory(row) {
+  if (row.inventory_comparison_status !== 'mismatch') return
+  const platformStock = formatStock(row.parsed_quantity)
+  const systemStock = formatStock(row.inventory_stock)
+  try {
+    await ElMessageBox.confirm(
+      `确认以平台抓取库存 ${platformStock} 覆盖当前系统库存 ${systemStock}？若平台数量是范围，已取最高值。`,
+      '同步系统库存',
+      {
+        type: 'warning',
+        confirmButtonText: '确认同步',
+        cancelButtonText: '取消',
+      },
+    )
+  } catch (_error) {
+    return
+  }
+
+  syncingId.value = row.id
+  try {
+    await syncPlatformSalesProductInventory(row.id)
+    ElMessage.success(`库存已同步为 ${platformStock}`)
+    await fetchList()
+  } catch (error) {
+    ElMessage.error(`同步库存失败：${error.message}`)
+  } finally {
+    syncingId.value = null
+  }
 }
 
 onMounted(async () => {
@@ -505,6 +621,17 @@ onMounted(async () => {
 }
 .price-value { color: #8b4b13; font-weight: 650; }
 .muted-value { color: #a4acb5; }
+.stock-cell, .inventory-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stock-cell small { color: #7d8792; font-size: 11px; }
+.inventory-cell { align-items: center; }
+.inventory-cell strong {
+  color: var(--ledger-navy);
+  font: 650 12px/1.4 "SFMono-Regular", Consolas, monospace;
+}
 
 .table-footer {
   display: flex;

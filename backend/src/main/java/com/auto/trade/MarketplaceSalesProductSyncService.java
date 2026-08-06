@@ -32,18 +32,23 @@ public class MarketplaceSalesProductSyncService {
     private final GameService gameService;
     private final GameRegionService regionService;
     private final GameItemService gameItemService;
+    private final MarketplaceInventoryReconciliationService
+            inventoryReconciliationService;
 
     public MarketplaceSalesProductSyncService(
             PlatformAccountService accountService,
             PlatformSalesProductService productService,
             GameService gameService,
             GameRegionService regionService,
-            GameItemService gameItemService) {
+            GameItemService gameItemService,
+            MarketplaceInventoryReconciliationService
+                    inventoryReconciliationService) {
         this.accountService = accountService;
         this.productService = productService;
         this.gameService = gameService;
         this.regionService = regionService;
         this.gameItemService = gameItemService;
+        this.inventoryReconciliationService = inventoryReconciliationService;
     }
 
     /**
@@ -73,6 +78,7 @@ public class MarketplaceSalesProductSyncService {
         List<Game> activeGames = gameService.findAllActiveOrdered();
         Map<Integer, List<GameRegion>> activeRegions = new HashMap<>();
         Map<String, GameItem> itemMatches = new HashMap<>();
+        List<PlatformSalesProduct> reconciledProducts = new ArrayList<>();
 
         for (SalesProductObservation observation : message.products()) {
             observedIds.add(observation.platformProductId());
@@ -86,6 +92,7 @@ public class MarketplaceSalesProductSyncService {
                     observation.platformProductId());
             PlatformSalesProduct target = existing == null
                     ? new PlatformSalesProduct() : existing;
+            PlatformSalesProduct reconciledTarget = target;
             boolean changed = existing != null && differs(
                     existing, account, message.platform(),
                     observation, resolution);
@@ -111,6 +118,7 @@ public class MarketplaceSalesProductSyncService {
                     applySnapshot(
                             raced, account, message.platform(),
                             observation, resolution);
+                    reconciledTarget = raced;
                     if (racedChanged) {
                         productService.updateById(raced);
                         updated++;
@@ -124,8 +132,16 @@ public class MarketplaceSalesProductSyncService {
             } else {
                 unchanged++;
             }
+            reconciledProducts.add(reconciledTarget);
         }
 
+        inventoryReconciliationService.reconcileSnapshotProducts(
+                reconciledProducts);
+        existingByProductId.forEach((productId, existing) -> {
+            if (!observedIds.contains(productId)) {
+                inventoryReconciliationService.dismissRemovedProduct(existing);
+            }
+        });
         int deleted = productService.deleteMissing(accountId, observedIds);
         return new SalesProductsSyncResult(
                 message.products().size(),

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import sys
 import threading
 import unittest
@@ -169,6 +170,20 @@ class StableSnapshotTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [], await worker._extract_sales_products_page())
 
+    async def test_itemmania_excludes_recognized_hidden_rows(self):
+        worker = ManiaRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(reporter=None, account_id=9))
+        worker._page = self._worker_page({
+            "total_rows": 2,
+            "empty_rows": 0,
+            "inactive_rows": 2,
+            "products": [],
+        })
+
+        self.assertEqual(
+            [], await worker._extract_sales_products_page())
+
     async def test_itembay_rejects_unrecognized_empty_state(self):
         worker = ItembayRefreshWorker(
             _FakeSession(), None,
@@ -194,6 +209,33 @@ class StableSnapshotTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [], await worker._extract_sales_products_page())
+
+    async def test_itembay_excludes_recognized_hidden_rows(self):
+        worker = ItembayRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(reporter=None, account_id=9))
+        worker._page = self._worker_page({
+            "total_rows": 1,
+            "empty_rows": 0,
+            "inactive_rows": 1,
+            "products": [],
+        })
+
+        self.assertEqual(
+            [], await worker._extract_sales_products_page())
+
+    def test_marketplace_extractors_keep_only_active_listings(self):
+        mania_source = inspect.getsource(
+            ManiaRefreshWorker._extract_sales_products_page)
+        bay_source = inspect.getsource(
+            ItembayRefreshWorker._extract_sales_products_page)
+        from monitor.monitoring.platforms.barotem import BarotemRefreshWorker
+        barotem_source = inspect.getsource(
+            BarotemRefreshWorker._extract_sales_products_page)
+
+        self.assertIn(".list_icon.hide", mania_source)
+        self.assertIn('a[title="수정"]', bay_source)
+        self.assertIn("classList.contains('on')", barotem_source)
 
     async def test_itemmania_does_not_report_unstable_snapshot(self):
         reporter = SimpleNamespace(

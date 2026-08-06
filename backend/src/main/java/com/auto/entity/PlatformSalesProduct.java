@@ -57,6 +57,20 @@ public class PlatformSalesProduct {
 
     private String platformRegisteredAt;
 
+    /** 从平台数量文本解析出的比对值；范围数量取上限。 */
+    @TableField(exist = false)
+    private Long parsedQuantity;
+
+    @TableField(exist = false)
+    private Integer inventoryId;
+
+    @TableField(exist = false)
+    private Long inventoryStock;
+
+    /** matched / mismatch / quantity_unavailable / inventory_missing / not_matched。 */
+    @TableField(exist = false)
+    private String inventoryComparisonStatus;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

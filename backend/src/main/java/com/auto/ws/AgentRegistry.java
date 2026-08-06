@@ -10,6 +10,7 @@ import com.auto.trade.MachineSessionLost;
 import com.auto.trade.MachineSessionRestored;
 import com.auto.trade.OrderMonitorRestored;
 import com.auto.trade.OrderMonitorStopped;
+import com.auto.trade.GameClientDisconnected;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -277,6 +278,10 @@ public class AgentRegistry {
 
     public WorkerRuntimeStatus getRuntimeStatus(int machineId) {
         return runtimeStatuses.get(machineId);
+    }
+
+    public void publishGameClientDisconnected(GameClientDisconnected event) {
+        eventPublisher.publishEvent(event);
     }
 
     public String getMachineRole(int machineId) {

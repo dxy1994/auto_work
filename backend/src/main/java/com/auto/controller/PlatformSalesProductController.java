@@ -3,8 +3,11 @@ package com.auto.controller;
 import com.auto.common.PageRequests;
 import com.auto.entity.PlatformSalesProduct;
 import com.auto.service.PlatformSalesProductService;
+import com.auto.trade.MarketplaceInventoryReconciliationService;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -18,10 +21,15 @@ import java.util.Map;
 public class PlatformSalesProductController {
 
     private final PlatformSalesProductService productService;
+    private final MarketplaceInventoryReconciliationService
+            inventoryReconciliationService;
 
     public PlatformSalesProductController(
-            PlatformSalesProductService productService) {
+            PlatformSalesProductService productService,
+            MarketplaceInventoryReconciliationService
+                    inventoryReconciliationService) {
         this.productService = productService;
+        this.inventoryReconciliationService = inventoryReconciliationService;
     }
 
     @GetMapping
@@ -47,6 +55,7 @@ public class PlatformSalesProductController {
                 parseStatus,
                 keyword,
                 PageRequests.of(page, pageSize));
+        inventoryReconciliationService.enrich(result.getRecords());
         return Map.of(
                 "total", result.getTotal(),
                 "items", result.getRecords());
@@ -54,8 +63,17 @@ public class PlatformSalesProductController {
 
     @GetMapping("/account/{platformAccountId}")
     public List<PlatformSalesProduct> listByAccount(
-            @org.springframework.web.bind.annotation.PathVariable
-            Integer platformAccountId) {
-        return productService.findByAccountId(platformAccountId);
+            @PathVariable Integer platformAccountId) {
+        List<PlatformSalesProduct> products =
+                productService.findByAccountId(platformAccountId);
+        inventoryReconciliationService.enrich(products);
+        return products;
+    }
+
+    @PostMapping("/{productId}/sync-inventory")
+    public PlatformSalesProduct syncInventory(
+            @PathVariable Integer productId) {
+        return inventoryReconciliationService
+                .syncInventoryFromPlatform(productId);
     }
 }

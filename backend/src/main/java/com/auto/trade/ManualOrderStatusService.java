@@ -55,6 +55,7 @@ public class ManualOrderStatusService {
             throw new IllegalStateException("订单正在自动交易，不能直接标记完成");
         }
 
+        clearErrorFields(order);
         completionService.complete(order);
         resolveReviewAssignment(order, true);
         order.setDeliveryStatus("completed");
@@ -128,6 +129,11 @@ public class ManualOrderStatusService {
         order.setAssignedMachineId(null);
         order.setGameAccountId(null);
         order.setAssignedAt(null);
+    }
+
+    private static void clearErrorFields(GameItemOrder order) {
+        order.setLastErrorCode(null);
+        order.setLastErrorMessage(null);
     }
 
     private GameItemOrder lockOrder(Integer orderId) {

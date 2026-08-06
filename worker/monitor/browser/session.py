@@ -26,6 +26,13 @@ VIEWPORT = {"width": 1280, "height": 800}
 _USER_DATA_ROOT = str(monitor_user_data_root())
 _CHROMIUM_SANDBOX = sys.platform != "linux"
 
+_DRIVER_CONNECTION_ERROR_MARKERS = (
+    "connection closed while reading from the driver",
+    "connection closed while writing to the driver",
+    "connection closed while sending to the driver",
+    "playwright connection closed",
+)
+
 _CHROME_PATHS = [
     os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -86,6 +93,8 @@ class BrowserSession:
         self._transient_tasks: set = set()
         self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
         self._closing = False
+        self._disconnect_event: Optional[asyncio.Event] = None
+        self._disconnect_reason = ""
         # 平台订单号到聊天页的账号级缓存。订单监控会在读取列表时写入，
         # 聊天发送器因此可以直接打开会话，不必为每条消息再次扫描订单页。
         self._conversation_url_cache: Dict[str, Dict[str, str]] = {}
@@ -104,6 +113,11 @@ class BrowserSession:
         """浏览器与持久化上下文是否仍可使用。"""
         if self._context is None or self._playwright is None:
             return False
+        if (
+            self._disconnect_event is not None
+            and self._disconnect_event.is_set()
+        ):
+            return False
         try:
             if self._browser is not None and not self._browser.is_connected():
                 return False
@@ -111,6 +125,27 @@ class BrowserSession:
             return True
         except Exception:
             return False
+
+    @property
+    def disconnect_reason(self) -> str:
+        """返回最近一次非主动浏览器退出的原因。"""
+        return self._disconnect_reason
+
+    @staticmethod
+    def is_driver_connection_error(error: BaseException) -> bool:
+        """识别 Patchright 驱动断连，包括被业务异常包装后的异常链。"""
+        current: Optional[BaseException] = error
+        visited = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            message = str(current).casefold()
+            if any(
+                marker in message
+                for marker in _DRIVER_CONNECTION_ERROR_MARKERS
+            ):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     def remember_conversation_url(
             self, platform: str, order_no: str, url: str) -> None:
@@ -253,6 +288,7 @@ class BrowserSession:
             **launch_kwargs,
         )
         self._browser = self._context.browser
+        self._bind_lifecycle_events()
         print(f"[BrowserSession:{self._account_id}] [5/5] 上下文已创建, 选取主页面...", flush=True)
 
         self._main_page = await self._pick_main_page()
@@ -266,6 +302,68 @@ class BrowserSession:
 
         print(f"[BrowserSession:{self._account_id}] 浏览器已启动, "
               f"main_page={self._main_page.url}")
+
+    def _bind_lifecycle_events(self):
+        """监听浏览器整体退出，确保 Worker 卡住时健康监控仍能触发重启。"""
+        disconnect_event = asyncio.Event()
+        self._disconnect_event = disconnect_event
+        self._disconnect_reason = ""
+
+        def _mark_disconnected(reason: str):
+            # 旧上下文的延迟事件不能污染已经重启的新会话。
+            self.mark_unhealthy(reason, expected_event=disconnect_event)
+
+        try:
+            self._context.on(
+                "close",
+                lambda *_args: _mark_disconnected("浏览器上下文已关闭"),
+            )
+        except Exception:
+            pass
+        try:
+            if self._browser is not None:
+                self._browser.on(
+                    "disconnected",
+                    lambda *_args: _mark_disconnected("浏览器进程已退出"),
+                )
+        except Exception:
+            pass
+
+    def mark_unhealthy(
+            self, reason: str,
+            expected_event: Optional[asyncio.Event] = None) -> None:
+        """把驱动或浏览器整体故障标记为不可用，交由外层统一重启。"""
+        if self._closing:
+            return
+        if (
+            expected_event is not None
+            and self._disconnect_event is not expected_event
+        ):
+            return
+        if self._disconnect_event is None:
+            self._disconnect_event = asyncio.Event()
+        if self._disconnect_event.is_set():
+            return
+        self._disconnect_reason = reason
+        self._disconnect_event.set()
+        print(
+            f"[BrowserSession:{self._account_id}] 检测到{reason}，"
+            "将自动重启浏览器"
+        )
+
+    async def probe_connection(self, timeout_seconds: float = 3.0) -> bool:
+        """通过 Context API 实际往返驱动，避免只读取缓存状态而误判存活。"""
+        if not self.is_alive():
+            return False
+        try:
+            await asyncio.wait_for(
+                self._context.cookies(),
+                timeout=max(0.1, timeout_seconds),
+            )
+            return True
+        except Exception as exc:
+            self.mark_unhealthy(f"浏览器驱动连接探测失败: {exc}")
+            return False
 
     async def reset_after_crash(self):
         """丢弃已异常退出的运行时句柄，保留本地浏览器资料用于自动重启。"""
@@ -282,7 +380,9 @@ class BrowserSession:
             await asyncio.gather(*active_tasks, return_exceptions=True)
         try:
             if self._playwright is not None:
-                await self._playwright.stop()
+                await asyncio.wait_for(
+                    self._playwright.stop(), timeout=3.0
+                )
         except Exception:
             pass
         self._playwright = None
@@ -296,6 +396,8 @@ class BrowserSession:
         self._login_result = None
         self._owner_loop = None
         self._closing = False
+        self._disconnect_event = None
+        self._disconnect_reason = ""
         print(f"[BrowserSession:{self._account_id}] 已清理异常会话，准备自动重启浏览器")
         return True
 

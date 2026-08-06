@@ -8,6 +8,7 @@ import com.auto.trade.DeliveryConfirmationService;
 import com.auto.trade.MarketplaceOrderIngestionService;
 import com.auto.trade.OrderMonitorAutoStartService;
 import com.auto.trade.TradeDispatchCoordinator;
+import com.auto.trade.GameClientDisconnected;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -138,4 +139,29 @@ class AgentWebSocketHandlerHardwareBindingTest {
                 org.mockito.ArgumentMatchers.argThat(value -> value instanceof java.util.List<?> list
                         && list.isEmpty()));
     }
+
+    @Test
+    void currentGameExecutorSessionPublishesDisconnectedClientEvent() throws Exception {
+        session.getAttributes().put("machineId", 7);
+        when(registry.isCurrentSession(7, session)).thenReturn(true);
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"game_client_disconnected",
+                 "game_code":"lineage_classic","game_name":"天堂经典版",
+                 "account":"lineage@example.com","game_account_id":19,
+                 "process_id":4321,"confidence":0.973,
+                 "reason":"server_connection_lost_dialog"}
+                """));
+
+        ArgumentCaptor<GameClientDisconnected> event =
+                ArgumentCaptor.forClass(GameClientDisconnected.class);
+        verify(registry).publishGameClientDisconnected(event.capture());
+        assertEquals(7, event.getValue().machineId());
+        assertEquals("lineage_classic", event.getValue().gameCode());
+        assertEquals("lineage@example.com", event.getValue().account());
+        assertEquals(19, event.getValue().gameAccountId());
+        assertEquals(4321, event.getValue().processId());
+        assertEquals(0.973, event.getValue().confidence());
+    }
+
 }

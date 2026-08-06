@@ -81,6 +81,40 @@ class SystemAlertEventListenerTest {
     }
 
     @Test
+    void gameDisconnectCreatesMachineSpecificCriticalAlert() {
+        Machine machine = new Machine();
+        machine.setId(7);
+        machine.setName("游戏机 A");
+        machine.setHostname("game-a");
+        machine.setMacAddress("AA:BB:CC:DD:EE:07");
+        machine.setIpAddress("192.168.1.27");
+        when(machineService.getById(7)).thenReturn(machine);
+
+        listener.onGameClientDisconnected(new GameClientDisconnected(
+                7,
+                "lineage_classic",
+                "天堂经典版",
+                "lineage@example.com",
+                19,
+                4321,
+                0.973,
+                "server_connection_lost_dialog"));
+
+        verify(alertService).openOrRefresh(
+                eq("game_client_disconnected"),
+                eq("machine:7:game:lineage_classic:disconnected"),
+                eq(7), isNull(), eq("critical"),
+                eq("天堂经典版服务器连接已断开"),
+                argThat(message -> message.contains("名称 游戏机 A")
+                        && message.contains("主机名 game-a")
+                        && message.contains("lineage@example.com")
+                        && message.contains("中控游戏账号 ID #19")
+                        && message.contains("PID 4321")
+                        && message.contains("97.3%")
+                        && message.contains("关闭该窗口对应的游戏进程")));
+    }
+
+    @Test
     void unexpectedMonitorStopCreatesAccountAlert() {
         Machine machine = new Machine();
         machine.setId(7);

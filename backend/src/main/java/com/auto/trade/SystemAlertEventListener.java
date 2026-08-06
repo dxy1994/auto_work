@@ -58,6 +58,33 @@ public class SystemAlertEventListener {
     }
 
     @EventListener
+    public void onGameClientDisconnected(GameClientDisconnected event) {
+        Machine machine = machineService.getById(event.machineId());
+        String gameName = safe(event.gameName(), safe(event.gameCode(), "未知游戏"));
+        String account = safe(event.account(), "未识别");
+        String process = event.processId() == null
+                ? "未识别" : "PID " + event.processId();
+        String confidence = String.format("%.1f%%", event.confidence() * 100.0);
+        String gameAccount = event.gameAccountId() == null
+                ? "" : "；中控游戏账号 ID #" + event.gameAccountId();
+        String message = "检测机器：" + machineIdentity(machine, event.machineId())
+                + "。游戏：" + gameName
+                + "；登录账号：" + account + gameAccount
+                + "；进程：" + process
+                + "；断线弹窗匹配度：" + confidence
+                + "。原因：检测到服务器连接已断开弹窗。"
+                + "执行器已通知中控并将关闭该窗口对应的游戏进程。"
+                + "解决方案：检查网络和服务器状态后，重新启动游戏客户端并登录。";
+        alertService.openOrRefresh(
+                "game_client_disconnected",
+                "machine:" + event.machineId() + ":game:"
+                        + safe(event.gameCode(), "unknown") + ":disconnected",
+                event.machineId(), null, "critical",
+                gameName + "服务器连接已断开",
+                message);
+    }
+
+    @EventListener
     public void onOrderMonitorStopped(OrderMonitorStopped event) {
         Machine machine = machineService.getById(event.machineId());
         PlatformAccount account = accountService.getById(event.accountId());

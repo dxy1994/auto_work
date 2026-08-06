@@ -12,6 +12,7 @@ import com.auto.trade.OrderDetectedMessage;
 import com.auto.trade.OrderMonitorAutoStartService;
 import com.auto.trade.SalesProductsSnapshotMessage;
 import com.auto.trade.SalesProductsSyncResult;
+import com.auto.trade.GameClientDisconnected;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -132,6 +133,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                 case "trade_status" -> handleTradeStatus(session, raw);
                 case "trade_buyer_review" -> handleTradeBuyerReview(session, raw);
                 case "trade_game_screenshot" -> handleTradeGameScreenshot(session, raw);
+                case "game_client_disconnected" ->
+                        handleGameClientDisconnected(session, raw);
                 case "order_detected" -> handleOrderDetected(session, raw);
                 case "check_orders" -> handleCheckOrders(session, raw);
                 case "sales_products_snapshot" ->
@@ -197,6 +200,35 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         } catch (IllegalStateException e) {
             log.warn("[Trade] 忽略无效交易状态 machine_id={}: {}", machineId, e.getMessage());
         }
+    }
+
+    private void handleGameClientDisconnected(
+            WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+            log.warn("[GameDisconnect] 忽略非当前机器会话的掉线通知 machine_id={}",
+                    machineId);
+            return;
+        }
+        String gameCode = str(raw.get("game_code"));
+        Integer processId = asInt(raw.get("process_id"));
+        Double confidence = asDouble(raw.get("confidence"));
+        if (gameCode == null || gameCode.isBlank()
+                || processId == null || processId <= 0
+                || confidence == null || confidence < 0 || confidence > 1) {
+            log.warn("[GameDisconnect] 忽略字段不完整的掉线通知 machine_id={}",
+                    machineId);
+            return;
+        }
+        registry.publishGameClientDisconnected(new GameClientDisconnected(
+                machineId,
+                gameCode,
+                str(raw.get("game_name")),
+                str(raw.get("account")),
+                asInt(raw.get("game_account_id")),
+                processId,
+                confidence,
+                str(raw.get("reason"))));
     }
 
     private Object monitorTasksFromHeartbeat(Map<String, Object> raw) {
@@ -466,6 +498,17 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         }
         try {
             return value == null ? null : Integer.parseInt(value.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Double asDouble(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return value == null ? null : Double.parseDouble(value.toString());
         } catch (NumberFormatException e) {
             return null;
         }
