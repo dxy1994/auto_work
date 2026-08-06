@@ -28,6 +28,20 @@ DEFAULT_ITEMMANIA_TARGET = {
     "upload_auto_send": True,
     "upload_close_selector": "#attach_layer .close",
 }
+DEFAULT_KOREAN_AFFIRMATIVE_REPLIES = (
+    "네",
+    "예",
+    "넵",
+    "네네",
+    "네 본인 맞습니다",
+    "네 본인 맛습니다",
+    "맛습니다",
+    "맞습니다",
+    "맞아요",
+    "본인입니다",
+    "ok",
+    "네 저예요",
+)
 
 
 def send_chat(
@@ -38,7 +52,7 @@ def send_chat(
     keep_open: bool = False,
     post_action: Optional[dict] = None,
 ) -> dict:
-    """同步入口：发送一批有序聊天消息，结束后始终关闭临时聊天页。"""
+    """同步入口：确认问句发送后保持聊天页，直到回答或等待超时。"""
     from monitor.browser.session import BrowserSession
 
     try:
@@ -62,16 +76,35 @@ def send_chat(
         post_action,
         keep_open=False,
     )
+    execution_timeout = _chat_execution_timeout_seconds(normalized_target)
     try:
         future = asyncio.run_coroutine_threadsafe(coroutine, owner_loop)
-        return future.result(timeout=120)
+        return future.result(timeout=execution_timeout)
     except TimeoutError:
         future.cancel()
-        return {"success": False, "message": "聊天发送超时（120s）"}
+        return {
+            "success": False,
+            "message": f"聊天执行超时（{execution_timeout:g}s）",
+            "reply_received": False,
+            "affirmative_reply": False,
+        }
     except Exception as exc:
         if not coroutine.cr_running:
             coroutine.close()
         return {"success": False, "message": f"聊天执行异常: {exc}"}
+
+
+def _chat_execution_timeout_seconds(target: dict) -> float:
+    """外层调用必须晚于页面内回复等待结束，不能提前取消聊天页。"""
+    execution_timeout = 120.0
+    if target.get("wait_for_reply"):
+        reply_timeout_ms = _positive_int(
+            target.get("reply_timeout_ms"), 300_000)
+        execution_timeout = max(
+            execution_timeout,
+            reply_timeout_ms / 1000 + 30,
+        )
+    return execution_timeout
 
 
 def send_web_chat(
@@ -117,7 +150,7 @@ async def _do_send_chat(
     messages: list,
     keep_open: bool = False,
 ) -> dict:
-    """串行执行聊天命令；keep_open 仅为兼容旧调用，页面始终关闭。"""
+    """串行执行聊天命令；回复等待期间保留页面，结束后再关闭。"""
     chat_lock = getattr(session, "_chat_send_lock", None)
     if chat_lock is None:
         chat_lock = asyncio.Lock()
@@ -131,7 +164,7 @@ async def _do_send_chat_locked(
     target: dict,
     messages: list,
 ) -> dict:
-    """打开客户会话并按消息顺序发送；含图片时保留页面 10 秒再关闭。"""
+    """打开客户会话并发送；确认问句发送后持续等待买家第一条回答。"""
     try:
         messages = _normalize_messages(messages)
         target = _normalize_target(target, messages)
@@ -182,6 +215,32 @@ async def _do_send_chat_locked(
                 "message": "客户聊天发送按钮当前不可用，可能已结束或被限制",
             }
 
+        reply_anchor_index = None
+        reply_anchor_start = None
+        reply_anchor_text = ""
+        if target.get("wait_for_reply"):
+            text_indexes = [
+                index for index, message in enumerate(messages)
+                if message["content"]
+            ]
+            if not text_indexes:
+                return {
+                    "success": False,
+                    "message": "确认分类缺少用于询问买家的文字话术",
+                    "reply_received": False,
+                    "affirmative_reply": False,
+                }
+            choice_indexes = [
+                index for index in text_indexes
+                if "네" in messages[index]["content"]
+                and "아니요" in messages[index]["content"]
+            ]
+            # 优先选择同时包含“네 / 아니요”选项的当前问句；只匹配选项，
+            # 不硬编码整段话术。若以后去掉选项字样，则回退到最后一条确认文字。
+            reply_anchor_index = (
+                choice_indexes[-1] if choice_indexes else text_indexes[-1]
+            )
+
         image_base = _image_base_url()
         for index, message in enumerate(messages):
             for image_url in message["image_urls"]:
@@ -198,6 +257,10 @@ async def _do_send_chat_locked(
 
             content = message["content"]
             if content:
+                if index == reply_anchor_index:
+                    reply_anchor_start = await _conversation_message_count(
+                        page, target)
+                    reply_anchor_text = content
                 sent_before = await _sent_message_count(page, target)
                 await input_box.click()
                 await page.keyboard.type(content, delay=50)
@@ -216,6 +279,39 @@ async def _do_send_chat_locked(
                         ),
                     }
 
+        if target.get("wait_for_reply"):
+            reply, anchor_seen = await _wait_for_customer_reply_after_anchor(
+                page,
+                target,
+                reply_anchor_start or 0,
+                reply_anchor_text,
+            )
+            if reply is None:
+                return {
+                    "success": False,
+                    "message": (
+                        "未在会话中定位到本次确认问句话术"
+                        if not anchor_seen
+                        else "等待买家按要求回答超时"
+                    ),
+                    "reply_received": False,
+                    "affirmative_reply": False,
+                    "reply_text": "",
+                }
+            affirmative = _is_korean_affirmative_reply(
+                reply, target.get("affirmative_replies") or ())
+            return {
+                "success": affirmative,
+                "message": (
+                    "买家已作出肯定回答"
+                    if affirmative
+                    else "买家未按要求肯定回答，拒绝本次交易"
+                ),
+                "reply_received": True,
+                "affirmative_reply": affirmative,
+                "reply_text": reply,
+            }
+
         return {
             "success": True,
             "message": f"聊天发送成功（{len(messages)} 条消息）",
@@ -226,7 +322,7 @@ async def _do_send_chat_locked(
         try:
             if page:
                 try:
-                    if has_images:
+                    if has_images and not target.get("wait_for_reply"):
                         try:
                             await page.wait_for_timeout(
                                 IMAGE_CHAT_CLOSE_DELAY_MS
@@ -1064,6 +1160,28 @@ def _normalize_target(target: dict, messages: list) -> dict:
             100,
             _positive_int(result.get("sent_timeout_ms"), 10000),
         )
+    result["wait_for_reply"] = result.get("wait_for_reply") is True
+    if result["wait_for_reply"]:
+        for key, label in (
+            ("conversation_selector", "聊天消息顺序选择器"),
+            ("conversation_self_class", "己方聊天消息类名"),
+            ("conversation_text_selector", "聊天文字选择器"),
+        ):
+            result[key] = str(result.get(key) or "").strip()
+            if not result[key]:
+                raise ValueError(f"{label}未配置")
+        result["reply_timeout_ms"] = min(
+            300_000,
+            max(
+                1_000,
+                _positive_int(result.get("reply_timeout_ms"), 300_000),
+            ),
+        )
+        raw_replies = result.get("affirmative_replies")
+        replies = raw_replies if isinstance(raw_replies, (list, tuple)) else ()
+        result["affirmative_replies"] = tuple(
+            str(value).strip() for value in replies if str(value).strip()
+        ) or DEFAULT_KOREAN_AFFIRMATIVE_REPLIES
     max_text_length = _positive_int(
         result.get("max_text_length"), 0)
     if max_text_length > 0:
@@ -1139,6 +1257,99 @@ async def _wait_for_sent_message(
             return True
         await page.wait_for_timeout(100)
     return await sent_items.count() > previous_count
+
+
+async def _conversation_message_count(page, target: dict) -> int:
+    selector = str(target.get("conversation_selector") or "").strip()
+    if not selector:
+        return 0
+    return await page.locator(selector).count()
+
+
+async def _read_conversation_message(item, target: dict):
+    """读取一条真实聊天 DOM，并区分己方、买家和非消息行。"""
+    text_selector = str(
+        target.get("conversation_text_selector") or ""
+    ).strip()
+    text_item = item.locator(text_selector).first
+    if await text_item.count() == 0:
+        return None
+    class_name = str(await item.get_attribute("class") or "")
+    self_class = str(target.get("conversation_self_class") or "").strip()
+    text = str(await text_item.inner_text()).strip()
+    return self_class in class_name.split(), text, text_item
+
+
+async def _wait_for_customer_reply_after_anchor(
+        page, target: dict, start_index: int, anchor_text: str):
+    """只读取本次动态确认问句之后的第一条买家消息。"""
+    selector = str(target.get("conversation_selector") or "").strip()
+    timeout_ms = min(
+        300_000,
+        max(
+            1_000,
+            _positive_int(target.get("reply_timeout_ms"), 300_000),
+        ),
+    )
+    expected_anchor = _normalize_reply_candidate(anchor_text)
+    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+    conversation = page.locator(selector)
+    next_index = max(0, int(start_index))
+    anchor_seen = False
+    while asyncio.get_running_loop().time() < deadline:
+        count = await conversation.count()
+        while next_index < count:
+            item = conversation.nth(next_index)
+            next_index += 1
+            entry = await _read_conversation_message(item, target)
+            if entry is None:
+                # ItemBay 日期/系统通知行也位于同一列表，不属于对话。
+                continue
+            is_self, text, text_item = entry
+            if not anchor_seen:
+                if (
+                    is_self
+                    and expected_anchor
+                    and _normalize_reply_candidate(text) == expected_anchor
+                ):
+                    anchor_seen = True
+                continue
+            if is_self:
+                continue
+            if not text:
+                # 图片、贴图等非文字回答属于“其他回答”，直接拒绝。
+                await page.wait_for_timeout(100)
+                try:
+                    text = str(await text_item.inner_text()).strip()
+                except Exception:
+                    text = ""
+            return (text or "[非文字回复]")[:500], True
+        await page.wait_for_timeout(250)
+    return None, anchor_seen
+
+
+def _normalize_reply_candidate(value: object) -> str:
+    return "".join(
+        character.casefold()
+        for character in str(value or "")
+        if character.isalnum()
+    )
+
+
+def _is_korean_affirmative_reply(reply: str, allowed_replies) -> bool:
+    allowed = {
+        _normalize_reply_candidate(value)
+        for value in allowed_replies
+        if _normalize_reply_candidate(value)
+    }
+    if not allowed:
+        allowed = {
+            _normalize_reply_candidate(value)
+            for value in DEFAULT_KOREAN_AFFIRMATIVE_REPLIES
+        }
+    # 真实 DOM 已将时间排除在气泡文字之外；只允许配置中的完整肯定回答。
+    # 忽略空格、尖括号、标点和英文大小写，但不做子串匹配，避免“네 아니요”误确认。
+    return _normalize_reply_candidate(reply) in allowed
 
 
 async def _locator_is_enabled(locator) -> bool:

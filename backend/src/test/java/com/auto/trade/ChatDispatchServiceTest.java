@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -301,6 +302,79 @@ class ChatDispatchServiceTest {
         assertEquals(
                 false,
                 target.getValue().containsKey("upload_send_selector"));
+    }
+
+    @Test
+    void finalConfirmationUsesGameRequestIdAndWaitsOnlyForNewBuyerReply() {
+        GameItemOrder order = barotemOrder();
+        PlatformAccount account = new PlatformAccount();
+        account.setId(7);
+        account.setWebsiteId(3);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(9);
+        binding.setAccountId(7);
+
+        when(orderService.getById(44)).thenReturn(order);
+        when(accountService.getById(7)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(7))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(9)).thenReturn(9);
+        when(platformService.getById(3)).thenReturn(barotem());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap()))
+                .thenReturn(true);
+
+        service.dispatchTradeFinalConfirmation(
+                44,
+                "game-request-1",
+                List.of(
+                        Map.of("content", "네라고 답해주세요"),
+                        Map.of(
+                                "type", "image",
+                                "image_url", "/uploads/trade-screenshots/proof.png")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> target =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                eq(9),
+                eq("game-request-1"),
+                eq(44),
+                eq(3),
+                eq(7),
+                eq("barotem"),
+                eq("178583752411285073-61"),
+                eq(TradeFinalConfirmationService.PURPOSE),
+                anyList(),
+                target.capture());
+        assertEquals(true, target.getValue().get("wait_for_reply"));
+        assertEquals(
+                "#chatBox .chattingDate.chat_converse",
+                target.getValue().get("conversation_selector"));
+        assertEquals(
+                "from_me",
+                target.getValue().get("conversation_self_class"));
+        assertEquals(
+                ".chat_txt",
+                target.getValue().get("conversation_text_selector"));
+        assertEquals(
+                List.of(
+                        "네",
+                        "예",
+                        "넵",
+                        "네네",
+                        "네 본인 맞습니다",
+                        "네 본인 맛습니다",
+                        "맛습니다",
+                        "맞습니다",
+                        "맞아요",
+                        "본인입니다",
+                        "ok",
+                        "네 저예요"),
+                target.getValue().get("affirmative_replies"));
+        assertEquals(300_000, target.getValue().get("reply_timeout_ms"));
     }
 
     @Test

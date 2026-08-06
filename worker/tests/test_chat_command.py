@@ -8,6 +8,130 @@ from monitor.monitoring.chat import normalize_chat_command, report_chat_result
 
 class ChatCommandTest(unittest.TestCase):
 
+    def test_reply_wait_keeps_outer_chat_execution_alive(self):
+        self.assertEqual(
+            330,
+            sender._chat_execution_timeout_seconds({
+                "wait_for_reply": True,
+                "reply_timeout_ms": 300_000,
+            }),
+        )
+        self.assertEqual(
+            120,
+            sender._chat_execution_timeout_seconds({
+                "wait_for_reply": False,
+            }),
+        )
+
+    def test_configured_korean_affirmative_replies_are_accepted_exactly(self):
+        allowed = sender.DEFAULT_KOREAN_AFFIRMATIVE_REPLIES
+
+        accepted = (
+            "네, 본인 맞습니다.",
+            "네 본인 맛습니다.",
+            "네",
+            "넵",
+            "맛습니다",
+            "맞습니다",
+            "맞아요",
+            "본인입니다",
+            "ok",
+            "OK!",
+            "네,저예요",
+            "예",
+            "네네",
+            "  <네>!  ",
+            "（ 네 ）",
+        )
+        for reply in accepted:
+            with self.subTest(reply=reply):
+                self.assertTrue(
+                    sender._is_korean_affirmative_reply(reply, allowed)
+                )
+
+        self.assertFalse(sender._is_korean_affirmative_reply("네 감사합니다", allowed))
+        self.assertFalse(sender._is_korean_affirmative_reply("아니요", allowed))
+        self.assertFalse(sender._is_korean_affirmative_reply("네 아니요", allowed))
+        self.assertFalse(sender._is_korean_affirmative_reply("네\n아니요", allowed))
+        self.assertFalse(sender._is_korean_affirmative_reply("네 맞나요?", allowed))
+
+    def test_reply_wait_uses_dynamic_question_as_conversation_anchor(self):
+        class TextLocator:
+            def __init__(self, item):
+                self.item = item
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return 1 if self.item["message"] else 0
+
+            async def inner_text(self):
+                return self.item["text"]
+
+        class ItemLocator:
+            def __init__(self, item):
+                self.item = item
+
+            def locator(self, _selector):
+                return TextLocator(self.item)
+
+            async def get_attribute(self, name):
+                return self.item["class"] if name == "class" else None
+
+        class ConversationLocator:
+            def __init__(self, page):
+                self.page = page
+
+            async def count(self):
+                return len(self.page.items)
+
+            def nth(self, index):
+                return ItemLocator(self.page.items[index])
+
+        class Page:
+            def __init__(self):
+                self.items = [
+                    {"class": "buyer", "text": "네", "message": True},
+                    # 打开页面后、确认问句发出前到达的消息不能当作回答。
+                    {"class": "buyer", "text": "아니요", "message": True},
+                    {
+                        "class": "self",
+                        "text": "본인인가요? <네> 혹은 <아니요>라고 회답주세요",
+                        "message": True,
+                    },
+                    # 问句后的己方截图应跳过。
+                    {"class": "self", "text": "", "message": True},
+                    {"class": "buyer", "text": "<네>", "message": True},
+                    {"class": "buyer", "text": "아니요", "message": True},
+                ]
+
+            def locator(self, _selector):
+                return ConversationLocator(self)
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+        reply, anchor_seen = asyncio.run(
+            sender._wait_for_customer_reply_after_anchor(
+                Page(),
+                {
+                    "conversation_selector": ".message",
+                    "conversation_self_class": "self",
+                    "conversation_text_selector": ".text",
+                    "reply_timeout_ms": 1000,
+                },
+                start_index=1,
+                anchor_text=(
+                    "본인인가요? <네> 혹은 <아니요>라고 회답주세요"
+                ),
+            )
+        )
+
+        self.assertTrue(anchor_seen)
+        self.assertEqual("<네>", reply)
+
     def test_normalize_legacy_greeting_as_chat(self):
         command = normalize_chat_command({
             "type": "greeting",

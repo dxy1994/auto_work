@@ -725,9 +725,16 @@ public class TradeDispatchCoordinator {
             if (reviewId == null || reviewId.isBlank() || reviewId.length() > 36) {
                 throw new IllegalStateException("买家审核编号无效");
             }
-            if (screenshotDataUrl == null
-                    || !screenshotDataUrl.startsWith("data:image/png;base64,")
-                    || screenshotDataUrl.length() > 1_800_000) {
+            String screenshotReference = screenshotDataUrl == null
+                    ? "" : screenshotDataUrl.trim();
+            boolean storedScreenshot =
+                    screenshotReference.startsWith("/uploads/trade-screenshots/")
+                    && screenshotReference.length() <= 512
+                    && !screenshotReference.contains("..");
+            boolean inlineScreenshot =
+                    screenshotReference.startsWith("data:image/png;base64,")
+                    && screenshotReference.length() <= 1_800_000;
+            if (!storedScreenshot && !inlineScreenshot) {
                 throw new IllegalStateException("买家审核截图无效或过大");
             }
             TradeAssignment assignment = assignmentService.getOne(
@@ -743,7 +750,7 @@ public class TradeDispatchCoordinator {
             assignment.setExpectedBuyerName(order == null ? null : order.getBuyerCharacter());
             assignment.setObservedBuyerName(truncate(observedBuyer, 255));
             assignment.setBuyerOcrConfidence(ocrConfidence);
-            assignment.setBuyerReviewScreenshot(screenshotDataUrl);
+            assignment.setBuyerReviewScreenshot(screenshotReference);
             assignment.setBuyerReviewRequestedAt(LocalDateTime.now());
             assignment.setBuyerReviewDecidedAt(null);
             if (assignment.getStartedAt() == null) {

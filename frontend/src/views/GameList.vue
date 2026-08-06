@@ -378,6 +378,7 @@
           <el-form-item label="分类" prop="category">
             <el-select v-model="scriptForm.category" placeholder="请选择分类" clearable filterable allow-create style="width:100%">
               <el-option label="招呼" value="招呼" />
+              <el-option label="确认" value="确认" />
               <el-option label="促单" value="促单" />
               <el-option label="售后" value="售后" />
               <el-option label="其他" value="其他" />
@@ -443,6 +444,7 @@
           <el-form-item label="分类" prop="category">
             <el-select v-model="regionScriptForm.category" placeholder="请选择分类" clearable filterable allow-create style="width:100%">
               <el-option label="招呼" value="招呼" />
+              <el-option label="确认" value="确认" />
               <el-option label="促单" value="促单" />
               <el-option label="售后" value="售后" />
               <el-option label="其他" value="其他" />

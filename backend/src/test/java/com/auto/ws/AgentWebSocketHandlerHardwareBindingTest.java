@@ -50,6 +50,7 @@ class AgentWebSocketHandlerHardwareBindingTest {
                 mock(GreetingDispatchService.class),
                 mock(ChatDispatchService.class),
                 mock(DeliveryConfirmationService.class),
+                mock(com.auto.trade.TradeFinalConfirmationService.class),
                 wirelessHidDeviceManager,
                 orderMonitorAutoStartService);
         session = mock(WebSocketSession.class);

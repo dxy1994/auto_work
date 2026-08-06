@@ -1035,9 +1035,9 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertAlmostEqual(1.5, sum(screen_sleeps), places=5)
         self.assertAlmostEqual(1.5, sum(item_sleeps), places=5)
 
-    def test_buyer_ocr_at_90_or_above_auto_accepts_only_matching_name(self):
-        self.assertEqual("accept", buyer_ocr_action("홍길동이", "홍길동", 90.0))
-        self.assertEqual("review", buyer_ocr_action("홍길순", "홍길동", 99.0))
+    def test_buyer_ocr_at_80_or_above_accepts_leniently_verified_name(self):
+        self.assertEqual("accept", buyer_ocr_action("홍길동이", "홍길동", 80.0))
+        self.assertEqual("reject", buyer_ocr_action("홍길순", "홍길동", 99.0))
         self.assertEqual(
             "accept",
             buyer_ocr_action(
@@ -1048,9 +1048,13 @@ class LineageNavigationTest(unittest.TestCase):
             ),
         )
 
-    def test_buyer_ocr_below_90_always_needs_human_review(self):
-        self.assertEqual("review", buyer_ocr_action("홍길동", "홍길동", 89.9))
-        self.assertEqual("review", buyer_ocr_action("", "홍길동", -1.0))
+    def test_buyer_ocr_below_80_is_rejected_even_when_leniently_verified(self):
+        self.assertEqual("reject", buyer_ocr_action("홍길동", "홍길동", 79.9))
+        self.assertEqual(
+            "reject",
+            buyer_ocr_action("훅", "혹", 79.9, verified=True),
+        )
+        self.assertEqual("reject", buyer_ocr_action("", "홍길동", -1.0))
 
     def test_chat_text_is_not_read_as_buyer_without_trade_request_popup(self):
         executor = LineageClassicExecutor(object())
@@ -1229,6 +1233,133 @@ class LineageNavigationTest(unittest.TestCase):
             profile="recognition",
         )
         navigator.vision.capture_data_url.assert_called_once_with(Ui.FULL_CLIENT)
+
+    def test_non_affirmative_reply_rejects_attempt_and_waits_for_real_buyer(self):
+        executor = LineageClassicExecutor(object())
+        navigator = mock.Mock()
+        navigator.wait_for_step.side_effect = [
+            (100, 100),
+            (200, 200),
+            (300, 300),
+            (110, 110),
+            (210, 210),
+            (310, 310),
+        ]
+        executor._wait_for_expected_buyer = mock.Mock(
+            side_effect=["Buyer", "Buyer"])
+        executor._build_transfers = mock.Mock(return_value=[])
+        executor._capture_final_trade_screenshot = mock.Mock(
+            return_value="data:image/png;base64,proof")
+        executor._wait_for_trade_closed = mock.Mock(
+            side_effect=[True, True])
+        confirmation = mock.Mock(side_effect=[
+            {
+                "approved": False,
+                "reply_received": True,
+                "reply_text": "아니요",
+            },
+            {
+                "approved": True,
+                "reply_received": True,
+                "reply_text": "네",
+            },
+        ])
+        executor.set_trade_screenshot_callback(confirmation)
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.build_navigator",
+            return_value=navigator,
+        ):
+            result = executor._execute_sync({
+                **ORDER,
+                "buyer_character": "Buyer",
+            })
+
+        self.assertTrue(result["success"])
+        self.assertEqual("wait_web_confirm", result["status"])
+        self.assertEqual(2, executor._wait_for_expected_buyer.call_count)
+        self.assertEqual(2, confirmation.call_count)
+        navigator.click_region.assert_any_call(TradeUi.FINAL_REJECT_REGION)
+        self.assertEqual(
+            3,
+            navigator.click_region.call_args_list.count(
+                mock.call(TradeUi.FINAL_ACCEPT_REGION)
+            ),
+        )
+
+    def test_buyer_reply_timeout_rejects_attempt_and_ends_order(self):
+        executor = LineageClassicExecutor(object())
+        navigator = mock.Mock()
+        navigator.wait_for_step.side_effect = [
+            (100, 100),
+            (200, 200),
+            (300, 300),
+        ]
+        executor._wait_for_expected_buyer = mock.Mock(return_value="Buyer")
+        executor._build_transfers = mock.Mock(return_value=[])
+        executor._capture_final_trade_screenshot = mock.Mock(
+            return_value="data:image/png;base64,proof")
+        executor._wait_for_trade_closed = mock.Mock(return_value=True)
+        executor.set_trade_screenshot_callback(lambda _screenshot: {
+            "approved": False,
+            "reply_received": False,
+            "error": "等待买家回答超时",
+        })
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.build_navigator",
+            return_value=navigator,
+        ):
+            result = executor._execute_sync({
+                **ORDER,
+                "buyer_character": "Buyer",
+            })
+
+        self.assertEqual("cancelled", result["status"])
+        self.assertEqual("BUYER_FINAL_REPLY_TIMEOUT", result["error_code"])
+        navigator.click_region.assert_any_call(TradeUi.FINAL_REJECT_REGION)
+
+    def test_korean_affirmative_buyer_reply_clicks_final_accept(self):
+        executor = LineageClassicExecutor(object())
+        navigator = mock.Mock()
+        navigator.wait_for_step.side_effect = [
+            (100, 100),
+            (200, 200),
+            (300, 300),
+        ]
+        executor._wait_for_expected_buyer = mock.Mock(return_value="Buyer")
+        executor._build_transfers = mock.Mock(return_value=[])
+        executor._capture_final_trade_screenshot = mock.Mock(
+            return_value="data:image/png;base64,proof")
+        executor._wait_for_trade_closed = mock.Mock(return_value=True)
+        executor.set_trade_screenshot_callback(lambda _screenshot: {
+            "approved": True,
+            "reply_received": True,
+            "reply_text": "네",
+        })
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.build_navigator",
+            return_value=navigator,
+        ):
+            result = executor._execute_sync({
+                **ORDER,
+                "buyer_character": "Buyer",
+            })
+
+        self.assertTrue(result["success"])
+        self.assertEqual("wait_web_confirm", result["status"])
+        navigator.click_region.assert_any_call(TradeUi.FINAL_ACCEPT_REGION)
+        self.assertEqual(
+            2,
+            navigator.click_region.call_args_list.count(
+                mock.call(TradeUi.FINAL_ACCEPT_REGION)
+            ),
+        )
+        self.assertNotIn(
+            mock.call(TradeUi.FINAL_REJECT_REGION),
+            navigator.click_region.call_args_list,
+        )
 
     def test_accepts_buyer_before_locating_inventory_items(self):
         executor = LineageClassicExecutor(object())
@@ -1444,7 +1575,10 @@ class LineageNavigationTest(unittest.TestCase):
             self.assertIsNotNone(vision._template(template))
 
     def test_missing_final_confirmation_reports_recognition_uncertainty(self):
-        source = inspect.getsource(LineageClassicExecutor._execute_sync)
+        source = (
+            inspect.getsource(LineageClassicExecutor._execute_sync)
+            + inspect.getsource(LineageClassicExecutor._execute_trade_attempt)
+        )
 
         self.assertIn("未识别到最终交易确认提示", source)
         self.assertNotIn("没有可继续操作的按钮", source)

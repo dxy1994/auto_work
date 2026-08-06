@@ -12,7 +12,7 @@ from common.protocol import (
     check_orders_msg, order_detected_msg,
     sales_products_snapshot_msg,
     trade_offer_decision_msg, trade_status_msg, trade_buyer_review_msg,
-    trade_game_screenshot_msg,
+    trade_game_screenshot_msg, trade_final_confirmation_msg,
     greeting_result_msg,
     chat_result_msg,
 )
@@ -31,6 +31,8 @@ class Reporter:
         self._order_check_results: dict = {}
         self._trade_screenshot_events: dict = {}
         self._trade_screenshot_results: dict = {}
+        self._trade_final_confirmation_events: dict = {}
+        self._trade_final_confirmation_results: dict = {}
         self._sales_product_sync_events: dict = {}
         self._sales_product_sync_results: dict = {}
 
@@ -87,6 +89,44 @@ class Reporter:
             event = self._trade_screenshot_events.get(request_id)
             if event is not None:
                 self._trade_screenshot_results[request_id] = bool(success)
+        if event:
+            event.set()
+
+    def request_trade_final_confirmation(
+            self, assignment_id, screenshot_path, timeout=330):
+        request_id = str(uuid.uuid4())
+        event = threading.Event()
+        with self._lock:
+            self._trade_final_confirmation_events[request_id] = event
+        try:
+            self._client.send_threadsafe(trade_final_confirmation_msg(
+                assignment_id, request_id, screenshot_path))
+            if not event.wait(timeout):
+                return {
+                    "approved": False,
+                    "reply_received": False,
+                    "error": "等待买家韩文肯定回复超时",
+                }
+            with self._lock:
+                return self._trade_final_confirmation_results.pop(
+                    request_id,
+                    {
+                        "approved": False,
+                        "reply_received": False,
+                        "error": "最终确认回执缺失",
+                    },
+                )
+        finally:
+            with self._lock:
+                self._trade_final_confirmation_events.pop(request_id, None)
+                self._trade_final_confirmation_results.pop(request_id, None)
+
+    def deliver_trade_final_confirmation_result(self, request_id, result):
+        with self._lock:
+            event = self._trade_final_confirmation_events.get(request_id)
+            if event is not None:
+                self._trade_final_confirmation_results[request_id] = dict(
+                    result or {})
         if event:
             event.set()
 

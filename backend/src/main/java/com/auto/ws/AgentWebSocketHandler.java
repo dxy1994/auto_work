@@ -5,6 +5,7 @@ import com.auto.service.WirelessHidDeviceManager.WorkerBinding;
 import com.auto.trade.ChatDispatchService;
 import com.auto.trade.DeliveryConfirmationService;
 import com.auto.trade.TradeDispatchCoordinator;
+import com.auto.trade.TradeFinalConfirmationService;
 import com.auto.trade.MarketplaceOrderIngestionService;
 import com.auto.trade.MarketplaceSalesProductSyncService;
 import com.auto.trade.GreetingDispatchService;
@@ -48,6 +49,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
     private final GreetingDispatchService greetingDispatchService;
     private final ChatDispatchService chatDispatchService;
     private final DeliveryConfirmationService deliveryConfirmationService;
+    private final TradeFinalConfirmationService tradeFinalConfirmationService;
     private final WirelessHidDeviceManager wirelessHidDeviceManager;
     private final OrderMonitorAutoStartService orderMonitorAutoStartService;
 
@@ -60,6 +62,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             GreetingDispatchService greetingDispatchService,
             ChatDispatchService chatDispatchService,
             DeliveryConfirmationService deliveryConfirmationService,
+            TradeFinalConfirmationService tradeFinalConfirmationService,
             WirelessHidDeviceManager wirelessHidDeviceManager,
             OrderMonitorAutoStartService orderMonitorAutoStartService) {
         this.registry = registry;
@@ -70,6 +73,7 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         this.greetingDispatchService = greetingDispatchService;
         this.chatDispatchService = chatDispatchService;
         this.deliveryConfirmationService = deliveryConfirmationService;
+        this.tradeFinalConfirmationService = tradeFinalConfirmationService;
         this.wirelessHidDeviceManager = wirelessHidDeviceManager;
         this.orderMonitorAutoStartService = orderMonitorAutoStartService;
     }
@@ -133,6 +137,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                 case "trade_status" -> handleTradeStatus(session, raw);
                 case "trade_buyer_review" -> handleTradeBuyerReview(session, raw);
                 case "trade_game_screenshot" -> handleTradeGameScreenshot(session, raw);
+                case "trade_final_confirmation" ->
+                        handleTradeFinalConfirmation(session, raw);
                 case "game_client_disconnected" ->
                         handleGameClientDisconnected(session, raw);
                 case "order_detected" -> handleOrderDetected(session, raw);
@@ -301,7 +307,9 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                 str(raw.get("review_id")),
                 str(raw.get("observed_buyer")),
                 confidence instanceof Number number ? number.doubleValue() : -1.0,
-                str(raw.get("screenshot_data_url")));
+                raw.get("screenshot_path") == null
+                        ? str(raw.get("screenshot_data_url"))
+                        : str(raw.get("screenshot_path")));
     }
 
     private void handleTradeGameScreenshot(WebSocketSession session, Map<String, Object> raw) {
@@ -333,6 +341,33 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
             }
         } catch (Exception e) {
             log.warn("[Trade] 游戏交易截图保存回执发送失败: {}", e.getMessage());
+        }
+    }
+
+    private void handleTradeFinalConfirmation(
+            WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        String requestId = str(raw.get("request_id"));
+        try {
+            if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+                throw new IllegalStateException("不是当前机器会话");
+            }
+            String assignmentId = str(raw.get("assignment_id"));
+            String screenshotPath = str(raw.get("screenshot_path"));
+            tradeCoordinator.handleGameTradeScreenshot(
+                    assignmentId, machineId, screenshotPath);
+            tradeFinalConfirmationService.begin(
+                    assignmentId, machineId, requestId, screenshotPath);
+        } catch (Exception e) {
+            String error = e.getMessage() == null
+                    ? "最终确认请求处理失败" : e.getMessage();
+            log.warn(
+                    "[Trade] 最终确认请求失败 machine_id={} request_id={}: {}",
+                    machineId, requestId, error);
+            if (machineId != null && requestId != null && !requestId.isBlank()) {
+                registry.sendTradeFinalConfirmationResult(
+                        machineId, requestId, false, false, "", error);
+            }
         }
     }
 
@@ -422,6 +457,14 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
         String purpose = str(raw.get("purpose"));
         if (DeliveryConfirmationService.PURPOSE.equals(purpose)) {
             deliveryConfirmationService.handleResult(
+                    machineId,
+                    requestId,
+                    orderId,
+                    Boolean.TRUE.equals(raw.get("success")),
+                    str(raw.get("message")),
+                    stringObjectMap(raw.get("details")));
+        } else if (TradeFinalConfirmationService.PURPOSE.equals(purpose)) {
+            tradeFinalConfirmationService.handleChatResult(
                     machineId,
                     requestId,
                     orderId,

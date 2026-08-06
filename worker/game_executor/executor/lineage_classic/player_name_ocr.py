@@ -8,7 +8,7 @@ from typing import Callable
 try:
     import cv2
     import numpy as np
-except ImportError:  # 由调用方转为人工审核
+except ImportError:  # 由调用方按 OCR 不可用安全拒绝
     cv2 = None
     np = None
 

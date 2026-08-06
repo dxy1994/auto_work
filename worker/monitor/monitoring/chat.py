@@ -129,6 +129,9 @@ def report_chat_result(
                         "website_stage",
                         "website_status",
                         "already_completed",
+                        "reply_received",
+                        "affirmative_reply",
+                        "reply_text",
                     )
                     if key in result
                 },

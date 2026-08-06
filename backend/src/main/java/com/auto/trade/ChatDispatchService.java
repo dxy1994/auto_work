@@ -61,6 +61,19 @@ public class ChatDispatchService {
                     + "?iTranSeq={order_no}";
     private static final int ITEMBAY_MAX_TEXT_LENGTH = 800;
     private static final int ITEMBAY_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+    private static final List<String> KOREAN_AFFIRMATIVE_REPLIES = List.of(
+            "네",
+            "예",
+            "넵",
+            "네네",
+            "네 본인 맞습니다",
+            "네 본인 맛습니다",
+            "맛습니다",
+            "맞습니다",
+            "맞아요",
+            "본인입니다",
+            "ok",
+            "네 저예요");
 
     private final GameItemOrderService orderService;
     private final PlatformAccountService accountService;
@@ -98,6 +111,24 @@ public class ChatDispatchService {
                 normalizeMessages(rawMessages),
                 "manual",
                 null);
+    }
+
+    /** 最终游戏确认前发送确认话术与截图，并等待买家新回复。 */
+    public DispatchReceipt dispatchTradeFinalConfirmation(
+            int orderId,
+            String requestId,
+            List<Map<String, Object>> rawMessages) {
+        GameItemOrder order = requireOrder(orderId);
+        Route route = resolveRoute(order);
+        return dispatch(
+                route.machineId(),
+                order,
+                route.platform(),
+                route.accountId(),
+                normalizeMessages(rawMessages),
+                TradeFinalConfirmationService.PURPOSE,
+                null,
+                requestId);
     }
 
     /** Dispatch automatic greeting scripts through the same generic chat command. */
@@ -244,9 +275,28 @@ public class ChatDispatchService {
             List<ChatMessage> messages,
             String purpose,
             Map<String, Object> postAction) {
+        return dispatch(
+                machineId, order, platformRoute, accountId, messages,
+                purpose, postAction, null);
+    }
+
+    private DispatchReceipt dispatch(
+            int machineId,
+            GameItemOrder order,
+            PlatformRoute platformRoute,
+            int accountId,
+            List<ChatMessage> messages,
+            String purpose,
+            Map<String, Object> postAction,
+            String requestedRequestId) {
         Map<String, Object> target =
-                resolveTarget(platformRoute.platform(), platformRoute.code(), order, messages);
-        String requestId = UUID.randomUUID().toString();
+                resolveTarget(
+                        platformRoute.platform(), platformRoute.code(), order,
+                        messages, purpose);
+        String requestId = safe(requestedRequestId).strip();
+        if (requestId.isBlank()) {
+            requestId = UUID.randomUUID().toString();
+        }
         List<Map<String, Object>> payloadMessages =
                 messages.stream().map(ChatMessage::toPayload).toList();
         boolean sent = postAction == null
@@ -511,7 +561,8 @@ public class ChatDispatchService {
             Platform platform,
             String platformCode,
             GameItemOrder order,
-            List<ChatMessage> messages) {
+            List<ChatMessage> messages,
+            String purpose) {
         String orderNo = normalizeOrderNo(order.getSourceOrderNo());
         if (orderNo.isBlank()) {
             throw ApiException.badRequest("订单缺少平台订单号，无法定位客户会话");
@@ -527,6 +578,12 @@ public class ChatDispatchService {
         String blockingPopupCloseSelector =
                 configString(chatConfig, "blocking_popup_close_selector");
         String sentSelector = configString(chatConfig, "sent_selector");
+        String conversationSelector = configString(
+                chatConfig, "conversation_selector");
+        String conversationSelfClass = configString(
+                chatConfig, "conversation_self_class");
+        String conversationTextSelector = configString(
+                chatConfig, "conversation_text_selector");
         boolean uploadAutoSend = configBoolean(chatConfig, "upload_auto_send", true);
         int sentTimeoutMs = configInt(chatConfig, "sent_timeout_ms", 0);
         int maxTextLength = configInt(chatConfig, "max_text_length", 0);
@@ -543,6 +600,19 @@ public class ChatDispatchService {
             if (uploadCloseSelector.isBlank()) {
                 uploadCloseSelector = "#attach_layer .close";
             }
+            if (sentSelector.isBlank()) {
+                sentSelector = ".chat_item.me";
+            }
+            if (conversationSelector.isBlank()) {
+                conversationSelector = ".chat_item.me, .chat_item.another";
+            }
+            if (conversationSelfClass.isBlank()) {
+                conversationSelfClass = "me";
+            }
+            if (conversationTextSelector.isBlank()) {
+                conversationTextSelector = ".chat_msg";
+            }
+            if (sentTimeoutMs <= 0) sentTimeoutMs = 10_000;
         }
         if ("itembay".equals(platformCode)) {
             if (urlTemplate.isBlank()) urlTemplate = ITEMBAY_URL_TEMPLATE;
@@ -557,6 +627,15 @@ public class ChatDispatchService {
             }
             if (sentSelector.isBlank()) {
                 sentSelector = "#chat_container .list_message li.send";
+            }
+            if (conversationSelector.isBlank()) {
+                conversationSelector = "#chat_container .list_message li";
+            }
+            if (conversationSelfClass.isBlank()) {
+                conversationSelfClass = "send";
+            }
+            if (conversationTextSelector.isBlank()) {
+                conversationTextSelector = ".message_balloon";
             }
             if (sentTimeoutMs <= 0) sentTimeoutMs = 10_000;
             if (maxTextLength <= 0) {
@@ -581,6 +660,15 @@ public class ChatDispatchService {
             barotemImageSubmit = true;
             if (sentSelector.isBlank()) {
                 sentSelector = "#chatBox .chattingDate.chat_converse.from_me";
+            }
+            if (conversationSelector.isBlank()) {
+                conversationSelector = "#chatBox .chattingDate.chat_converse";
+            }
+            if (conversationSelfClass.isBlank()) {
+                conversationSelfClass = "from_me";
+            }
+            if (conversationTextSelector.isBlank()) {
+                conversationTextSelector = ".chat_txt";
             }
             if (sentTimeoutMs <= 0) sentTimeoutMs = 10_000;
         }
@@ -650,6 +738,19 @@ public class ChatDispatchService {
         if (!sentSelector.isBlank()) {
             target.put("sent_selector", sentSelector);
             target.put("sent_timeout_ms", sentTimeoutMs > 0 ? sentTimeoutMs : 10_000);
+        }
+        if (TradeFinalConfirmationService.PURPOSE.equals(purpose)) {
+            if (conversationSelector.isBlank()
+                    || conversationSelfClass.isBlank()
+                    || conversationTextSelector.isBlank()) {
+                throw ApiException.badRequest("平台未完整配置确认问句后的聊天判断选择器");
+            }
+            target.put("wait_for_reply", true);
+            target.put("conversation_selector", conversationSelector);
+            target.put("conversation_self_class", conversationSelfClass);
+            target.put("conversation_text_selector", conversationTextSelector);
+            target.put("reply_timeout_ms", 300_000);
+            target.put("affirmative_replies", KOREAN_AFFIRMATIVE_REPLIES);
         }
         if (maxTextLength > 0) {
             target.put("max_text_length", maxTextLength);

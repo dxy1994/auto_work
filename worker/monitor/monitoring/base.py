@@ -113,7 +113,10 @@ class BaseOrderMonitor:
         与 Itemmania 详情页同理：直接在 session owner loop 上调度
         _do_send_chat，不需要 queue/processor/pause。
         """
-        from monitor.chat.sender import _do_send_chat_with_post_action
+        from monitor.chat.sender import (
+            _chat_execution_timeout_seconds,
+            _do_send_chat_with_post_action,
+        )
         from monitor.monitoring.chat import normalize_chat_command, report_chat_result
 
         try:
@@ -140,12 +143,19 @@ class BaseOrderMonitor:
             command["messages"],
             command.get("post_action"),
             keep_open=False)
+        execution_timeout = _chat_execution_timeout_seconds(
+            command["target"])
         try:
             future = asyncio.run_coroutine_threadsafe(coro, session._owner_loop)
-            result = future.result(timeout=120)
+            result = future.result(timeout=execution_timeout)
         except TimeoutError:
             future.cancel()
-            result = {"success": False, "message": "聊天发送超时（120s）"}
+            result = {
+                "success": False,
+                "message": f"聊天执行超时（{execution_timeout:g}s）",
+                "reply_received": False,
+                "affirmative_reply": False,
+            }
         except Exception as e:
             result = {"success": False, "message": str(e)}
 

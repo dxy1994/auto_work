@@ -104,13 +104,12 @@ def buyer_ocr_action(
     *,
     verified: bool = False,
 ) -> str:
-    """高置信整行结果或已知姓名分段严格核验通过时才自动接受。"""
-    if (
-        customer_name_prefix_matches(observed, expected)
-        and (confidence >= 90.0 or verified)
+    """80% 以上且宽松姓名校验通过时接受，否则直接拒绝。"""
+    if confidence >= 80.0 and (
+        verified or customer_name_prefix_matches(observed, expected)
     ):
         return "accept"
-    return "review"
+    return "reject"
 
 
 class LineageClassicExecutor(BaseGameExecutor):
@@ -139,7 +138,7 @@ class LineageClassicExecutor(BaseGameExecutor):
         self._runtime_status = runtime_status
         self._progress: Optional[Callable[[str, str], None]] = None
         self._buyer_review_callback: Optional[Callable[[dict], None]] = None
-        self._trade_screenshot_callback: Optional[Callable[[str], bool]] = None
+        self._trade_screenshot_callback: Optional[Callable[[str], object]] = None
         self._review_condition = threading.Condition()
         self._pending_review_id: Optional[str] = None
         self._review_decision: Optional[bool] = None
@@ -153,7 +152,7 @@ class LineageClassicExecutor(BaseGameExecutor):
     def set_buyer_review_callback(self, callback: Optional[Callable[[dict], None]]) -> None:
         self._buyer_review_callback = callback
 
-    def set_trade_screenshot_callback(self, callback: Optional[Callable[[str], bool]]) -> None:
+    def set_trade_screenshot_callback(self, callback: Optional[Callable[[str], object]]) -> None:
         self._trade_screenshot_callback = callback
 
     def submit_buyer_review(self, review_id: str, approved: bool) -> bool:
@@ -314,7 +313,6 @@ class LineageClassicExecutor(BaseGameExecutor):
         self._emit("switching_region", "正在确认订单大区")
         navigator.ensure_target_region(order)
 
-        self._emit("waiting_buyer", "已进入目标大区，等待买家交易申请")
         expected_buyer = str(order.get("buyer_character") or "").strip()
         if not expected_buyer:
             return self._result(
@@ -323,22 +321,56 @@ class LineageClassicExecutor(BaseGameExecutor):
                 "BUYER_CHARACTER_MISSING",
                 "订单缺少买家角色名，不能安全接受交易",
             )
-        observed_buyer = self._wait_for_expected_buyer(
-            navigator,
-            expected_buyer,
-            timeout=trade_timeout_seconds(order),
-        )
-        if observed_buyer is None:
-            return self._result(
-                False,
-                "timed_out",
-                "TRADE_REQUEST_TIMEOUT",
-                "等待买家交易申请超时",
+        wait_deadline = time.monotonic() + trade_timeout_seconds(order)
+        attempt = 0
+        while True:
+            remaining = wait_deadline - time.monotonic()
+            if remaining <= 0:
+                return self._result(
+                    False,
+                    "timed_out",
+                    "TRADE_REQUEST_TIMEOUT",
+                    "等待正确买家交易申请超时",
+                )
+            self._emit(
+                "waiting_buyer",
+                "已进入目标大区，等待正确买家交易申请",
             )
+            observed_buyer = self._wait_for_expected_buyer(
+                navigator,
+                expected_buyer,
+                timeout=remaining,
+            )
+            if observed_buyer is None:
+                return self._result(
+                    False,
+                    "timed_out",
+                    "TRADE_REQUEST_TIMEOUT",
+                    "等待正确买家交易申请超时",
+                )
+            attempt += 1
+            result = self._execute_trade_attempt(
+                navigator, order, observed_buyer, attempt)
+            if result.pop("retry_waiting_buyer", False):
+                self._emit(
+                    "waiting_buyer",
+                    result.get("message")
+                    or "买家未肯定回答，已拒绝本次交易并继续等待正确买家",
+                )
+                continue
+            return result
 
+    def _execute_trade_attempt(
+        self,
+        navigator,
+        order: dict,
+        observed_buyer: str,
+        attempt: int,
+    ) -> dict:
+        """执行一次游戏交易；买家否认时仅结束本次窗口并返回等待。"""
         self._emit(
             "trading",
-            f"已核验买家 {observed_buyer}，正在接受交易申请",
+            f"第 {attempt} 次交易已核验买家 {observed_buyer}，正在接受申请",
         )
         navigator.click_region(TradeUi.REQUEST_ACCEPT_REGION)
         trade_cancel = navigator.wait_for_step(
@@ -429,14 +461,50 @@ class LineageClassicExecutor(BaseGameExecutor):
                 "最终确认前未配置交易截图保存通道，已拒绝最终交易",
             )
         trade_screenshot = self._capture_final_trade_screenshot(navigator)
-        if not self._trade_screenshot_callback(trade_screenshot):
+        self._emit(
+            "verifying",
+            "正在发送确认话术与交易截图，并等待买家回复",
+        )
+        try:
+            confirmation = self._trade_screenshot_callback(trade_screenshot)
+        except Exception as exc:
+            confirmation = {
+                "approved": False,
+                "reply_received": False,
+                "error": str(exc),
+            }
+        if isinstance(confirmation, dict):
+            approved = bool(confirmation.get("approved"))
+            reply_received = bool(confirmation.get("reply_received"))
+            confirmation_error = str(confirmation.get("error") or "").strip()
+        else:
+            # 兼容旧回调；只有明确的 True 才允许最终确认。
+            approved = confirmation is True
+            reply_received = False
+            confirmation_error = ""
+        if not approved:
             navigator.click_region(TradeUi.FINAL_REJECT_REGION)
-            navigator.wait_after_step("拒绝截图保存失败的最终交易", profile="panel")
+            navigator.wait_after_step("买家未肯定回复，拒绝最终交易", profile="panel")
+            if not self._wait_for_trade_closed(navigator, timeout=12):
+                return self._result(
+                    False,
+                    "verification_failed",
+                    "TRADE_REJECT_RESULT_UNCERTAIN",
+                    "拒绝当前交易后未确认交易窗口关闭",
+                )
+            if reply_received:
+                message = "买家未肯定回答，已结束当前游戏交易并继续等待正确买家"
+                return {
+                    "success": False,
+                    "retry_waiting_buyer": True,
+                    "message": message,
+                }
+            message = confirmation_error or "等待买家回答超时，已取消交易"
             return self._result(
                 False,
-                "failed",
-                "TRADE_SCREENSHOT_SAVE_FAILED",
-                "最终确认前交易截图未保存到服务器，已拒绝最终交易",
+                "cancelled",
+                "BUYER_FINAL_REPLY_TIMEOUT",
+                message,
             )
         navigator.click_region(TradeUi.FINAL_ACCEPT_REGION)
 
@@ -566,14 +634,17 @@ class LineageClassicExecutor(BaseGameExecutor):
                     )
                     return observed
                 else:
-                    approved = self._request_human_buyer_review(
-                        navigator, expected_buyer, observed, ocr.confidence, deadline
+                    print(
+                        "[Lineage] OCR 未达到自动接受条件，直接拒绝: "
+                        f"observed='{observed}', expected='{expected_buyer}', "
+                        f"confidence={ocr.confidence:.1f}"
                     )
-                    if approved:
-                        return observed or "人工确认的买家"
                     self._reject_buyer_request(navigator)
                     rejected_name = frame_key
-                    self._emit("waiting_buyer", "人工已拒绝本次申请，继续等待买家")
+                    self._emit(
+                        "waiting_buyer",
+                        "买家名 OCR 置信度低于 80% 或校验不匹配，已拒绝本次申请",
+                    )
             # 弹窗已经出现后快速采集三帧，避免初始 5 秒轮询把一次识别拖到十几秒。
             navigator.sleep(0.35)
         return None

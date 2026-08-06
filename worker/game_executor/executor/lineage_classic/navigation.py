@@ -1180,7 +1180,7 @@ class TemplateVision:
             elif text:
                 print(
                     f"[Lineage] PaddleOCR 韩语置信度不足: {confidence:.1f} "
-                    f"< {OCR_MIN_CONFIDENCE:.1f}，转人工确认"
+                    f"< {OCR_MIN_CONFIDENCE:.1f}，本次交易申请将被拒绝"
                 )
             return OcrResult(text, confidence)
         except Exception as exc:

@@ -260,12 +260,36 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
         set_progress(progress)
     set_buyer_review = getattr(executor, "set_buyer_review_callback", None)
     if callable(set_buyer_review):
-        set_buyer_review(
-            lambda review: reporter.report_trade_buyer_review(assignment_id, review)
-        )
+        def report_buyer_review(review):
+            from game_executor import storage as game_storage
+
+            payload = dict(review or {})
+            screenshot = payload.pop("screenshot_data_url", "")
+            try:
+                screenshot_path = game_storage.upload_trade_screenshot(
+                    f"{assignment_id}-buyer-review",
+                    screenshot,
+                )
+                payload["screenshot_path"] = screenshot_path
+                print(
+                    f"[GameExecutor][BuyerReview] assignment_id={assignment_id} "
+                    f"审核截图已直传 RustFS path={screenshot_path}",
+                    flush=True,
+                )
+            except Exception as exc:
+                # 图片存储异常时仍上报人工审核，避免交易线程在无人可见的状态下等待。
+                payload["screenshot_data_url"] = screenshot
+                print(
+                    f"[GameExecutor][BuyerReview] assignment_id={assignment_id} "
+                    f"审核截图上传 RustFS 失败，将仅保留中控人工审核: {exc}",
+                    flush=True,
+                )
+            reporter.report_trade_buyer_review(assignment_id, payload)
+
+        set_buyer_review(report_buyer_review)
     set_trade_screenshot = getattr(executor, "set_trade_screenshot_callback", None)
     if callable(set_trade_screenshot):
-        def save_trade_screenshot(screenshot):
+        def confirm_final_trade(screenshot):
             from game_executor import storage as game_storage
 
             try:
@@ -278,18 +302,22 @@ async def _run_trade_assignment(assignment_id, order, executor, ctx: AppContext)
                     f"交易截图上传 RustFS 失败: {exc}",
                     flush=True,
                 )
-                return False
+                return {
+                    "approved": False,
+                    "reply_received": False,
+                    "error": f"交易截图上传失败: {exc}",
+                }
             print(
                 f"[GameExecutor][Trade] assignment_id={assignment_id} "
                 f"交易截图已直传 RustFS path={screenshot_path}",
                 flush=True,
             )
-            return reporter.save_trade_game_screenshot(
+            return reporter.request_trade_final_confirmation(
                 assignment_id, screenshot_path
             )
 
         set_trade_screenshot(
-            save_trade_screenshot
+            confirm_final_trade
         )
 
     print(
@@ -496,6 +524,17 @@ async def _dispatch_message(msg, ctx: AppContext):
     elif mtype == "trade_game_screenshot_saved":
         reporter.deliver_trade_game_screenshot_saved(
             msg.get("request_id"), bool(msg.get("success")))
+
+    elif mtype == "trade_final_confirmation_result":
+        reporter.deliver_trade_final_confirmation_result(
+            msg.get("request_id"),
+            {
+                "approved": bool(msg.get("approved")),
+                "reply_received": bool(msg.get("reply_received")),
+                "reply_text": str(msg.get("reply_text") or ""),
+                "error": str(msg.get("error") or ""),
+            },
+        )
 
     else:
         print(f"[GameExecutor] 未知消息类型: {mtype}")

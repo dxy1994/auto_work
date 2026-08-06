@@ -23,6 +23,7 @@ TYPE_TRADE_OFFER_DECISION = "trade_offer_decision"
 TYPE_TRADE_STATUS = "trade_status"
 TYPE_TRADE_BUYER_REVIEW = "trade_buyer_review"
 TYPE_TRADE_GAME_SCREENSHOT = "trade_game_screenshot"
+TYPE_TRADE_FINAL_CONFIRMATION = "trade_final_confirmation"
 TYPE_GAME_CLIENT_DISCONNECTED = "game_client_disconnected"
 TYPE_GREETING_RESULT = "greeting_result"
 TYPE_CHAT_RESULT = "chat_result"
@@ -40,6 +41,7 @@ TYPE_TRADE_START = "trade_start"
 TYPE_TRADE_CANCEL = "trade_cancel"
 TYPE_TRADE_BUYER_REVIEW_DECISION = "trade_buyer_review_decision"
 TYPE_TRADE_GAME_SCREENSHOT_SAVED = "trade_game_screenshot_saved"
+TYPE_TRADE_FINAL_CONFIRMATION_RESULT = "trade_final_confirmation_result"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -151,6 +153,16 @@ def trade_game_screenshot_msg(
         assignment_id: str, request_id: str, screenshot_path: str) -> dict:
     return {
         "type": TYPE_TRADE_GAME_SCREENSHOT,
+        "assignment_id": assignment_id,
+        "request_id": request_id,
+        "screenshot_path": screenshot_path,
+    }
+
+
+def trade_final_confirmation_msg(
+        assignment_id: str, request_id: str, screenshot_path: str) -> dict:
+    return {
+        "type": TYPE_TRADE_FINAL_CONFIRMATION,
         "assignment_id": assignment_id,
         "request_id": request_id,
         "screenshot_path": screenshot_path,

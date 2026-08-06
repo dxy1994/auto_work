@@ -561,6 +561,24 @@ public class AgentRegistry {
         return sendToAgent(machineId, payload);
     }
 
+    /** 将平台聊天中的最终确认回复送回正在等待的游戏执行器。 */
+    public boolean sendTradeFinalConfirmationResult(
+            int machineId,
+            String requestId,
+            boolean approved,
+            boolean replyReceived,
+            String replyText,
+            String error) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "trade_final_confirmation_result");
+        payload.put("request_id", requestId);
+        payload.put("approved", approved);
+        payload.put("reply_received", replyReceived);
+        payload.put("reply_text", replyText == null ? "" : replyText);
+        payload.put("error", error == null ? "" : error);
+        return sendToAgent(machineId, payload);
+    }
+
     /** 下发通用聊天指令给持有订单来源账号会话的监控机器。 */
     public boolean sendChat(
             int machineId,
