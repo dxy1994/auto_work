@@ -14,10 +14,12 @@ except ImportError:  # 由调用方转为人工审核
 
 from game_executor.executor.lineage_classic.font_metrics import (
     ENGLISH_OCR_ALLOWED_VISUAL_SYMBOLS,
+    KOREAN_OCR_COMPONENT_EQUIVALENT_LIMIT,
     character_advance_width,
     character_ocr_adjustments,
     character_ocr_visual_equivalents,
     character_pair_advance_adjustment,
+    korean_ocr_component_visual_equivalents,
     korean_ocr_text_matches,
     korean_ocr_visual_equivalents,
 )
@@ -27,6 +29,8 @@ from game_executor.executor.lineage_classic.paddle_ocr import recognize_text_lin
 SEGMENT_PADDING = 0
 REPEATED_ENGLISH_OCR_RIGHT_PADDING = 2
 CONSTRAINED_MATCH_MIN_CONFIDENCE = 80.0
+# 没有实机逐字样本的部件级形似规则更保守：仅在整行 OCR 高置信时启用。
+COMPONENT_VISUAL_MATCH_MIN_CONFIDENCE = 92.0
 # 单个 5px 点阵字母（尤其 n/s）即使裁剪正确，英文模型也可能只有约 29%
 # 置信度；最终仍需整串平均置信度及连续三帧共同约束。
 SEGMENTED_EXACT_MIN_CONFIDENCE = 25.0
@@ -419,13 +423,16 @@ def _mixed_key(value: str) -> str:
 def _is_expected_korean_visual(
     observed: str,
     expected_name: str,
+    *,
+    allow_component_equivalents: bool = False,
 ) -> bool:
-    """逐位置匹配视觉等价字，避免多组容错组合产生指数级候选串。"""
+    """逐位置匹配视觉等价字，限制部件级推导次数并避免指数级候选串。"""
     observed_key = _mixed_key(observed)
     expected_value = str(expected_name or "")
-    positions = {0}
+    states = {(0, 0)}
     index = 0
-    while index < len(expected_value) and positions:
+    while index < len(expected_value) and states:
+        component_visuals = frozenset()
         if (
             index + 1 < len(expected_value)
             and expected_value[index].casefold() == "t"
@@ -435,22 +442,37 @@ def _is_expected_korean_visual(
             index += 2
         else:
             char = expected_value[index]
-            visuals = (
-                korean_ocr_visual_equivalents(char)
-                if "\uac00" <= char <= "\ud7a3"
-                else frozenset({char.casefold()})
-            )
+            if "\uac00" <= char <= "\ud7a3":
+                configured_visuals = korean_ocr_visual_equivalents(char)
+                component_visuals = (
+                    korean_ocr_component_visual_equivalents(char)
+                    if allow_component_equivalents
+                    else frozenset()
+                )
+                visuals = configured_visuals | component_visuals
+            else:
+                configured_visuals = frozenset({char.casefold()})
+                component_visuals = frozenset()
+                visuals = configured_visuals
             index += 1
-        positions = {
-            position + len(visual)
-            for position in positions
+        states = {
+            (
+                position + len(visual),
+                component_count + int(visual in component_visuals),
+            )
+            for position, component_count in states
             for visual in visuals
             if observed_key.startswith(visual, position)
+            and component_count + int(visual in component_visuals)
+            <= KOREAN_OCR_COMPONENT_EQUIVALENT_LIMIT
         }
 
     # 姓名后只允许天堂交易提示使用的主格助词，不能接受任意长前缀匹配。
     allowed_suffixes = {"", "이", "가", "이가"}
-    return any(observed_key[position:] in allowed_suffixes for position in positions)
+    return any(
+        observed_key[position:] in allowed_suffixes
+        for position, _component_count in states
+    )
 
 
 def _recognize_korean_constrained_candidate(
@@ -467,10 +489,20 @@ def _recognize_korean_constrained_candidate(
     candidates: list[tuple[str, float]] = []
     for prepared in _prepared_variants(source, "korean"):
         text, confidence = recognizer(prepared, "korean")
-        if (
-            float(confidence) >= CONSTRAINED_MATCH_MIN_CONFIDENCE
+        confidence_value = float(confidence)
+        configured_match = (
+            confidence_value >= CONSTRAINED_MATCH_MIN_CONFIDENCE
             and _is_expected_korean_visual(text, expected_name)
-        ):
+        )
+        component_match = (
+            confidence_value >= COMPONENT_VISUAL_MATCH_MIN_CONFIDENCE
+            and _is_expected_korean_visual(
+                text,
+                expected_name,
+                allow_component_equivalents=True,
+            )
+        )
+        if configured_match or component_match:
             candidates.append((str(text), float(confidence)))
     return max(candidates, key=lambda candidate: candidate[1]) if candidates else None
 

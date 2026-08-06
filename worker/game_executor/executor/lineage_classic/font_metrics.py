@@ -100,6 +100,37 @@ KOREAN_OCR_BIDIRECTIONAL_GROUPS = (
     frozenset({"횽", "흉"}),
 )
 
+# 尚无逐字实机样本时，不直接枚举 11,172 个韩文音节。按 Unicode 韩文音节的
+# 初声/元音/终声结构，只推导点阵小字中最容易因少一笔、多一笔或上下方向而
+# 混淆的部件。推导规则由调用方限制为整串姓名最多使用一次，并使用更高阈值。
+KOREAN_CHOSEONG = tuple("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ")
+KOREAN_JUNGSEONG = tuple("ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ")
+KOREAN_JONGSEONG = (
+    "", "ㄱ", "ㄲ", "ㄳ", "ㄴ", "ㄵ", "ㄶ", "ㄷ", "ㄹ", "ㄺ", "ㄻ", "ㄼ",
+    "ㄽ", "ㄾ", "ㄿ", "ㅀ", "ㅁ", "ㅂ", "ㅄ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅊ",
+    "ㅋ", "ㅌ", "ㅍ", "ㅎ",
+)
+KOREAN_OCR_CONSONANT_VISUAL_PAIRS = (
+    frozenset({"ㄱ", "ㅋ"}),
+    frozenset({"ㄷ", "ㅌ"}),
+    frozenset({"ㅂ", "ㅍ"}),
+    frozenset({"ㅈ", "ㅊ"}),
+)
+KOREAN_OCR_VOWEL_VISUAL_PAIRS = (
+    frozenset({"ㅏ", "ㅑ"}),
+    frozenset({"ㅓ", "ㅕ"}),
+    frozenset({"ㅗ", "ㅜ"}),
+    frozenset({"ㅗ", "ㅛ"}),
+    frozenset({"ㅜ", "ㅠ"}),
+    frozenset({"ㅐ", "ㅔ"}),
+    frozenset({"ㅒ", "ㅖ"}),
+    # 复合元音继承 ㅗ/ㅜ 上下方向的常见混淆。
+    frozenset({"ㅘ", "ㅝ"}),
+    frozenset({"ㅙ", "ㅞ"}),
+    frozenset({"ㅚ", "ㅟ"}),
+)
+KOREAN_OCR_COMPONENT_EQUIVALENT_LIMIT = 1
+
 # 1280x960 实机标定规则保留原有单向关系；用户指定的组则允许组内双向匹配。
 KOREAN_OCR_HIGH_RISK_EQUIVALENTS = MappingProxyType({
     "샤": frozenset({"사"}),
@@ -192,6 +223,78 @@ def korean_ocr_visual_equivalents(char: str) -> frozenset[str]:
         char,
         frozenset(),
     )
+
+
+def _paired_jamo(value: str, pairs: tuple[frozenset[str], ...]) -> frozenset[str]:
+    return frozenset(
+        alternative
+        for pair in pairs
+        if value in pair
+        for alternative in pair
+        if alternative != value
+    )
+
+
+def _hangul_syllable_components(char: str) -> tuple[int, int, int] | None:
+    if len(char) != 1 or not "\uac00" <= char <= "\ud7a3":
+        return None
+    offset = ord(char) - 0xAC00
+    return offset // 588, (offset % 588) // 28, offset % 28
+
+
+def _compose_hangul_syllable(initial: int, vowel: int, final: int) -> str:
+    return chr(0xAC00 + (initial * 21 + vowel) * 28 + final)
+
+
+def korean_ocr_component_visual_equivalents(char: str) -> frozenset[str]:
+    """返回只改变一个形似初声、元音或终声后得到的韩文音节。"""
+    components = _hangul_syllable_components(str(char or ""))
+    if components is None:
+        return frozenset()
+    initial, vowel, final = components
+    alternatives: set[str] = set()
+
+    for consonant in _paired_jamo(
+        KOREAN_CHOSEONG[initial],
+        KOREAN_OCR_CONSONANT_VISUAL_PAIRS,
+    ):
+        alternatives.add(_compose_hangul_syllable(
+            KOREAN_CHOSEONG.index(consonant), vowel, final,
+        ))
+    for medial in _paired_jamo(
+        KOREAN_JUNGSEONG[vowel],
+        KOREAN_OCR_VOWEL_VISUAL_PAIRS,
+    ):
+        alternatives.add(_compose_hangul_syllable(
+            initial, KOREAN_JUNGSEONG.index(medial), final,
+        ))
+    if final:
+        for consonant in _paired_jamo(
+            KOREAN_JONGSEONG[final],
+            KOREAN_OCR_CONSONANT_VISUAL_PAIRS,
+        ):
+            alternatives.add(_compose_hangul_syllable(
+                initial, vowel, KOREAN_JONGSEONG.index(consonant),
+            ))
+    return frozenset(alternatives)
+
+
+def korean_ocr_component_text_matches(expected: str, observed: str) -> bool:
+    """允许整串姓名中至多一个按韩文部件推导出的形似音节。"""
+    expected_value = str(expected or "")
+    observed_value = str(observed or "")
+    if len(expected_value) != len(observed_value):
+        return False
+    component_matches = 0
+    for wanted, actual in zip(expected_value, observed_value):
+        if actual in korean_ocr_visual_equivalents(wanted):
+            continue
+        if actual not in korean_ocr_component_visual_equivalents(wanted):
+            return False
+        component_matches += 1
+        if component_matches > KOREAN_OCR_COMPONENT_EQUIVALENT_LIMIT:
+            return False
+    return True
 
 
 def korean_ocr_text_matches(expected: str, observed: str) -> bool:

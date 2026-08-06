@@ -14,6 +14,7 @@ from game_executor.executor.lineage_classic.player_name_ocr import (
     split_expected_name,
 )
 from game_executor.executor.lineage_classic.font_metrics import (
+    korean_ocr_component_text_matches,
     korean_ocr_text_matches,
 )
 
@@ -642,6 +643,47 @@ class PlayerNameOcrTest(unittest.TestCase):
                             observed,
                         ))
 
+    def test_common_hangul_component_shapes_are_bidirectional(self):
+        # 每组只改变一个初声、元音或终声；覆盖少/多一笔、上下方向和复合元音。
+        pairs = (
+            ("가", "카"),
+            ("다", "타"),
+            ("바", "파"),
+            ("자", "차"),
+            ("가", "갸"),
+            ("거", "겨"),
+            ("고", "구"),
+            ("고", "교"),
+            ("구", "규"),
+            ("개", "게"),
+            ("걔", "계"),
+            ("과", "궈"),
+            ("괘", "궤"),
+            ("괴", "귀"),
+            ("각", "갘"),
+            ("받", "밭"),
+            ("갑", "갚"),
+            ("낮", "낯"),
+        )
+        for left, right in pairs:
+            with self.subTest(left=left, right=right):
+                self.assertTrue(korean_ocr_component_text_matches(left, right))
+                self.assertTrue(korean_ocr_component_text_matches(right, left))
+
+    def test_component_shape_rules_allow_only_one_inferred_syllable(self):
+        self.assertTrue(korean_ocr_component_text_matches(
+            "보라고다",
+            "보라구다",
+        ))
+        self.assertFalse(korean_ocr_component_text_matches(
+            "보라고다",
+            "보라구타",
+        ))
+        self.assertFalse(korean_ocr_component_text_matches(
+            "보라고다",
+            "보라노다",
+        ))
+
     def test_korean_visual_groups_are_expected_position_scoped(self):
         self.assertTrue(korean_ocr_text_matches(
             "훅당옥쭉횽",
@@ -694,6 +736,59 @@ class PlayerNameOcrTest(unittest.TestCase):
         self.assertEqual("턍중쪽흉이", result.visual_observed)
         self.assertTrue(result.verified)
         self.assertEqual("korean_visual_constrained", result.strategy)
+
+    def test_single_component_shape_confusion_uses_high_confidence_full_line(self):
+        image = np.zeros((35, 180, 3), dtype=np.uint8)
+        cv2.rectangle(image, (5, 8), (108, 25), (220, 220, 220), 1)
+
+        def recognize(_prepared, language):
+            self.assertEqual("korean", language)
+            return "보라구다이", 94.2
+
+        result = recognize_expected_player_name(
+            image,
+            "보라고다",
+            recognizer=recognize,
+        )
+
+        self.assertEqual("보라고다", result.text)
+        self.assertEqual("보라구다이", result.visual_observed)
+        self.assertTrue(result.verified)
+        self.assertEqual("korean_visual_constrained", result.strategy)
+
+    def test_component_shape_confusion_below_strict_threshold_needs_review(self):
+        image = np.zeros((35, 180, 3), dtype=np.uint8)
+        cv2.rectangle(image, (5, 8), (108, 25), (220, 220, 220), 1)
+
+        def recognize(_prepared, language):
+            self.assertEqual("korean", language)
+            return "보라구다이", 91.9
+
+        result = recognize_expected_player_name(
+            image,
+            "보라고다",
+            recognizer=recognize,
+        )
+
+        self.assertFalse(result.verified)
+        self.assertEqual("segmented_unverified", result.strategy)
+
+    def test_multiple_component_shape_confusions_still_need_review(self):
+        image = np.zeros((35, 180, 3), dtype=np.uint8)
+        cv2.rectangle(image, (5, 8), (108, 25), (220, 220, 220), 1)
+
+        def recognize(_prepared, language):
+            self.assertEqual("korean", language)
+            return "보라구타이", 98.7
+
+        result = recognize_expected_player_name(
+            image,
+            "보라고다",
+            recognizer=recognize,
+        )
+
+        self.assertFalse(result.verified)
+        self.assertEqual("segmented_unverified", result.strategy)
 
 
 if __name__ == "__main__":
