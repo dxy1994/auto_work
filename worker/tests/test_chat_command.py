@@ -672,7 +672,7 @@ class ChatCommandTest(unittest.TestCase):
 
         self.assertEqual(1, page.sent_count)
 
-    def test_barotem_passes_file_to_imgchg_then_confirms_on_same_page(self):
+    def test_barotem_dispatches_paste_event_then_clicks_real_send(self):
         events = []
 
         class FakeResponse:
@@ -706,14 +706,15 @@ class ChatCommandTest(unittest.TestCase):
                     return 1 if self.page.preview_ready else 0
                 return 1
 
+            async def wait_for(self, **_kwargs):
+                events.append("barotem:form-ready")
+
             async def set_input_files(self, _path):
-                events.append("imgchg:file-selected")
+                events.append("barotem:file-selected")
 
             async def click(self, **_kwargs):
-                if self.selector == (
-                    '#imgpopup.inline button[onclick="confirmAndSend()"]'
-                ):
-                    events.append("imgchg:confirm")
+                if self.selector == "#imgpopup.inline .chat_send_btn":
+                    events.append("barotem:confirm-clicked")
                     self.page.sent_count += 1
 
         class FakePage:
@@ -730,19 +731,21 @@ class ChatCommandTest(unittest.TestCase):
                         "createElement('button')" not in script
                         and "onclick" not in script
                     )
-                    events.append("imgchg:input-created")
+                    events.append("barotem:input-created")
                     return None
-                if "new DataTransfer()" in script:
-                    self.assert_direct_imgchg = (
-                        "imgchg({" in script
-                        and "ClipboardEvent" not in script
-                        and "dispatchEvent" not in script
-                        and ".click(" not in script
+                if "new ClipboardEvent('paste'" in script:
+                    self.assert_paste_event = (
+                        "new DataTransfer()" in script
+                        and "transfer.items.add(file)" in script
+                        and "clipboardData: transfer" in script
+                        and "document.dispatchEvent(pasteEvent)" in script
+                        and "window.imgchg" not in script
+                        and "window.confirmAndSend" not in script
                     )
-                    events.append("imgchg:direct-call")
+                    events.append("barotem:paste-dispatched")
                     self.preview_ready = True
                     return {"success": True, "error": ""}
-                events.append("imgchg:input-removed")
+                events.append("barotem:input-removed")
                 return None
 
             async def wait_for_timeout(self, _milliseconds):
@@ -761,11 +764,13 @@ class ChatCommandTest(unittest.TestCase):
             ))
 
         self.assertEqual(1, page.sent_count)
-        self.assertIn("imgchg:input-created", events)
-        self.assertIn("imgchg:direct-call", events)
-        self.assertIn("imgchg:confirm", events)
+        self.assertIn("barotem:form-ready", events)
+        self.assertIn("barotem:input-created", events)
+        self.assertIn("barotem:file-selected", events)
+        self.assertIn("barotem:paste-dispatched", events)
+        self.assertIn("barotem:confirm-clicked", events)
         self.assertTrue(page.assert_no_visual_trigger)
-        self.assertTrue(page.assert_direct_imgchg)
+        self.assertTrue(page.assert_paste_event)
 
     def test_delivery_confirmation_closes_chat_before_opening_order_detail(self):
         events = []

@@ -242,9 +242,9 @@ class BrowserSession:
         print(f"[BrowserSession:{self._account_id}] [1/5] 启动 playwright...", flush=True)
         self._playwright = await async_playwright().start()
         print(f"[BrowserSession:{self._account_id}] [2/5] playwright 已启动, 检测 channel...", flush=True)
-        launch_args = [
-            "--restore-last-session",
-        ]
+        # 持久化 Context 只需要保留 Cookie/站点存储；恢复上次全部标签会把
+        # 已崩溃的聊天渲染进程一起带回，导致 new_page/evaluate 永久阻塞。
+        launch_args = []
 
         browser_type = None
         for ch in ("chrome", "msedge"):
@@ -409,40 +409,11 @@ class BrowserSession:
         return True
 
     async def _pick_main_page(self) -> Page:
-        """从恢复的标签页中选健康页面作为主页面，保留其余健康旧标签。"""
+        """直接选取 Chromium 当前页，初始化阶段不执行可能阻塞的探测。"""
         pages = self._context.pages
         if not pages:
             return await self._context.new_page()
-
-        blanks = [p for p in pages if p.url == "about:blank"]
-        non_blanks = [p for p in pages if p.url != "about:blank"]
-
-        if non_blanks:
-            healthy_non_blanks = []
-            for candidate in non_blanks:
-                if await self._page_is_usable(candidate):
-                    healthy_non_blanks.append(candidate)
-                    continue
-                try:
-                    await candidate.close()
-                except Exception:
-                    pass
-            keep = healthy_non_blanks[-1] if healthy_non_blanks else None
-            if keep is None:
-                keep = blanks[0] if blanks else await self._context.new_page()
-            to_close = [p for p in blanks if p != keep]
-        elif blanks:
-            keep = blanks[0]
-            to_close = blanks[1:]
-        else:
-            return await self._context.new_page()
-
-        for p in to_close:
-            try:
-                await p.close()
-            except Exception:
-                pass
-        return keep
+        return pages[-1]
 
     async def claim_page(self) -> Page:
         """为 Worker 分配页面：复用健康旧标签，跳过临时页和崩溃页。"""
@@ -523,7 +494,7 @@ class BrowserSession:
         try:
             if page.is_closed():
                 return False
-            await page.evaluate("1")
+            await asyncio.wait_for(page.evaluate("1"), timeout=3.0)
             return True
         except Exception:
             return False

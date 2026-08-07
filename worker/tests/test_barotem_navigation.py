@@ -23,10 +23,13 @@ from monitor.monitoring.platforms.barotem import (  # noqa: E402
     TRADE_VERIFICATION_SELECTOR,
     _BarotemHtmlSnapshot,
     _BarotemLoginRequired,
+    _BarotemOrderSnapshot,
     _fetch_authenticated_html,
+    _fetch_orders_page,
     _handle_blocking_popups,
     _html_requires_login,
     _order_payloads_from_html,
+    _order_payloads_from_api,
     _parse_order_card_payload,
     _parse_chat_view_url,
     _parse_product_detail_html,
@@ -35,6 +38,7 @@ from monitor.monitoring.platforms.barotem import (  # noqa: E402
     _resolve_order_quantity,
     _order_list_url,
     _product_list_url,
+    _sales_products_page_from_api,
     _sales_products_page_from_html,
 )
 from monitor.orders.adapters import adapter_for  # noqa: E402
@@ -318,6 +322,31 @@ class BarotemStructureTest(unittest.TestCase):
         self.assertEqual([], payloads)
         self.assertEqual(0, card_count)
 
+    def test_order_api_parser_matches_deal_list_fields(self):
+        payloads, total = _order_payloads_from_api({
+            "code": 200,
+            "total": "1",
+            "rows": [{
+                "gou_number": "178583752411285073-61",
+                "categoryName": "리니지 클래식",
+                "productheader": "군터",
+                "title": "24시 아데나 판매",
+                "quantityText": "38만 아데나",
+                "pay": "30,400",
+                "chrName": "은하수",
+                "product_number": "38895915",
+                "number": "178583752411285073-61",
+                "regDate": "26년 08월 07일 15:20:00",
+                "product_stats": "4",
+            }],
+        }, "money")
+
+        self.assertEqual(1, total)
+        self.assertEqual("178583752411285073-61", payloads[0]["order_no"])
+        self.assertEqual("은하수", payloads[0]["buyer_character"])
+        self.assertEqual("38895915", payloads[0]["platform_product_id"])
+        self.assertEqual("30,400 원", payloads[0]["price"])
+
     def test_background_html_parser_rejects_count_card_mismatch(self):
         html = """
           <div data-item="money">게임머니 1</div>
@@ -327,6 +356,56 @@ class BarotemStructureTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "显示 1 笔"):
             _order_payloads_from_html(html, _order_list_url("money"))
+
+    def test_sales_product_parser_accepts_live_empty_structure(self):
+        html = """
+          <div data-item="id">계정 0</div>
+          <div data-item="money">게임머니 0</div>
+          <div data-item="item">아이템 0</div>
+          <div data-item="etc">기타 0</div>
+          <div data-item="gift">상품권 0</div>
+          <div class="product_background"><div class="product_contents">
+          </div></div>
+        """
+
+        result = _sales_products_page_from_html(html, "item")
+
+        self.assertEqual({"total_cards": 0, "products": []}, result)
+
+    def test_sales_product_parser_rejects_count_card_mismatch(self):
+        html = """
+          <div data-item="money">게임머니 3</div>
+          <div class="product_background"><div class="product_contents">
+          </div></div>
+        """
+
+        with self.assertRaisesRegex(ValueError, "显示 3 个"):
+            _sales_products_page_from_html(html, "money")
+
+    def test_sales_product_api_parser_matches_live_response_fields(self):
+        result = _sales_products_page_from_api({
+            "code": 200,
+            "total": "3",
+            "rows": [{
+                "number": "38895915",
+                "itemtype": "money",
+                "categoryName": "리니지 클래식",
+                "productheader": "군터",
+                "product_name": "24시 아데나 판매",
+                "quantityText": "38만 아데나",
+                "baro_price": "800 원",
+                "regDate": "26년 08월 07일 15:18:52",
+                "product_stats": "0",
+            }],
+        }, "money")
+
+        self.assertEqual(3, result["total"])
+        self.assertEqual(1, result["total_cards"])
+        self.assertEqual("38895915", result["products"][0][
+            "platform_product_id"])
+        self.assertEqual("리니지 클래식", result["products"][0][
+            "game_name"])
+        self.assertEqual("군터", result["products"][0]["region_name"])
 
     def test_live_lineage_order_uses_product_detail_quantity_unit(self):
         detail = _parse_product_detail_html("""
@@ -494,6 +573,7 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, reported)
         fetch.assert_awaited_once_with(
             page, _order_list_url("money"), 10000)
+        worker._monitor._collect_and_report_orders.assert_not_awaited()
         page.reload.assert_not_awaited()
         page.goto.assert_not_awaited()
 
@@ -584,6 +664,25 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
         monitor._get_product_detail.assert_awaited_once_with(
             snapshot, "39182563")
         monitor._session.remember_conversation_url.assert_called_once()
+
+    async def test_order_api_snapshot_keeps_collect_business_url(self):
+        monitor = object.__new__(BarotemMonitor)
+        response = SimpleNamespace(
+            url="https://www.barotem.com/mypage/DealList",
+            ok=True,
+            status=200,
+            text=AsyncMock(return_value=(
+                '{"code":200,"total":"0","rows":[]}')),
+        )
+        request = SimpleNamespace(
+            post=AsyncMock(return_value=response))
+        page = SimpleNamespace(
+            context=SimpleNamespace(request=request))
+
+        snapshot = await _fetch_orders_page(page, "money", 1, 10000)
+
+        self.assertTrue(monitor._is_on_collect_page(snapshot))
+        self.assertEqual(_order_list_url("money"), snapshot.url)
 
     async def test_business_popup_can_trigger_relogin(self):
         session = SimpleNamespace(
@@ -722,7 +821,7 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(["money", "item"], result)
 
-    async def test_product_snapshot_uses_background_html_without_navigation(self):
+    async def test_product_snapshot_uses_json_api_without_navigation(self):
         monitor = SimpleNamespace(
             post_login_check=AsyncMock(return_value=False),
         )
@@ -732,29 +831,25 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
             goto=AsyncMock(),
         )
         worker._page = page
-        html = f"""
-          <div data-item="id">계정 0</div>
-          <div data-item="money">게임머니 1</div>
-          <div data-item="item">아이템 0</div>
-          <div data-item="etc">기타 0</div>
-          <div data-item="gift">상품권 0</div>
-          <div class="product_background"><div class="product_contents">
-            {BarotemStructureTest._live_card_html(order_no="39182563")}
-          </div></div>
-        """
-        snapshot = _BarotemHtmlSnapshot(
-            _product_list_url("money"), html, None)
+        async def fetch_page(_page, item_type, _page_number, _timeout):
+            if item_type != "money":
+                return {"total": 0, "total_cards": 0, "products": []}
+            return {
+                "total": 1,
+                "total_cards": 1,
+                "products": [{"platform_product_id": "39182563"}],
+            }
 
         with patch.object(
-                barotem_module, "_fetch_authenticated_html",
-                AsyncMock(return_value=snapshot)) as fetch:
+                barotem_module, "_fetch_sales_products_page",
+                AsyncMock(side_effect=fetch_page)) as fetch:
             products = await worker._collect_sales_products_snapshot(10000)
 
         self.assertEqual(["39182563"], [
             product["platform_product_id"] for product in products
         ])
-        fetch.assert_awaited_once_with(
-            page, _product_list_url("money"), 10000)
+        self.assertEqual(5, fetch.await_count)
+        fetch.assert_any_await(page, "money", 1, 10000)
         page.reload.assert_not_awaited()
         page.goto.assert_not_awaited()
 
@@ -809,17 +904,27 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
           </div></div>
         """
         snapshots = [
-            _BarotemHtmlSnapshot(_order_list_url("money"), counts_html, None),
-            _BarotemHtmlSnapshot(_order_list_url("item"), counts_html, None),
+            _BarotemOrderSnapshot(
+                "https://www.barotem.com/mypage/DealList",
+                [{"order_no": "1-1"}], 2, None),
+            _BarotemOrderSnapshot(
+                "https://www.barotem.com/mypage/DealList",
+                [{"order_no": "2-1"}], 1, None),
         ]
 
         with patch.object(
                 barotem_module, "_fetch_authenticated_html",
-                AsyncMock(side_effect=snapshots)) as fetch:
-            reported = await worker._collect_all_order_categories(10000)
+                AsyncMock(return_value=_BarotemHtmlSnapshot(
+                    _order_list_url("money"), counts_html, None))) as probe:
+            with patch.object(
+                    barotem_module, "_fetch_orders_page",
+                    AsyncMock(side_effect=snapshots)) as fetch:
+                reported = await worker._collect_all_order_categories(10000)
 
         self.assertEqual(3, reported)
         self.assertEqual(2, fetch.await_count)
+        probe.assert_awaited_once_with(
+            page, _order_list_url("money"), 10000)
         self.assertEqual(
             2, worker._monitor._collect_and_report_orders.await_count)
         page.reload.assert_not_awaited()

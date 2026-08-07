@@ -350,7 +350,8 @@ async def _resolve_barotem_conversation(
     if cached_url:
         try:
             _validate_barotem_chat_url(cached_url)
-            await page.goto(cached_url, wait_until="commit", timeout=10000)
+            await page.goto(
+                cached_url, wait_until="domcontentloaded", timeout=15000)
             return cached_url
         except Exception:
             if callable(cache_forget):
@@ -407,7 +408,8 @@ async def _resolve_barotem_conversation(
 
             chat_url = urljoin(list_url, match.group("path"))
             _validate_barotem_chat_url(chat_url)
-            await page.goto(chat_url, wait_until="commit", timeout=10000)
+            await page.goto(
+                chat_url, wait_until="domcontentloaded", timeout=15000)
             cache_set = getattr(session, "remember_conversation_url", None)
             if callable(cache_set):
                 cache_set("barotem", order_no, chat_url)
@@ -879,7 +881,7 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
         sent_before = await _sent_message_count(page, target)
         if target.get("barotem_image_submit"):
             try:
-                await _submit_barotem_image_via_imgchg(
+                await _submit_barotem_image_via_paste(
                     page, temp_file.name)
             except _BarotemImageSubmitUnavailable as exc:
                 raise RuntimeError(
@@ -929,12 +931,21 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
 
 
 class _BarotemImageSubmitUnavailable(RuntimeError):
-    """当前聊天页不能完成 Barotem 图片处理与确认发送流程。"""
+    """当前聊天页不能完成 Barotem 图片粘贴与确认发送流程。"""
 
 
-async def _submit_barotem_image_via_imgchg(page, file_path: str) -> None:
-    """在页面上下文直接调用 imgchg()，再点击当前页图片确认按钮。"""
-    input_id = f"barotem_imgchg_file_{id(page)}"
+async def _submit_barotem_image_via_paste(page, file_path: str) -> None:
+    """派发页面 paste 事件生成预览，再点击 Barotem 的真实发送按钮。"""
+    try:
+        await page.locator("#happy_chating_form").first.wait_for(
+            state="attached", timeout=15000)
+        await page.locator("#imgpopup .imgview").first.wait_for(
+            state="attached", timeout=5000)
+    except Exception as exc:
+        raise _BarotemImageSubmitUnavailable(
+            "等待聊天表单或图片预览层就绪超时") from exc
+
+    input_id = f"barotem_paste_file_{id(page)}"
     await page.evaluate(
         """
         inputId => {
@@ -959,22 +970,21 @@ async def _submit_barotem_image_via_imgchg(page, file_path: str) -> None:
 
         preview_items = page.locator("#imgpopup.inline .imgview li")
         preview_before = await preview_items.count()
-        imgchg_result = await page.evaluate(
+        paste_result = await page.evaluate(
             """
             inputId => {
                 try {
                     const input = document.getElementById(inputId);
-                    const file = input && input.files && input.files[0];
+                    const file = input?.files?.[0];
                     if (!file) throw new Error('file missing');
-                    if (typeof imgchg !== 'function') {
-                        throw new Error('imgchg missing');
-                    }
                     const transfer = new DataTransfer();
                     transfer.items.add(file);
-                    imgchg({
-                        originalEvent: {clipboardData: transfer},
-                        preventDefault() {}
+                    const pasteEvent = new ClipboardEvent('paste', {
+                        clipboardData: transfer,
+                        bubbles: true,
+                        cancelable: true
                     });
+                    document.dispatchEvent(pasteEvent);
                     return {success: true, error: ''};
                 } catch (error) {
                     return {
@@ -988,30 +998,32 @@ async def _submit_barotem_image_via_imgchg(page, file_path: str) -> None:
             """,
             input_id,
         )
-        if not isinstance(imgchg_result, dict) or not imgchg_result.get(
+        if not isinstance(paste_result, dict) or not paste_result.get(
                 "success"):
-            imgchg_error = str(
-                (imgchg_result or {}).get("error")
-                if isinstance(imgchg_result, dict)
+            paste_error = str(
+                (paste_result or {}).get("error")
+                if isinstance(paste_result, dict)
                 else ""
             ).strip()
             raise _BarotemImageSubmitUnavailable(
-                imgchg_error or "imgchg 未处理图片文件")
+                paste_error or "未能派发图片粘贴事件")
 
-        deadline = asyncio.get_running_loop().time() + 5
+        deadline = asyncio.get_running_loop().time() + 10
         while await preview_items.count() <= preview_before:
             if asyncio.get_running_loop().time() >= deadline:
                 raise _BarotemImageSubmitUnavailable(
-                    "imgchg 处理后未出现图片确认预览")
+                    "粘贴事件派发后未出现图片预览")
             await page.wait_for_timeout(100)
 
         confirm_button = page.locator(
-            '#imgpopup.inline button[onclick="confirmAndSend()"]'
-        )
-        if await confirm_button.count() != 1:
+            "#imgpopup.inline .chat_send_btn"
+        ).first
+        try:
+            await confirm_button.wait_for(state="visible", timeout=5000)
+            await confirm_button.click(force=True, timeout=5000)
+        except Exception as exc:
             raise _BarotemImageSubmitUnavailable(
-                "图片确认发送按钮不存在或不唯一")
-        await confirm_button.click(force=True, timeout=5000)
+                "图片确认发送按钮不可用") from exc
     finally:
         try:
             await page.evaluate(

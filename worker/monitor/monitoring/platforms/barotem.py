@@ -8,6 +8,7 @@ Worker 分工：
 
 import asyncio
 import datetime
+import json
 import re
 import time
 from decimal import Decimal
@@ -26,6 +27,8 @@ from monitor.orders.adapters import adapter_for, parse_korean_amount
 SELL_LIST_URL = "https://www.barotem.com/mypage/sellingproduct/sell"
 ORDER_LIST_URL = "https://www.barotem.com/mypage/sellview/4"
 PRODUCT_DETAIL_URL = "https://www.barotem.com/product/view/{product_id}"
+PRODUCT_LIST_API_URL = "https://www.barotem.com/mypage/productlist"
+DEAL_LIST_API_URL = "https://www.barotem.com/mypage/DealList"
 
 NEW_CHAT_ALERT_SELECTOR = "#chargeModal:visible"
 TRADE_VERIFICATION_SELECTOR = ".preventionground:visible"
@@ -62,6 +65,17 @@ class _BarotemHtmlSnapshot:
     def __init__(self, url: str, html: str, context):
         self.url = url
         self.html = html
+        self.context = context
+
+
+class _BarotemOrderSnapshot:
+    """从 DealList JSON 接口读取的单页订单快照。"""
+
+    def __init__(self, url: str, payloads: List[dict], total: int,
+                 context):
+        self.url = url
+        self.payloads = payloads
+        self.total = total
         self.context = context
 
 
@@ -196,7 +210,8 @@ def _parse_order_card_payload(payload: dict) -> Optional[dict]:
     server = _compact_text(payload.get("server")).rstrip("/").strip()
     title = _compact_text(payload.get("title"))
     amount = _compact_text(payload.get("amount"))
-    buyer = _parse_buyer_character(payload.get("buyer_onclick", ""))
+    buyer = _compact_text(payload.get("buyer_character")) or (
+        _parse_buyer_character(payload.get("buyer_onclick", "")))
     if not game_name or not server:
         raise ValueError("未提取到游戏或区服")
     if not title:
@@ -425,6 +440,88 @@ def _order_payloads_from_html(html: str, url: str) -> tuple[List[dict], int]:
     return payloads, len(cards)
 
 
+def _order_payloads_from_api(
+        payload: dict, item_type: str, mode: str = "4") -> tuple[List[dict], int]:
+    """解析 Barotem /mypage/DealList 返回的订单 JSON。"""
+    if not isinstance(payload, dict) or int(payload.get("code", 0)) != 200:
+        raise ValueError(
+            str(payload.get("msg") if isinstance(payload, dict) else "")
+            or "Barotem 订单接口未返回成功状态"
+        )
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError("Barotem 订单接口 rows 字段无效")
+    try:
+        total = int(payload.get("total", len(rows)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Barotem 订单接口 total 字段无效") from exc
+
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Barotem 订单接口包含无效订单记录")
+        price = _compact_text(row.get("pay"))
+        result.append({
+            "order_no": row.get("gou_number", ""),
+            "game_name": row.get("categoryName", ""),
+            "server": row.get("productheader", ""),
+            "title": row.get("title", ""),
+            "amount": row.get("quantityText", ""),
+            "price": f"{price} 원" if price and "원" not in price else price,
+            "buyer_character": row.get("chrName", ""),
+            "platform_product_id": row.get("product_number", ""),
+            "chat_url": (
+                f"/chat/view?jangNum={row.get('number')}"
+                if row.get("number") else ""),
+            "order_time": row.get("regDate", ""),
+            "status": str(row.get("product_stats", "")),
+            "mode": mode,
+            "item_type": item_type,
+        })
+    return result, total
+
+
+async def _fetch_orders_page(
+        page, item_type: str, page_number: int,
+        timeout: int) -> _BarotemOrderSnapshot:
+    """直接调用页面实际使用的 DealList 订单接口。"""
+    response = await page.context.request.post(
+        DEAL_LIST_API_URL,
+        form={
+            "sell": "sell",
+            "thread": "",
+            "pname": "",
+            "opt": "0,0,0,0,0,0,0,0,0,0",
+            "sDate": "",
+            "eDate": "",
+            "mode": "4",
+            "itemtype": item_type,
+            "page": str(page_number),
+            "orderby": "reg_date",
+            "limit": str(PRODUCT_PAGE_SIZE),
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+        timeout=max(timeout, 10000),
+    )
+    response_url = str(response.url or "")
+    if "/auth/login" in response_url:
+        raise _BarotemLoginRequired(
+            f"Barotem 订单接口被重定向到登录页: {response_url}")
+    if not response.ok:
+        raise RuntimeError(
+            f"Barotem 订单接口失败: HTTP {response.status}")
+    text = await response.text()
+    if _html_requires_login(text):
+        raise _BarotemLoginRequired("Barotem 订单接口返回登录提示")
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Barotem 订单接口未返回 JSON") from exc
+    payloads, total = _order_payloads_from_api(payload, item_type)
+    return _BarotemOrderSnapshot(
+        _order_list_url(item_type), payloads, total, page.context)
+
+
 def _sales_products_page_from_html(html: str, item_type: str) -> dict:
     """从后台 HTML 快照读取在售商品，避免加载页面 Socket。"""
     soup = BeautifulSoup(str(html or ""), "html.parser")
@@ -433,8 +530,22 @@ def _sales_products_page_from_html(html: str, item_type: str) -> dict:
         raise ValueError(f"未找到 {REFRESH_CONTENT_SELECTOR} 商品区域")
 
     cards = soup.select(REFRESH_CARD_SELECTOR)
-    if not cards and content.select_one(".product_empty") is None:
-        raise ValueError("商品区域存在，但未找到商品卡片或空列表标记")
+    if not cards:
+        if content.select_one(".product_empty") is not None:
+            return {"total_cards": 0, "products": []}
+        category_count = _category_counts_from_html(html).get(item_type)
+        if category_count == 0:
+            # Barotem 的零商品分类只渲染空的 .product_contents，
+            # 并不提供以前使用的 .product_empty 标记。
+            return {"total_cards": 0, "products": []}
+        if category_count is not None:
+            raise ValueError(
+                f"商品分类 {item_type} 显示 {category_count} 个，"
+                "但商品区域中未找到商品卡片"
+            )
+        raise ValueError(
+            "商品区域存在，但未找到商品卡片，也无法确认当前分类为空"
+        )
 
     products = []
     for card in cards:
@@ -461,6 +572,83 @@ def _sales_products_page_from_html(html: str, item_type: str) -> dict:
                 if registered_at else ""),
         }, item_type))
     return {"total_cards": len(cards), "products": products}
+
+
+def _sales_products_page_from_api(payload: dict, item_type: str) -> dict:
+    """解析 Barotem /mypage/productlist 返回的 JSON 数据。"""
+    if not isinstance(payload, dict) or int(payload.get("code", 0)) != 200:
+        raise ValueError(
+            str(payload.get("msg") if isinstance(payload, dict) else "")
+            or "Barotem 商品接口未返回成功状态"
+        )
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError("Barotem 商品接口 rows 字段无效")
+    try:
+        total = int(payload.get("total", len(rows)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Barotem 商品接口 total 字段无效") from exc
+
+    products = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Barotem 商品接口包含无效商品记录")
+        if str(row.get("product_stats", "0")) != "0":
+            continue
+        products.append(_parse_sales_product_card_payload({
+            "platform_product_id": row.get("number", ""),
+            "game_name": row.get("categoryName", ""),
+            "region_name": row.get("productheader", ""),
+            "title": row.get("product_name", ""),
+            "quantity_text": row.get("quantityText", ""),
+            "price_text": row.get("baro_price", ""),
+            "platform_registered_at": (
+                row.get("regDate") or row.get("reg_date") or ""),
+        }, item_type))
+    return {
+        "total": total,
+        "total_cards": len(rows),
+        "products": products,
+    }
+
+
+async def _fetch_sales_products_page(
+        page, item_type: str, page_number: int, timeout: int) -> dict:
+    """直接调用页面实际使用的商品 JSON 接口。"""
+    response = await page.context.request.post(
+        PRODUCT_LIST_API_URL,
+        form={
+            "sell": "sell",
+            "thread": "",
+            "pname": "",
+            "opt": "0,0,0,0,0,0,0,0,0,0",
+            "sDate": "",
+            "eDate": "",
+            "mode": "0",
+            "itemtype": item_type,
+            "page": str(page_number),
+            "orderby": "reg_date",
+            "limit": str(PRODUCT_PAGE_SIZE),
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+        timeout=max(timeout, 10000),
+    )
+    response_url = str(response.url or "")
+    if "/auth/login" in response_url:
+        raise _BarotemLoginRequired(
+            f"Barotem 商品接口被重定向到登录页: {response_url}")
+    if not response.ok:
+        raise RuntimeError(
+            f"Barotem 商品接口失败: HTTP {response.status}")
+    text = await response.text()
+    if _html_requires_login(text):
+        raise _BarotemLoginRequired(
+            "Barotem 商品接口返回登录提示")
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Barotem 商品接口未返回 JSON") from exc
+    return _sales_products_page_from_api(payload, item_type)
 
 
 async def _fetch_product_detail(page, product_id: str) -> dict:
@@ -903,21 +1091,23 @@ class BarotemOrderWorker(_BarotemWorker):
                 if counts[item_type] > 0
             ]
         if not available_types:
-            return await self._monitor._collect_and_report_orders(probe)
+            return 0
 
         reported = 0
         for item_type in available_types:
-            snapshot = (
-                probe
-                if item_type == "money"
-                else await _fetch_authenticated_html(
-                    self.page,
-                    _order_list_url(item_type),
-                    wait_timeout,
+            first_page = await _fetch_orders_page(
+                self.page, item_type, 1, wait_timeout)
+            page_count = (
+                first_page.total + PRODUCT_PAGE_SIZE - 1
+            ) // PRODUCT_PAGE_SIZE
+            for page_number in range(1, max(page_count, 1) + 1):
+                snapshot = (
+                    first_page if page_number == 1
+                    else await _fetch_orders_page(
+                        self.page, item_type, page_number, wait_timeout)
                 )
-            )
-            reported += await self._monitor._collect_and_report_orders(
-                snapshot)
+                reported += await self._monitor._collect_and_report_orders(
+                    snapshot)
         return reported
 
     async def _available_order_types(self) -> List[str]:
@@ -1217,44 +1407,33 @@ class BarotemRefreshWorker(_BarotemWorker):
         抓取所有分类和分页。只有数量与页面计数完全一致时才返回，
         从而保证后端可以安全物理删除本轮缺失的商品。
         """
-        probe = await _fetch_authenticated_html(
-            self.page,
-            _product_list_url("money"),
-            timeout,
-        )
-        counts = _category_counts_from_html(probe.html)
-        missing = [value for value in PRODUCT_TYPES if value not in counts]
-        if missing:
-            raise RuntimeError(
-                f"商品分类计数不完整，停止快照同步: {missing}")
         products = []
         seen_product_ids = set()
         scanned_total = 0
+        expected_total = 0
 
         for item_type in PRODUCT_TYPES:
-            total = counts[item_type]
-            if total == 0:
-                continue
+            first_page = await _fetch_sales_products_page(
+                self.page, item_type, 1, timeout)
+            total = first_page["total"]
+            expected_total += total
             page_count = (total + PRODUCT_PAGE_SIZE - 1) // PRODUCT_PAGE_SIZE
             collected_for_type = 0
 
-            for page_number in range(1, page_count + 1):
-                target_url = _product_list_url(item_type, page_number)
-                snapshot = (
-                    probe
-                    if item_type == "money" and page_number == 1
-                    else await _fetch_authenticated_html(
-                        self.page,
-                        target_url,
-                        timeout,
-                    )
+            for page_number in range(1, max(page_count, 1) + 1):
+                page_snapshot = (
+                    first_page if page_number == 1
+                    else await _fetch_sales_products_page(
+                        self.page, item_type, page_number, timeout)
                 )
-                page_snapshot = _sales_products_page_from_html(
-                    snapshot.html, item_type)
+                if page_snapshot["total"] != total:
+                    raise RuntimeError(
+                        f"商品分类 {item_type} 总数在分页间发生变化: "
+                        f"first={total}, page={page_snapshot['total']}")
                 page_products = page_snapshot["products"]
                 expected = min(
                     PRODUCT_PAGE_SIZE,
-                    total - collected_for_type,
+                    max(total - collected_for_type, 0),
                 )
                 if page_snapshot["total_cards"] != expected:
                     raise RuntimeError(
@@ -1278,7 +1457,6 @@ class BarotemRefreshWorker(_BarotemWorker):
                     f"商品分类 {item_type} 抓取不完整: "
                     f"expected={total}, actual={collected_for_type}")
 
-        expected_total = sum(counts.values())
         if scanned_total != expected_total:
             raise RuntimeError(
                 f"销售商品完整快照数量不一致: "
@@ -1463,10 +1641,14 @@ class BarotemMonitor(BaseOrderMonitor):
 
     async def _extract_orders_from_table(
             self, page) -> OrderExtractionResult:
-        if isinstance(page, _BarotemHtmlSnapshot):
+        if isinstance(page, (_BarotemHtmlSnapshot, _BarotemOrderSnapshot)):
             try:
-                payloads, card_count = _order_payloads_from_html(
-                    page.html, page.url)
+                if isinstance(page, _BarotemOrderSnapshot):
+                    payloads = page.payloads
+                    card_count = len(payloads)
+                else:
+                    payloads, card_count = _order_payloads_from_html(
+                        page.html, page.url)
             except ValueError as exc:
                 return OrderExtractionResult.failure(str(exc))
 
@@ -1622,10 +1804,11 @@ class BarotemMonitor(BaseOrderMonitor):
 
     async def _finalize_order_payload(
             self, page, payload: dict, index: int) -> Optional[dict]:
-        product_id = _parse_product_view_id(
-            payload.get("product_onclick", ""))
+        product_id = _compact_text(payload.get("platform_product_id")) or (
+            _parse_product_view_id(payload.get("product_onclick", "")))
         payload["platform_product_id"] = product_id
-        chat_url = _parse_chat_view_url(payload.get("chat_onclick", ""))
+        chat_url = _compact_text(payload.get("chat_url")) or (
+            _parse_chat_view_url(payload.get("chat_onclick", "")))
         cache_chat_url = getattr(
             self._session, "remember_conversation_url", None)
         if chat_url and callable(cache_chat_url):
