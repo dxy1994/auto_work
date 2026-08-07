@@ -369,7 +369,21 @@ def _order_payloads_from_html(html: str, url: str) -> tuple[List[dict], int]:
     if not cards:
         if content.select_one(".product_empty") is not None:
             return [], 0
-        raise ValueError("订单区域存在，但未找到订单卡片或空列表标记")
+        query = parse_qs(urlparse(url).query)
+        item_type = query.get("itemtype", [""])[0]
+        category_count = _category_counts_from_html(html).get(item_type)
+        if category_count == 0:
+            # Barotem 当前的真实零订单页面只保留空的
+            # .product_contents，不再渲染 .product_empty。
+            return [], 0
+        if category_count is not None:
+            raise ValueError(
+                f"订单分类 {item_type} 显示 {category_count} 笔，"
+                "但订单区域中未找到订单卡片"
+            )
+        raise ValueError(
+            "订单区域存在，但未找到订单卡片，也无法确认当前分类为零订单"
+        )
 
     query = parse_qs(urlparse(url).query)
     mode_match = re.search(r"/mypage/sellview/(\d+)", url)
@@ -1485,8 +1499,22 @@ class BarotemMonitor(BaseOrderMonitor):
         if card_count == 0:
             if await content.locator(".product_empty").count() > 0:
                 return OrderExtractionResult.success([])
+            query = parse_qs(urlparse(page.url).query)
+            item_type = query.get("itemtype", [""])[0]
+            category = page.locator(f'[data-item="{item_type}"]')
+            if await category.count() > 0:
+                count_matches = re.findall(
+                    r"\d+", await category.first.inner_text())
+                category_count = (
+                    int(count_matches[-1]) if count_matches else 0)
+                if category_count == 0:
+                    return OrderExtractionResult.success([])
+                return OrderExtractionResult.failure(
+                    f"订单分类 {item_type} 显示 {category_count} 笔，"
+                    "但订单区域中未找到订单卡片"
+                )
             return OrderExtractionResult.failure(
-                "订单区域存在，但未找到订单卡片或空列表标记")
+                "订单区域存在，但未找到订单卡片，也无法确认当前分类为零订单")
 
         query = parse_qs(urlparse(page.url).query)
         mode_match = re.search(r"/mypage/sellview/(\d+)", page.url)

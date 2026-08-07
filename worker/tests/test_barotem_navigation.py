@@ -301,6 +301,33 @@ class BarotemStructureTest(unittest.TestCase):
         self.assertEqual(
             "39182563", products["products"][0]["platform_product_id"])
 
+    def test_background_html_parser_accepts_live_empty_order_structure(self):
+        html = """
+          <div data-item="id">계정 0</div>
+          <div data-item="money">게임머니 0</div>
+          <div data-item="item">아이템 0</div>
+          <div data-item="etc">기타 0</div>
+          <div data-item="gift">상품권 0</div>
+          <div class="product_background"><div class="product_contents">
+          </div></div>
+        """
+
+        payloads, card_count = _order_payloads_from_html(
+            html, _order_list_url("money"))
+
+        self.assertEqual([], payloads)
+        self.assertEqual(0, card_count)
+
+    def test_background_html_parser_rejects_count_card_mismatch(self):
+        html = """
+          <div data-item="money">게임머니 1</div>
+          <div class="product_background"><div class="product_contents">
+          </div></div>
+        """
+
+        with self.assertRaisesRegex(ValueError, "显示 1 笔"):
+            _order_payloads_from_html(html, _order_list_url("money"))
+
     def test_live_lineage_order_uses_product_detail_quantity_unit(self):
         detail = _parse_product_detail_html("""
             <ul>
@@ -454,7 +481,6 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
           <div data-item="etc">기타 0</div>
           <div data-item="gift">상품권 0</div>
           <div class="product_background"><div class="product_contents">
-            <div class="product_empty"></div>
           </div></div>
         """
         snapshot = _BarotemHtmlSnapshot(
