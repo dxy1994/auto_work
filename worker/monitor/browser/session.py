@@ -242,9 +242,12 @@ class BrowserSession:
         print(f"[BrowserSession:{self._account_id}] [1/5] 启动 playwright...", flush=True)
         self._playwright = await async_playwright().start()
         print(f"[BrowserSession:{self._account_id}] [2/5] playwright 已启动, 检测 channel...", flush=True)
-        # 持久化 Context 只需要保留 Cookie/站点存储；恢复上次全部标签会把
-        # 已崩溃的聊天渲染进程一起带回，导致 new_page/evaluate 永久阻塞。
-        launch_args = []
+        # 一些平台除 Cookie/站点存储外，还依赖恢复的页面会话或标签内状态；
+        # 重启时必须保留旧页面。_pick_main_page() 不对恢复页执行脚本探测，
+        # 从而避免单个异常渲染进程阻塞整个 Monitor 初始化。
+        launch_args = [
+            "--restore-last-session",
+        ]
 
         browser_type = None
         for ch in ("chrome", "msedge"):
