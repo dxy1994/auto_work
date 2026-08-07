@@ -2,8 +2,8 @@
 Barotem 订单监控（Async 多页面并行架构）。
 
 Worker 分工：
-  - BarotemOrderWorker：固定在销售中页面，刷新、提取并上报订单
-  - BarotemRefreshWorker：固定在上架列表，轮换商品分类并执行「끌어올리기」
+  - BarotemOrderWorker：保留销售中页面接收 Socket 弹窗，后台提取并上报订单
+  - BarotemRefreshWorker：保留上架列表，后台同步商品；启用时执行「끌어올리기」
 """
 
 import asyncio
@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import List, Optional
 from urllib.parse import urlencode, urljoin, urlparse, parse_qs
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 from monitor.browser.audio import play_alert_audio_async
 from monitor.monitoring.base import BaseOrderMonitor
@@ -50,6 +50,19 @@ SCHEDULED_PRODUCT_REFRESH_ENABLED = False
 RELOGIN_MAX_ATTEMPTS = 3
 RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
 RELOGIN_ALERT_INTERVAL_SECONDS = 3.0
+
+
+class _BarotemLoginRequired(RuntimeError):
+    """后台业务请求被 Barotem 判定为需要重新登录。"""
+
+
+class _BarotemHtmlSnapshot:
+    """不执行页面脚本的业务页 HTML 快照。"""
+
+    def __init__(self, url: str, html: str, context):
+        self.url = url
+        self.html = html
+        self.context = context
 
 
 def _compact_text(value) -> str:
@@ -268,6 +281,172 @@ def _order_list_url(item_type: str) -> str:
         "limit": "500",
     })
     return f"{ORDER_LIST_URL}?{query}"
+
+
+def _html_requires_login(html: str) -> bool:
+    """识别 Barotem 在原业务 URL 上返回的 HTTP 200 登录提示页。"""
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    alert = soup.select_one("#commonAlert")
+    if alert is None:
+        return False
+    heading = alert.select_one("h2")
+    check = alert.select_one(".common_alert_check")
+    heading_text = _compact_text(
+        heading.get_text(" ", strip=True) if heading else "")
+    onclick = str(check.get("onclick", "") if check else "")
+    style = re.sub(r"\s+", "", str(alert.get("style", ""))).lower()
+    return (
+        heading_text == "로그인 후 이용가능합니다."
+        and "/auth/login" in onclick
+        and "display:none" not in style
+    )
+
+
+async def _fetch_authenticated_html(
+        page, url: str, timeout: int) -> _BarotemHtmlSnapshot:
+    """复用浏览器登录上下文抓取 HTML，但不创建文档和 Socket。"""
+    response = await page.context.request.get(
+        url,
+        timeout=max(timeout, 10000),
+    )
+    response_url = str(response.url or "")
+    if "/auth/login" in response_url:
+        raise _BarotemLoginRequired(
+            f"Barotem 后台请求被重定向到登录页: {response_url}"
+        )
+    if not response.ok:
+        raise RuntimeError(
+            f"Barotem 后台请求失败: HTTP {response.status}, url={url}"
+        )
+    html = await response.text()
+    if _html_requires_login(html):
+        raise _BarotemLoginRequired(
+            f"Barotem 后台请求在原业务 URL 返回登录提示: {response_url}"
+        )
+    return _BarotemHtmlSnapshot(
+        response_url,
+        html,
+        page.context,
+    )
+
+
+def _category_counts_from_html(html: str) -> dict:
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    counts = {}
+    for element in soup.select("[data-item]"):
+        item_type = _compact_text(element.get("data-item"))
+        matches = re.findall(r"\d+", element.get_text(" ", strip=True))
+        if item_type in PRODUCT_TYPES:
+            counts[item_type] = int(matches[-1]) if matches else 0
+    return counts
+
+
+def _direct_text(element) -> str:
+    if element is None:
+        return ""
+    return _compact_text(" ".join(
+        str(child)
+        for child in element.children
+        if isinstance(child, NavigableString)
+    ))
+
+
+def _last_heading_text(element) -> str:
+    if element is None:
+        return ""
+    values = element.select("h4")
+    return _compact_text(values[-1].get_text(" ", strip=True)) if values else ""
+
+
+def _order_payloads_from_html(html: str, url: str) -> tuple[List[dict], int]:
+    """从后台拉取的订单页解析卡片，不执行站点 JavaScript。"""
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    content = soup.select_one(ORDER_CONTENT_SELECTOR)
+    if content is None:
+        raise ValueError(f"未找到 {ORDER_CONTENT_SELECTOR} 订单区域")
+
+    cards = soup.select(ORDER_CARD_SELECTOR)
+    if not cards:
+        if content.select_one(".product_empty") is not None:
+            return [], 0
+        raise ValueError("订单区域存在，但未找到订单卡片或空列表标记")
+
+    query = parse_qs(urlparse(url).query)
+    mode_match = re.search(r"/mypage/sellview/(\d+)", url)
+    mode = mode_match.group(1) if mode_match else ""
+    item_type = query.get("itemtype", ["unknown"])[0]
+    payloads = []
+    for card in cards:
+        heading = card.select_one(".product_detail_info h4")
+        game = heading.select_one("span") if heading else None
+        price_groups = card.select(".product_detail_price > div")
+        checkbox = card.select_one("input.product_checkbox")
+        buyer = card.select_one('[onclick^="dealinfo("]')
+        product = card.select_one(
+            '.product_detail_info[onclick*="productview("]'
+        )
+        chat = card.select_one('[onclick*="/chat/view?jangNum="]')
+        title = card.select_one(".product_detail_info p")
+        order_time = card.select_one(".product_title time")
+        status = card.select_one(".product_title h4")
+        payloads.append({
+            "order_no": checkbox.get("value", "") if checkbox else "",
+            "game_name": game.get_text(" ", strip=True) if game else "",
+            "server": _direct_text(heading),
+            "title": title.get_text(" ", strip=True) if title else "",
+            "amount": _last_heading_text(
+                price_groups[0] if price_groups else None),
+            "price": _last_heading_text(
+                price_groups[1] if len(price_groups) > 1 else None),
+            "buyer_onclick": buyer.get("onclick", "") if buyer else "",
+            "product_onclick": (
+                product.get("onclick", "") if product else ""),
+            "chat_onclick": chat.get("onclick", "") if chat else "",
+            "order_time": (
+                order_time.get_text(" ", strip=True) if order_time else ""),
+            "status": " ".join(status.get("class", [])) if status else "",
+            "mode": mode,
+            "item_type": item_type,
+        })
+    return payloads, len(cards)
+
+
+def _sales_products_page_from_html(html: str, item_type: str) -> dict:
+    """从后台 HTML 快照读取在售商品，避免加载页面 Socket。"""
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    content = soup.select_one(REFRESH_CONTENT_SELECTOR)
+    if content is None:
+        raise ValueError(f"未找到 {REFRESH_CONTENT_SELECTOR} 商品区域")
+
+    cards = soup.select(REFRESH_CARD_SELECTOR)
+    if not cards and content.select_one(".product_empty") is None:
+        raise ValueError("商品区域存在，但未找到商品卡片或空列表标记")
+
+    products = []
+    for card in cards:
+        if "on" in card.get("class", []):
+            continue
+        heading = card.select_one(".product_detail_info h4")
+        game = heading.select_one("span") if heading else None
+        price_groups = card.select(".product_detail_price > div")
+        checkbox = card.select_one("input.product_checkbox")
+        title = card.select_one(".product_detail_info p")
+        registered_at = card.select_one(".product_title time")
+        products.append(_parse_sales_product_card_payload({
+            "platform_product_id": (
+                checkbox.get("value", "") if checkbox else ""),
+            "game_name": game.get_text(" ", strip=True) if game else "",
+            "region_name": _direct_text(heading),
+            "title": title.get_text(" ", strip=True) if title else "",
+            "quantity_text": _last_heading_text(
+                price_groups[0] if price_groups else None),
+            "price_text": _last_heading_text(
+                price_groups[1] if len(price_groups) > 1 else None),
+            "platform_registered_at": (
+                registered_at.get_text(" ", strip=True)
+                if registered_at else ""),
+        }, item_type))
+    return {"total_cards": len(cards), "products": products}
 
 
 async def _fetch_product_detail(page, product_id: str) -> dict:
@@ -628,9 +807,29 @@ class _BarotemWorker(PageWorker):
                 ) from navigation_error
             raise exc
 
+    async def _recover_after_background_login_required(
+            self, target_url: str, ready_selector: str,
+            wait_timeout: int, reason: str) -> bool:
+        """后台请求失效后，仅在此时让长期页面执行一次受控登录恢复。"""
+        ready = await self._goto_business_page(
+            target_url,
+            ready_selector,
+            wait_timeout,
+            reason=f"{reason}-复核长期页面",
+        )
+        if ready:
+            return True
+        recovery = await self._recover_login_if_needed(
+            target_url,
+            ready_selector,
+            wait_timeout,
+            reason=reason,
+        )
+        return bool(recovery)
+
 
 class BarotemOrderWorker(_BarotemWorker):
-    """订单 Worker：固定在 판매중 页面，定时刷新并提取订单。"""
+    """订单 Worker：保留 판매중 长期页面，后台轮询并提取订单。"""
 
     def __init__(self, session, stop_event, monitor: 'BarotemMonitor'):
         super().__init__(
@@ -658,44 +857,53 @@ class BarotemOrderWorker(_BarotemWorker):
                 if reported:
                     print(f"[{self._log_tag}] 第{check_round}轮: "
                           f"上报 {reported} 个订单")
+            except _BarotemLoginRequired as exc:
+                print(f"[{self._log_tag}] 第{check_round}轮后台订单请求"
+                      f"需要恢复登录: {exc}")
+                await self._recover_after_background_login_required(
+                    ORDER_LIST_URL,
+                    ORDER_CONTENT_SELECTOR,
+                    wait_timeout,
+                    reason="后台订单请求被重定向",
+                )
             except Exception as exc:
                 print(f"[{self._log_tag}] 第{check_round}轮异常: {exc}")
 
-            await self._reload_order_page(wait_timeout)
             await asyncio.sleep(refresh_interval)
 
     async def _collect_all_order_categories(
             self, wait_timeout: int) -> int:
-        """按页面计数依次采集所有非空分类，避免只监控默认“账号”分类。"""
-        available_types = await self._available_order_types()
+        """后台抓取所有非空分类，长期页面只负责 Socket 弹窗和登录恢复。"""
+        probe_url = _order_list_url("money")
+        probe = await _fetch_authenticated_html(
+            self.page, probe_url, wait_timeout)
+        counts = _category_counts_from_html(probe.html)
+        missing = [value for value in PRODUCT_TYPES if value not in counts]
+        if missing:
+            print(f"[{self._log_tag}] 订单分类计数不完整 {missing}，"
+                  "本轮保守抓取全部分类")
+            available_types = list(PRODUCT_TYPES)
+        else:
+            available_types = [
+                item_type for item_type in PRODUCT_TYPES
+                if counts[item_type] > 0
+            ]
         if not available_types:
-            return await self._monitor._collect_and_report_orders(self.page)
+            return await self._monitor._collect_and_report_orders(probe)
 
         reported = 0
         for item_type in available_types:
-            query = parse_qs(urlparse(self.page.url).query)
-            current_type = query.get("itemtype", [""])[0]
-            current_limit = query.get("limit", [""])[0]
-            if current_type != item_type or current_limit != "500":
-                ready = await self._goto_business_page(
+            snapshot = (
+                probe
+                if item_type == "money"
+                else await _fetch_authenticated_html(
+                    self.page,
                     _order_list_url(item_type),
-                    ORDER_CONTENT_SELECTOR,
                     wait_timeout,
-                    reason=f"采集订单分类-{item_type}",
                 )
-                recovery = await self._recover_login_if_needed(
-                    _order_list_url(item_type),
-                    ORDER_CONTENT_SELECTOR,
-                    wait_timeout,
-                    reason=f"进入订单分类-{item_type}",
-                )
-                if recovery is False:
-                    break
-                if recovery is None and not ready:
-                    raise RuntimeError(
-                        f"订单分类 {item_type} 导航后仍要求登录")
+            )
             reported += await self._monitor._collect_and_report_orders(
-                self.page)
+                snapshot)
         return reported
 
     async def _available_order_types(self) -> List[str]:
@@ -750,25 +958,6 @@ class BarotemOrderWorker(_BarotemWorker):
             wait_timeout, reason="恢复订单页时",
         )
         return bool(recovery)
-
-    async def _reload_order_page(self, wait_timeout: int):
-        recovery = await self._recover_login_if_needed(
-            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
-            wait_timeout, reason="刷新订单页前",
-        )
-        if recovery is not None:
-            return
-        ready = await self._reload_business_page(
-            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
-            wait_timeout, reason="订单页刷新",
-        )
-        recovery = await self._recover_login_if_needed(
-            ORDER_LIST_URL, ORDER_CONTENT_SELECTOR,
-            wait_timeout, reason="刷新订单页后",
-        )
-        if recovery is None and not ready:
-            raise RuntimeError("订单页刷新后仍要求登录")
-
 
 class BarotemRefreshWorker(_BarotemWorker):
     """商品刷新 Worker：轮换有商品的分类并点击「끌어올리기」。"""
@@ -827,7 +1016,6 @@ class BarotemRefreshWorker(_BarotemWorker):
 
     async def _run_refresh_cycle(self, timeout: int) -> str:
         if not SCHEDULED_PRODUCT_REFRESH_ENABLED:
-            await self._prepare_refresh_action_page(timeout)
             await self._sync_sales_products(timeout)
             return "scheduled_refresh_disabled"
 
@@ -962,8 +1150,21 @@ class BarotemRefreshWorker(_BarotemWorker):
         return counts
 
     async def _sync_sales_products(self, timeout: int) -> dict:
-        first = await self._collect_sales_products_snapshot(timeout)
-        second = await self._collect_sales_products_snapshot(timeout)
+        try:
+            first = await self._collect_sales_products_snapshot(timeout)
+            second = await self._collect_sales_products_snapshot(timeout)
+        except _BarotemLoginRequired as exc:
+            print(f"[{self._log_tag}] 后台商品快照需要恢复登录: {exc}")
+            recovered = await self._recover_after_background_login_required(
+                _product_list_url("money"),
+                REFRESH_CONTENT_SELECTOR,
+                timeout,
+                reason="后台商品请求被重定向",
+            )
+            if not recovered:
+                raise RuntimeError("后台商品快照登录恢复失败") from exc
+            first = await self._collect_sales_products_snapshot(timeout)
+            second = await self._collect_sales_products_snapshot(timeout)
         first_by_id = {
             product["platform_product_id"]: product
             for product in first
@@ -1002,8 +1203,16 @@ class BarotemRefreshWorker(_BarotemWorker):
         抓取所有分类和分页。只有数量与页面计数完全一致时才返回，
         从而保证后端可以安全物理删除本轮缺失的商品。
         """
-        await self._prepare_refresh_action_page(timeout)
-        counts = await self._product_category_counts()
+        probe = await _fetch_authenticated_html(
+            self.page,
+            _product_list_url("money"),
+            timeout,
+        )
+        counts = _category_counts_from_html(probe.html)
+        missing = [value for value in PRODUCT_TYPES if value not in counts]
+        if missing:
+            raise RuntimeError(
+                f"商品分类计数不完整，停止快照同步: {missing}")
         products = []
         seen_product_ids = set()
         scanned_total = 0
@@ -1017,40 +1226,17 @@ class BarotemRefreshWorker(_BarotemWorker):
 
             for page_number in range(1, page_count + 1):
                 target_url = _product_list_url(item_type, page_number)
-                query = parse_qs(urlparse(self.page.url).query)
-                current_type = query.get("itemtype", [""])[0]
-                current_page = query.get("page", [""])[0]
-                current_limit = query.get("limit", [""])[0]
-                if (
-                    current_type != item_type
-                    or current_page != str(page_number)
-                    or current_limit != str(PRODUCT_PAGE_SIZE)
-                ):
-                    ready = await self._goto_business_page(
+                snapshot = (
+                    probe
+                    if item_type == "money" and page_number == 1
+                    else await _fetch_authenticated_html(
+                        self.page,
                         target_url,
-                        REFRESH_CONTENT_SELECTOR,
                         timeout,
-                        reason=(
-                            f"抓取销售商品-{item_type}-"
-                            f"第{page_number}页"
-                        ),
                     )
-                    if not ready:
-                        recovery = await self._recover_login_if_needed(
-                            target_url,
-                            REFRESH_CONTENT_SELECTOR,
-                            timeout,
-                            reason=(
-                                f"抓取销售商品-{item_type}-"
-                                f"第{page_number}页"
-                            ),
-                        )
-                        if not recovery:
-                            raise RuntimeError(
-                                "抓取销售商品时登录恢复失败")
-
-                page_snapshot = await self._extract_sales_products_page(
-                    item_type)
+                )
+                page_snapshot = _sales_products_page_from_html(
+                    snapshot.html, item_type)
                 page_products = page_snapshot["products"]
                 expected = min(
                     PRODUCT_PAGE_SIZE,
@@ -1263,6 +1449,32 @@ class BarotemMonitor(BaseOrderMonitor):
 
     async def _extract_orders_from_table(
             self, page) -> OrderExtractionResult:
+        if isinstance(page, _BarotemHtmlSnapshot):
+            try:
+                payloads, card_count = _order_payloads_from_html(
+                    page.html, page.url)
+            except ValueError as exc:
+                return OrderExtractionResult.failure(str(exc))
+
+            orders = []
+            failed_rows = 0
+            seen_order_ids = set()
+            for index, payload in enumerate(payloads):
+                try:
+                    parsed = await self._finalize_order_payload(
+                        page, payload, index)
+                    if parsed and parsed["order_no"] not in seen_order_ids:
+                        orders.append(parsed)
+                        seen_order_ids.add(parsed["order_no"])
+                except Exception as exc:
+                    failed_rows += 1
+                    print(f"[{self._log_tag}] 后台订单卡片 #{index} "
+                          f"提取失败: {exc}")
+            if card_count > 0 and failed_rows == card_count:
+                return OrderExtractionResult.failure(
+                    f"订单区域有 {card_count} 张卡片，但全部解析失败")
+            return OrderExtractionResult.success(orders)
+
         content = page.locator(ORDER_CONTENT_SELECTOR).first
         if await content.count() == 0:
             return OrderExtractionResult.failure(
@@ -1365,25 +1577,8 @@ class BarotemMonitor(BaseOrderMonitor):
                 """)
                 payload["mode"] = mode
                 payload["item_type"] = item_type
-                product_id = _parse_product_view_id(
-                    payload.get("product_onclick", ""))
-                payload["platform_product_id"] = product_id
-                chat_url = _parse_chat_view_url(
-                    payload.get("chat_onclick", ""))
-                cache_chat_url = getattr(
-                    self._session, "remember_conversation_url", None)
-                if chat_url and callable(cache_chat_url):
-                    cache_chat_url(
-                        "barotem", payload.get("order_no", ""), chat_url)
-                if product_id:
-                    try:
-                        payload.update(await self._get_product_detail(
-                            page, product_id))
-                    except Exception as exc:
-                        print(f"[{self._log_tag}] 订单卡片 #{index} "
-                              f"商品详情读取失败 product_id={product_id}: "
-                              f"{exc}")
-                parsed = _parse_order_card_payload(payload)
+                parsed = await self._finalize_order_payload(
+                    page, payload, index)
                 if parsed and parsed["order_no"] not in seen_order_ids:
                     orders.append(parsed)
                     seen_order_ids.add(parsed["order_no"])
@@ -1396,6 +1591,26 @@ class BarotemMonitor(BaseOrderMonitor):
             return OrderExtractionResult.failure(
                 f"订单区域有 {card_count} 张卡片，但全部解析失败")
         return OrderExtractionResult.success(orders)
+
+    async def _finalize_order_payload(
+            self, page, payload: dict, index: int) -> Optional[dict]:
+        product_id = _parse_product_view_id(
+            payload.get("product_onclick", ""))
+        payload["platform_product_id"] = product_id
+        chat_url = _parse_chat_view_url(payload.get("chat_onclick", ""))
+        cache_chat_url = getattr(
+            self._session, "remember_conversation_url", None)
+        if chat_url and callable(cache_chat_url):
+            cache_chat_url(
+                "barotem", payload.get("order_no", ""), chat_url)
+        if product_id:
+            try:
+                payload.update(await self._get_product_detail(
+                    page, product_id))
+            except Exception as exc:
+                print(f"[{self._log_tag}] 订单卡片 #{index} "
+                      f"商品详情读取失败 product_id={product_id}: {exc}")
+        return _parse_order_card_payload(payload)
 
     async def _build_normalized_order(
             self, page, order_data: dict):

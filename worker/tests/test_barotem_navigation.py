@@ -21,7 +21,12 @@ from monitor.monitoring.platforms.barotem import (  # noqa: E402
     ORDER_LIST_URL,
     SELL_LIST_URL,
     TRADE_VERIFICATION_SELECTOR,
+    _BarotemHtmlSnapshot,
+    _BarotemLoginRequired,
+    _fetch_authenticated_html,
     _handle_blocking_popups,
+    _html_requires_login,
+    _order_payloads_from_html,
     _parse_order_card_payload,
     _parse_chat_view_url,
     _parse_product_detail_html,
@@ -30,6 +35,7 @@ from monitor.monitoring.platforms.barotem import (  # noqa: E402
     _resolve_order_quantity,
     _order_list_url,
     _product_list_url,
+    _sales_products_page_from_html,
 )
 from monitor.orders.adapters import adapter_for  # noqa: E402
 
@@ -209,6 +215,33 @@ class BarotemPopupTest(unittest.IsolatedAsyncioTestCase):
 
 
 class BarotemStructureTest(unittest.TestCase):
+    @staticmethod
+    def _live_card_html(*, order_no="178583752411285073-61"):
+        return f"""
+          <div class="product_wrap">
+            <div class="product_title">
+              <h4 class="trading">판매중</h4>
+              <time>26년 08월 04일 18:58:47</time>
+            </div>
+            <input class="product_checkbox" value="{order_no}">
+            <div class="product_detail_info"
+                 onclick="productview('39182563')">
+              <h4><span>리니지 클래식</span> 군터 /</h4>
+              <p>빠른 아데나 거래</p>
+            </div>
+            <div class="product_detail_price">
+              <div><h4>수량</h4><h4>10</h4></div>
+              <div><h4>가격</h4><h4>9,800 원</h4></div>
+            </div>
+            <button onclick="dealinfo('encoded', '은하수',
+                    '{order_no}', '구매자 정보', 'itme');">buyer</button>
+            <button onclick="ycommon.openChat(
+                    '/chat/view?jangNum=9161506&gt;', 'chat', '1000', '1000');">
+              chat
+            </button>
+          </div>
+        """
+
     def test_chat_url_parser_removes_live_onclick_trailing_marker(self):
         self.assertEqual(
             "https://www.barotem.com/chat/view?jangNum=9161506",
@@ -241,6 +274,32 @@ class BarotemStructureTest(unittest.TestCase):
         self.assertEqual("기어", parsed["buyer_character"])
         self.assertEqual("trading", parsed["status"])
         self.assertEqual("money", parsed["item_type"])
+
+    def test_background_html_parser_matches_order_and_product_cards(self):
+        html = f"""
+          <div class="product_background"><div class="product_contents">
+            {self._live_card_html()}
+          </div></div>
+        """
+
+        payloads, card_count = _order_payloads_from_html(
+            html, _order_list_url("money"))
+        product_html = html.replace(
+            'value="178583752411285073-61"',
+            'value="39182563"',
+            1,
+        )
+        products = _sales_products_page_from_html(product_html, "money")
+
+        self.assertEqual(1, card_count)
+        self.assertEqual("178583752411285073-61", payloads[0]["order_no"])
+        self.assertEqual("리니지 클래식", payloads[0]["game_name"])
+        self.assertEqual("군터 /", payloads[0]["server"])
+        self.assertEqual("은하수", _parse_order_card_payload(
+            payloads[0])["buyer_character"])
+        self.assertEqual(1, products["total_cards"])
+        self.assertEqual(
+            "39182563", products["products"][0]["platform_product_id"])
 
     def test_live_lineage_order_uses_product_detail_quantity_unit(self):
         detail = _parse_product_detail_html("""
@@ -385,32 +444,120 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
         worker._page = page
         return worker, page
 
-    async def test_reload_timeout_accepts_new_ready_document(self):
+    async def test_background_order_poll_does_not_reload_long_lived_page(self):
         worker, page = self._order_worker()
-        page.reload.side_effect = TimeoutError("commit timeout")
-        page.evaluate.side_effect = [100.0, 200.0]
+        worker._monitor._collect_and_report_orders = AsyncMock(return_value=0)
+        html = """
+          <div data-item="id">계정 0</div>
+          <div data-item="money">게임머니 0</div>
+          <div data-item="item">아이템 0</div>
+          <div data-item="etc">기타 0</div>
+          <div data-item="gift">상품권 0</div>
+          <div class="product_background"><div class="product_contents">
+            <div class="product_empty"></div>
+          </div></div>
+        """
+        snapshot = _BarotemHtmlSnapshot(
+            _order_list_url("money"), html, None)
 
-        await worker._reload_order_page(10000)
+        with patch.object(
+                barotem_module, "_fetch_authenticated_html",
+                AsyncMock(return_value=snapshot)) as fetch:
+            reported = await worker._collect_all_order_categories(10000)
 
+        self.assertEqual(0, reported)
+        fetch.assert_awaited_once_with(
+            page, _order_list_url("money"), 10000)
+        page.reload.assert_not_awaited()
         page.goto.assert_not_awaited()
-        page.wait_for_selector.assert_awaited_once_with(
-            ORDER_CONTENT_SELECTOR,
-            state="attached",
-            timeout=20000,
-        )
-        self.assertEqual("commit", page.reload.await_args.kwargs["wait_until"])
 
-    async def test_reload_without_document_change_has_one_controlled_goto(self):
+    async def test_background_login_redirect_uses_controlled_recovery(self):
         worker, page = self._order_worker()
-        page.reload.side_effect = TimeoutError("commit timeout")
-        page.evaluate.return_value = 100.0
+        worker._goto_business_page = AsyncMock(return_value=False)
+        worker._recover_login_if_needed = AsyncMock(return_value=True)
 
-        with patch.object(barotem_module, "COMMIT_GRACE_SECONDS", 0.0):
-            await worker._reload_order_page(10000)
+        recovered = await worker._recover_after_background_login_required(
+            ORDER_LIST_URL,
+            ORDER_CONTENT_SELECTOR,
+            10000,
+            reason="后台请求测试",
+        )
 
-        page.goto.assert_awaited_once()
-        self.assertEqual(ORDER_LIST_URL, page.goto.await_args.args[0])
-        self.assertEqual("commit", page.goto.await_args.kwargs["wait_until"])
+        self.assertTrue(recovered)
+        worker._goto_business_page.assert_awaited_once()
+        worker._recover_login_if_needed.assert_awaited_once()
+        page.reload.assert_not_awaited()
+
+    async def test_background_request_reports_login_redirect(self):
+        response = SimpleNamespace(
+            url="https://www.barotem.com/auth/login",
+            ok=True,
+            status=200,
+            text=AsyncMock(),
+        )
+        request = SimpleNamespace(get=AsyncMock(return_value=response))
+        page = SimpleNamespace(context=SimpleNamespace(request=request))
+
+        with self.assertRaises(_BarotemLoginRequired):
+            await _fetch_authenticated_html(
+                page, _order_list_url("money"), 10000)
+
+        response.text.assert_not_awaited()
+
+    async def test_background_request_detects_http_200_login_alert(self):
+        html = """
+          <article id="commonAlert" class="common_alert"
+                   style="display: flex;">
+            <h2>로그인 후 이용가능합니다.</h2>
+            <button class="common_alert_check"
+                    onclick='location.href = "/auth/login";'>확인</button>
+          </article>
+        """
+        response = SimpleNamespace(
+            url=_order_list_url("money"),
+            ok=True,
+            status=200,
+            text=AsyncMock(return_value=html),
+        )
+        request = SimpleNamespace(get=AsyncMock(return_value=response))
+        page = SimpleNamespace(context=SimpleNamespace(request=request))
+
+        self.assertTrue(_html_requires_login(html))
+        self.assertFalse(_html_requires_login(
+            html.replace("display: flex", "display: none")))
+        with self.assertRaises(_BarotemLoginRequired):
+            await _fetch_authenticated_html(
+                page, _order_list_url("money"), 10000)
+
+        response.text.assert_awaited_once()
+
+    async def test_monitor_extracts_orders_from_background_snapshot(self):
+        monitor = object.__new__(BarotemMonitor)
+        monitor._session = SimpleNamespace(
+            remember_conversation_url=MagicMock())
+        monitor._get_product_detail = AsyncMock(return_value={
+            "detail_server": "군터",
+            "minimum_quantity": "10만 아데나",
+            "maximum_quantity": "9,666만 아데나",
+            "detail_price": "만 아데나당 980원",
+        })
+        html = f"""
+          <div class="product_background"><div class="product_contents">
+            {BarotemStructureTest._live_card_html()}
+          </div></div>
+        """
+        snapshot = _BarotemHtmlSnapshot(
+            _order_list_url("money"), html, None)
+
+        result = await monitor._extract_orders_from_table(snapshot)
+
+        self.assertFalse(result.failed)
+        self.assertEqual(1, len(result.orders))
+        self.assertEqual(
+            "178583752411285073-61", result.orders[0]["order_no"])
+        monitor._get_product_detail.assert_awaited_once_with(
+            snapshot, "39182563")
+        monitor._session.remember_conversation_url.assert_called_once()
 
     async def test_business_popup_can_trigger_relogin(self):
         session = SimpleNamespace(
@@ -549,6 +696,42 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(["money", "item"], result)
 
+    async def test_product_snapshot_uses_background_html_without_navigation(self):
+        monitor = SimpleNamespace(
+            post_login_check=AsyncMock(return_value=False),
+        )
+        worker = BarotemRefreshWorker(_FakeSession(), None, monitor)
+        page = SimpleNamespace(
+            reload=AsyncMock(),
+            goto=AsyncMock(),
+        )
+        worker._page = page
+        html = f"""
+          <div data-item="id">계정 0</div>
+          <div data-item="money">게임머니 1</div>
+          <div data-item="item">아이템 0</div>
+          <div data-item="etc">기타 0</div>
+          <div data-item="gift">상품권 0</div>
+          <div class="product_background"><div class="product_contents">
+            {BarotemStructureTest._live_card_html(order_no="39182563")}
+          </div></div>
+        """
+        snapshot = _BarotemHtmlSnapshot(
+            _product_list_url("money"), html, None)
+
+        with patch.object(
+                barotem_module, "_fetch_authenticated_html",
+                AsyncMock(return_value=snapshot)) as fetch:
+            products = await worker._collect_sales_products_snapshot(10000)
+
+        self.assertEqual(["39182563"], [
+            product["platform_product_id"] for product in products
+        ])
+        fetch.assert_awaited_once_with(
+            page, _product_list_url("money"), 10000)
+        page.reload.assert_not_awaited()
+        page.goto.assert_not_awaited()
+
     async def test_scheduled_product_refresh_is_disabled_but_snapshot_remains(self):
         monitor = SimpleNamespace(
             post_login_check=AsyncMock(return_value=False),
@@ -565,7 +748,7 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
             result = await worker._run_refresh_cycle(10000)
 
         self.assertEqual("scheduled_refresh_disabled", result)
-        worker._prepare_refresh_action_page.assert_awaited_once_with(10000)
+        worker._prepare_refresh_action_page.assert_not_awaited()
         worker._sync_sales_products.assert_awaited_once_with(10000)
         worker._do_refresh.assert_not_awaited()
 
@@ -587,25 +770,34 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_order_worker_collects_each_nonempty_category(self):
         worker, page = self._order_worker()
-        worker._available_order_types = AsyncMock(
-            return_value=["money", "item"])
-        worker._goto_business_page = AsyncMock()
-        worker._recover_login_if_needed = AsyncMock(return_value=None)
         worker._monitor._collect_and_report_orders = AsyncMock(
             side_effect=[1, 2])
+        counts_html = """
+          <div data-item="id">계정 0</div>
+          <div data-item="money">게임머니 2</div>
+          <div data-item="item">아이템 1</div>
+          <div data-item="etc">기타 0</div>
+          <div data-item="gift">상품권 0</div>
+          <div class="product_background"><div class="product_contents">
+            <div class="product_empty"></div>
+          </div></div>
+        """
+        snapshots = [
+            _BarotemHtmlSnapshot(_order_list_url("money"), counts_html, None),
+            _BarotemHtmlSnapshot(_order_list_url("item"), counts_html, None),
+        ]
 
-        async def update_url(url, *_args, **_kwargs):
-            page.url = url
-            return True
-
-        worker._goto_business_page.side_effect = update_url
-
-        reported = await worker._collect_all_order_categories(10000)
+        with patch.object(
+                barotem_module, "_fetch_authenticated_html",
+                AsyncMock(side_effect=snapshots)) as fetch:
+            reported = await worker._collect_all_order_categories(10000)
 
         self.assertEqual(3, reported)
-        self.assertEqual(2, worker._goto_business_page.await_count)
+        self.assertEqual(2, fetch.await_count)
         self.assertEqual(
             2, worker._monitor._collect_and_report_orders.await_count)
+        page.reload.assert_not_awaited()
+        page.goto.assert_not_awaited()
 
 
 if __name__ == "__main__":
