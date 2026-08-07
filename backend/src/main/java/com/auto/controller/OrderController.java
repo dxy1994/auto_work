@@ -31,7 +31,6 @@ import java.util.*;
 @RequestMapping("/api/orders")
 public class OrderController {
 
-    private static final Set<String> DELETABLE_STATUSES = Set.of("pending", "abnormal", "cancelled");
     private static final Set<String> ORDER_STATUSES =
             Set.of("pending", "assigned", "processing", "completed", "cancelled");
     private static final Set<String> DETAIL_STATUSES =
@@ -790,11 +789,17 @@ public class OrderController {
     public void delete(@PathVariable Integer orderId) {
         GameItemOrder o = orderService.getById(orderId);
         if (o == null) throw ApiException.notFound("订单不存在");
-        if (!DELETABLE_STATUSES.contains(o.getStatus())
-                || ("pending".equals(o.getStatus())
-                && Set.of("queued", "offered", "assigned", "review_required", "wait_web_confirm")
-                        .contains(o.getDeliveryStatus()))) {
-            throw ApiException.badRequest("只能删除未在交易中的待处理/异常订单，或已取消的订单");
+        if ("completed".equals(o.getStatus())) {
+            throw ApiException.badRequest("已完成订单不能删除");
+        }
+        if (Set.of("queued", "offered", "assigned").contains(o.getDeliveryStatus())) {
+            try {
+                tradeCoordinator.cancelOrderManually(orderId);
+            } catch (IllegalArgumentException e) {
+                throw ApiException.notFound(e.getMessage());
+            } catch (IllegalStateException e) {
+                throw ApiException.badRequest(e.getMessage());
+            }
         }
         List<GameItemOrderDetail> details = detailService.findByOrderId(orderId);
         if (!details.isEmpty()) {

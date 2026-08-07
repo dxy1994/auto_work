@@ -942,10 +942,7 @@ function cancelConfirmTitle(order) {
   return '确认设为已取消？取消后该订单不能重新尝试。'
 }
 function canDeleteOrder(order) {
-  if (!order) return false
-  if (order.status === 'cancelled') return true
-  return ['pending', 'abnormal'].includes(order.status)
-    && !['queued', 'offered', 'assigned', 'review_required', 'wait_web_confirm'].includes(order.delivery_status)
+  return Boolean(order) && order.status !== 'completed'
 }
 function orderOverflowActions(order) {
   const actions = [

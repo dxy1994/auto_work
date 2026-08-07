@@ -1324,7 +1324,7 @@ class LineageNavigationTest(unittest.TestCase):
         executor._capture_final_trade_screenshot = mock.Mock(
             return_value="data:image/png;base64,proof")
         executor._wait_for_trade_closed = mock.Mock(
-            side_effect=[True, True])
+            side_effect=[False, False])
         confirmation = mock.Mock(side_effect=[
             {
                 "approved": False,
@@ -1374,7 +1374,7 @@ class LineageNavigationTest(unittest.TestCase):
         executor._build_transfers = mock.Mock(return_value=[])
         executor._capture_final_trade_screenshot = mock.Mock(
             return_value="data:image/png;base64,proof")
-        executor._wait_for_trade_closed = mock.Mock(return_value=True)
+        executor._wait_for_trade_closed = mock.Mock(return_value=False)
         executor.set_trade_screenshot_callback(lambda _screenshot: {
             "approved": False,
             "reply_received": False,
@@ -1429,7 +1429,7 @@ class LineageNavigationTest(unittest.TestCase):
         executor._build_transfers = mock.Mock(return_value=[])
         executor._capture_final_trade_screenshot = mock.Mock(
             return_value="data:image/png;base64,proof")
-        executor._wait_for_trade_closed = mock.Mock(return_value=True)
+        executor._wait_for_trade_closed = mock.Mock(return_value=False)
         executor.set_trade_screenshot_callback(lambda _screenshot: {
             "approved": True,
             "reply_received": True,

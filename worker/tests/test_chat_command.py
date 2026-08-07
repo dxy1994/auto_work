@@ -29,6 +29,8 @@ class ChatCommandTest(unittest.TestCase):
         accepted = (
             "네, 본인 맞습니다.",
             "네 본인 맛습니다.",
+            "네 맞습니다",
+            "예 맞습니다",
             "네",
             "넵",
             "맛습니다",

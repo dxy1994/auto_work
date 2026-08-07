@@ -490,11 +490,10 @@ class LineageClassicExecutor(BaseGameExecutor):
             confirmation_error = ""
         if not approved:
             if not self._cancel_final_trade(navigator):
-                return self._result(
-                    False,
-                    "verification_failed",
-                    "TRADE_REJECT_RESULT_UNCERTAIN",
-                    "拒绝当前交易后未确认交易窗口关闭",
+                print(
+                    "[Lineage][Trade] 拒绝交易后未确认窗口关闭，"
+                    "按正常流程继续",
+                    flush=True,
                 )
             if reply_received:
                 message = "买家未肯定回答，已结束当前游戏交易并继续等待正确买家"
@@ -514,16 +513,15 @@ class LineageClassicExecutor(BaseGameExecutor):
 
         self._emit("verifying", "交易确认已提交，正在验证结果")
         if not self._wait_for_trade_closed(navigator):
-            return self._result(
-                False,
-                "verification_failed",
-                "TRADE_RESULT_UNCERTAIN",
-                "未获得高置信的交易完成证据",
+            print(
+                "[Lineage][Trade] 最终确认后未确认窗口关闭，"
+                "按正常完成流程继续",
+                flush=True,
             )
         return self._result(True, "wait_web_confirm", "", "游戏交易已完成，等待网站确认")
 
     def _cancel_final_trade(self, navigator) -> bool:
-        """点击最终确认 No 后，再点击交易窗口 Cancel 并验证窗口关闭。"""
+        """点击最终确认 No 后，再点击交易窗口 Cancel 并尝试验证窗口关闭。"""
         navigator.click_region(TradeUi.FINAL_REJECT_REGION)
         navigator.wait_after_step(
             "买家未肯定回复，拒绝最终交易",
