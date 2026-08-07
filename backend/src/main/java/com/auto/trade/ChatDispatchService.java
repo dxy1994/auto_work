@@ -159,9 +159,7 @@ public class ChatDispatchService {
                 null);
     }
 
-    /**
-     * 发送最终确认前截图，并要求 Monitor 在聊天页关闭后确认网站商品交付。
-     */
+    /** 游戏交易完成后只确认网站商品交付；最终确认截图此前已经发送。 */
     public DispatchReceipt dispatchDeliveryConfirmation(int orderId) {
         GameItemOrder order = requireOrder(orderId);
         if (!"wait_web_confirm".equals(order.getDeliveryStatus())) {
@@ -175,16 +173,16 @@ public class ChatDispatchService {
         }
 
         Route route = resolveRoute(order);
-        ChatMessage screenshot = new ChatMessage(
-                "image", null, List.of(screenshotPath));
+        Map<String, Object> action = resolveDeliveryAction(route.platform(), order);
+        action.put("skip_chat", true);
         return dispatch(
                 route.machineId(),
                 order,
                 route.platform(),
                 route.accountId(),
-                List.of(screenshot),
+                List.of(),
                 "delivery_confirmation",
-                resolveDeliveryAction(route.platform(), order));
+                action);
     }
 
     public void handleResult(

@@ -145,6 +145,46 @@ class ChatCommandTest(unittest.TestCase):
         self.assertEqual("hello", command["messages"][0]["content"])
         self.assertEqual("#write_chat", command["target"]["input_selector"])
 
+    def test_normalize_delivery_action_without_duplicate_chat_message(self):
+        command = normalize_chat_command({
+            "type": "chat_command",
+            "request_id": "delivery-1",
+            "purpose": "delivery_confirmation",
+            "messages": [],
+            "target": {"url": "https://www.barotem.com/mypage/sellview/4"},
+            "post_action": {
+                "type": "confirm_delivery",
+                "skip_chat": True,
+            },
+        })
+
+        self.assertEqual([], command["messages"])
+        self.assertTrue(command["post_action"]["skip_chat"])
+
+    def test_delivery_action_only_does_not_open_chat_or_send_image(self):
+        calls = []
+
+        async def confirm_delivery(_session, action):
+            calls.append(action)
+            return {"success": True, "message": "confirmed"}
+
+        with patch.object(sender, "_do_confirm_delivery", confirm_delivery):
+            result = asyncio.run(sender._do_send_chat_with_post_action(
+                object(),
+                {},
+                [],
+                {
+                    "type": "confirm_delivery",
+                    "skip_chat": True,
+                },
+            ))
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["chat_sent"])
+        self.assertTrue(result["proof_already_sent"])
+        self.assertTrue(result["delivery_confirmed"])
+        self.assertEqual(1, len(calls))
+
     def test_chat_result_keeps_automatic_and_manual_callbacks_separate(self):
         class FakeReporter:
             def __init__(self):

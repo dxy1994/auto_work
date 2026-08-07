@@ -78,6 +78,11 @@ public class TradeFinalConfirmationService {
         if (order == null || !assignmentId.equals(order.getAssignmentId())) {
             throw new IllegalStateException("订单不存在或交易指派已失效");
         }
+        if ("completed".equals(order.getStatus())
+                || "completed".equals(order.getDeliveryStatus())
+                || "wait_web_confirm".equals(order.getDeliveryStatus())) {
+            throw new IllegalStateException("游戏交易已经完成，无需再次发送最终确认图片");
+        }
         String storedPath = String.valueOf(screenshotPath == null ? "" : screenshotPath).trim();
         if (!storedPath.startsWith("/uploads/trade-screenshots/")
                 || storedPath.length() > 512

@@ -10,6 +10,9 @@ import org.mockito.ArgumentCaptor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -90,6 +93,33 @@ class DeliveryConfirmationServiceTest {
                 "completed",
                 event.getAllValues().get(1).getToStatus());
         assertEquals("ok", event.getAllValues().get(1).getMessage());
+    }
+
+    @Test
+    void actionOnlyResultCompletesWithoutSendingProofAgain() {
+        GameItemOrder order = waitingOrder();
+        when(orderService.getById(42)).thenReturn(order);
+
+        service.handleResult(
+                7,
+                "request-1",
+                42,
+                true,
+                "ok",
+                java.util.Map.of(
+                        "chat_sent", false,
+                        "chat_closed", true,
+                        "proof_already_sent", true,
+                        "delivery_confirmed", true));
+
+        verify(chatDispatchService, never()).handleResult(
+                anyInt(), anyString(), anyInt(), anyBoolean(), anyString());
+        verify(manualOrderStatusService).complete(42);
+        ArgumentCaptor<TradeEvent> event = ArgumentCaptor.forClass(TradeEvent.class);
+        verify(tradeEventService, org.mockito.Mockito.times(2)).save(event.capture());
+        assertEquals(
+                "最终确认截图此前已发送，本次未重复发送",
+                event.getAllValues().get(0).getMessage());
     }
 
     @Test

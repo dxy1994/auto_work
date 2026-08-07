@@ -1154,7 +1154,7 @@ function orderLogLabel(type) {
     trade_screenshot_stored: '交易截图已存入 RustFS',
     delivery_proof_sent: '交易截图已发送并关闭聊天',
     delivery_proof_failed: '交易截图发送失败',
-    delivery_confirmation_dispatched: '截图与网站确认指令已下发',
+    delivery_confirmation_dispatched: '网站交付确认指令已下发（截图未重复发送）',
     delivery_confirmation_completed: '网站商品交付已确认',
     delivery_confirmation_failed: '网站商品交付确认失败',
     trade_retryable_failed: '交易失败，可重新尝试',

@@ -56,7 +56,13 @@ def send_chat(
     from monitor.browser.session import BrowserSession
 
     try:
-        normalized_messages = _normalize_messages(messages)
+        action = dict(post_action or {})
+        action_only = (
+            not messages
+            and action.get("type") == "confirm_delivery"
+            and action.get("skip_chat") is True
+        )
+        normalized_messages = [] if action_only else _normalize_messages(messages)
         normalized_target = _normalize_target(target, normalized_messages)
     except ValueError as exc:
         return {"success": False, "message": str(exc)}
@@ -73,7 +79,7 @@ def send_chat(
         session,
         normalized_target,
         normalized_messages,
-        post_action,
+        action,
         keep_open=False,
     )
     execution_timeout = _chat_execution_timeout_seconds(normalized_target)
@@ -467,6 +473,19 @@ async def _do_send_chat_with_post_action(
 ) -> dict:
     """先完成聊天；有后置动作时关闭聊天页，再串行执行后置动作。"""
     action = dict(post_action or {})
+    if (
+        not messages
+        and action.get("type") == "confirm_delivery"
+        and action.get("skip_chat") is True
+    ):
+        delivery_result = await _do_confirm_delivery(session, action)
+        return {
+            **delivery_result,
+            "chat_sent": False,
+            "chat_closed": True,
+            "proof_already_sent": True,
+            "delivery_confirmed": bool(delivery_result.get("success")),
+        }
     chat_result = await _do_send_chat(
         session,
         target,

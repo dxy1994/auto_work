@@ -1646,8 +1646,9 @@ class LineageSessionNavigator:
         profile: str,
         probe_interval: Optional[float] = None,
         retry_wait_range: Optional[tuple[float, float]] = None,
+        attempts: Optional[int] = None,
     ):
-        """动作后先做人性化等待，再固定循环检测下一步状态 30 次。"""
+        """动作后先做人性化等待，再按默认或指定次数检测下一步状态。"""
         timing = STEP_WAIT_PROFILES.get(profile)
         if timing is None:
             raise ValueError(f"未知步骤等待类型: {profile}")
@@ -1663,7 +1664,11 @@ class LineageSessionNavigator:
             max(random_min, random_seconds),
         )
         total_wait = fixed_seconds + random_seconds
-        max_attempts = STEP_VERIFY_ATTEMPTS
+        max_attempts = (
+            STEP_VERIFY_ATTEMPTS
+            if attempts is None
+            else max(1, int(attempts))
+        )
         check_interval = max(0.0, float(
             timing.probe_interval if probe_interval is None else probe_interval
         ))

@@ -30,11 +30,14 @@ from game_executor.executor.lineage_classic.paddle_ocr import (
     paddle_ocr_text,
 )
 from game_executor.executor.lineage_classic.policy import (
+    BUYER_POLL_POST_REJECT_FAST_WINDOW_SECONDS,
+    BUYER_POLL_POST_REJECT_INTERVAL_SECONDS,
     buyer_poll_schedule,
     trade_timeout_seconds,
 )
 from game_executor.executor.lineage_classic.executor import (
     LineageClassicExecutor,
+    TRADE_CLOSE_VERIFY_ATTEMPTS,
     TradeUi,
     buyer_ocr_action,
     customer_name_prefix_matches,
@@ -974,6 +977,28 @@ class LineageNavigationTest(unittest.TestCase):
             for call in output.call_args_list
         ))
 
+    def test_step_can_override_default_verification_attempts(self):
+        predicate = mock.Mock(return_value=None)
+        navigator = LineageSessionNavigator(
+            mock.Mock(),
+            _Window(),
+            mock.Mock(),
+            sleep=lambda _seconds: None,
+            random_uniform=lambda low, _high: low,
+        )
+
+        with mock.patch("builtins.print"):
+            result = navigator.wait_for_step(
+                "最终确认后验证交易窗口关闭",
+                predicate,
+                profile="final_verify",
+                probe_interval=0.5,
+                attempts=100,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(100, predicate.call_count)
+
     def test_non_server_initial_waits_share_the_same_random_range(self):
         for profile in lineage_navigation.STEP_WAIT_PROFILES:
             with self.subTest(profile=profile):
@@ -1126,6 +1151,49 @@ class LineageNavigationTest(unittest.TestCase):
             navigator.sleep.call_args_list,
         )
 
+    def test_new_request_is_polled_quickly_after_automatic_rejection(self):
+        executor = LineageClassicExecutor(object())
+        executor._reject_buyer_request = mock.Mock()
+        vision = mock.Mock()
+        marker = (415, 532)
+        vision.find.side_effect = [marker, marker, marker, None, marker, marker, marker]
+        vision.read_player_name_result.side_effect = [
+            SimpleNamespace(text="WrongBuyer", confidence=99.0),
+            SimpleNamespace(text="WrongBuyer", confidence=99.0),
+            SimpleNamespace(text="WrongBuyer", confidence=99.0),
+            SimpleNamespace(text="Buyer27", confidence=99.0),
+            SimpleNamespace(text="Buyer27", confidence=99.0),
+            SimpleNamespace(text="Buyer27", confidence=99.0),
+        ]
+        navigator = SimpleNamespace(
+            vision=vision,
+            _raise_if_cancelled=mock.Mock(),
+            sleep=mock.Mock(),
+        )
+
+        with (
+            mock.patch.object(
+                lineage_navigation.time,
+                "monotonic",
+                side_effect=[0.0, 0.1, 0.2, 0.3, 0.31, 0.4, 0.5, 0.6, 0.7],
+            ),
+            mock.patch("builtins.print"),
+        ):
+            observed = executor._wait_for_expected_buyer(
+                navigator,
+                "Buyer27",
+                timeout=10.0,
+            )
+
+        self.assertEqual("Buyer27", observed)
+        executor._reject_buyer_request.assert_called_once_with(navigator)
+        self.assertIn(
+            mock.call(BUYER_POLL_POST_REJECT_INTERVAL_SECONDS),
+            navigator.sleep.call_args_list,
+        )
+        self.assertNotIn(mock.call(5.0), navigator.sleep.call_args_list)
+        self.assertEqual(15.0, BUYER_POLL_POST_REJECT_FAST_WINDOW_SECONDS)
+
     def test_human_rejection_clicks_no_and_confirms_request_disappeared(self):
         executor = LineageClassicExecutor(object())
         vision = mock.Mock()
@@ -1177,6 +1245,10 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual((80, 104, 259, 224), TradeUi.MY_TRADE_DROP_REGION)
         self.assertEqual((35, 325, 304, 528), TradeUi.BUYER_TRADE_REGION)
         self.assertEqual((192, 528, 360, 576), TradeUi.TRADE_ACTION_REGION)
+        self.assertEqual(
+            (250, 528, 376, 608),
+            TradeUi.TRADE_CANCEL_BUTTON_REGION,
+        )
         self.assertEqual((169, 163), region_center(TradeUi.MY_TRADE_REGION))
         self.assertEqual((169, 164), region_center(TradeUi.MY_TRADE_DROP_REGION))
         self.assertEqual(
@@ -1241,6 +1313,7 @@ class LineageNavigationTest(unittest.TestCase):
             (100, 100),
             (200, 200),
             (300, 300),
+            (320, 560),
             (110, 110),
             (210, 210),
             (310, 310),
@@ -1280,6 +1353,7 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual(2, executor._wait_for_expected_buyer.call_count)
         self.assertEqual(2, confirmation.call_count)
         navigator.click_region.assert_any_call(TradeUi.FINAL_REJECT_REGION)
+        navigator.click.assert_any_call((320, 560))
         self.assertEqual(
             3,
             navigator.click_region.call_args_list.count(
@@ -1294,6 +1368,7 @@ class LineageNavigationTest(unittest.TestCase):
             (100, 100),
             (200, 200),
             (300, 300),
+            (320, 560),
         ]
         executor._wait_for_expected_buyer = mock.Mock(return_value="Buyer")
         executor._build_transfers = mock.Mock(return_value=[])
@@ -1318,6 +1393,29 @@ class LineageNavigationTest(unittest.TestCase):
         self.assertEqual("cancelled", result["status"])
         self.assertEqual("BUYER_FINAL_REPLY_TIMEOUT", result["error_code"])
         navigator.click_region.assert_any_call(TradeUi.FINAL_REJECT_REGION)
+        navigator.click.assert_any_call((320, 560))
+
+    def test_final_rejection_clicks_trade_cancel_before_waiting_for_close(self):
+        executor = LineageClassicExecutor(object())
+        executor._wait_for_trade_closed = mock.Mock(return_value=True)
+        navigator = mock.Mock()
+        navigator.vision.find.return_value = (311, 555)
+        navigator.wait_for_step.side_effect = (
+            lambda _name, predicate, **_kwargs: predicate()
+        )
+
+        self.assertTrue(executor._cancel_final_trade(navigator))
+
+        navigator.click_region.assert_called_once_with(
+            TradeUi.FINAL_REJECT_REGION
+        )
+        navigator.vision.find.assert_called_once_with(
+            TradeUi.CANCEL_BUTTON_TEMPLATE,
+            TradeUi.TRADE_CANCEL_BUTTON_REGION,
+            threshold=0.90,
+        )
+        navigator.click.assert_called_once_with((311, 555))
+        executor._wait_for_trade_closed.assert_called_once_with(navigator)
 
     def test_korean_affirmative_buyer_reply_clicks_final_accept(self):
         executor = LineageClassicExecutor(object())
@@ -1393,7 +1491,7 @@ class LineageNavigationTest(unittest.TestCase):
             events,
         )
 
-    def test_trade_close_verification_uses_fixed_polling_and_3_stable_frames(self):
+    def test_trade_close_verification_uses_100_polls_and_3_stable_frames(self):
         executor = LineageClassicExecutor(object())
         navigator = mock.Mock()
         navigator.vision.find.return_value = None
@@ -1408,8 +1506,9 @@ class LineageNavigationTest(unittest.TestCase):
 
         navigator.wait_for_step.side_effect = verify_three_frames
 
-        self.assertTrue(executor._wait_for_trade_closed(navigator, timeout=12))
-        self.assertNotIn("attempts", wait_options)
+        self.assertTrue(executor._wait_for_trade_closed(navigator))
+        self.assertEqual(100, wait_options["attempts"])
+        self.assertEqual(100, TRADE_CLOSE_VERIFY_ATTEMPTS)
         self.assertEqual(30, lineage_navigation.STEP_VERIFY_ATTEMPTS)
         self.assertEqual(0.5, wait_options["probe_interval"])
 

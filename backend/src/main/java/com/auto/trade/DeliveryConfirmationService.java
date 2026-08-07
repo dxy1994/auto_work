@@ -12,7 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 游戏交付后的平台收尾：发送 RustFS 截图、关闭聊天页并确认网站商品交付。
+ * 游戏交付后的平台收尾：复用此前已发送的 RustFS 截图，只确认网站商品交付。
  */
 @Service
 public class DeliveryConfirmationService {
@@ -54,7 +54,7 @@ public class DeliveryConfirmationService {
             appendEvent(
                     order,
                     "delivery_confirmation_dispatched",
-                    "截图聊天与网站商品交付确认指令已下发",
+                    "网站商品交付确认指令已下发，最终确认截图不再重复发送",
                     Map.of(
                             "request_id", receipt.requestId(),
                             "machine_id", receipt.machineId(),
@@ -65,7 +65,7 @@ public class DeliveryConfirmationService {
         } catch (RuntimeException e) {
             String message = TradeErrorGuidance.ensureGuidance(
                     "WEBSITE_DELIVERY_DISPATCH_FAILED",
-                    normalizeMessage(e.getMessage(), "截图聊天与网站交付确认指令下发失败"));
+                    normalizeMessage(e.getMessage(), "网站商品交付确认指令下发失败"));
             orderService.updateLastError(
                     orderId, "WEBSITE_DELIVERY_DISPATCH_FAILED", message);
             appendEvent(
@@ -94,15 +94,19 @@ public class DeliveryConfirmationService {
         boolean deliveryConfirmed = safeDetails.containsKey("delivery_confirmed")
                 ? Boolean.TRUE.equals(safeDetails.get("delivery_confirmed"))
                 : success;
-        boolean proofReady = chatSent && chatClosed;
+        boolean proofAlreadySent = Boolean.TRUE.equals(
+                safeDetails.get("proof_already_sent"));
+        boolean proofReady = (chatSent || proofAlreadySent) && chatClosed;
         boolean fullyCompleted =
                 success && proofReady && deliveryConfirmed;
-        chatDispatchService.handleResult(
-                machineId,
-                requestId,
-                orderId,
-                chatSent,
-                chatSent ? "交易截图已发送" : message);
+        if (!proofAlreadySent) {
+            chatDispatchService.handleResult(
+                    machineId,
+                    requestId,
+                    orderId,
+                    chatSent,
+                    chatSent ? "交易截图已发送" : message);
+        }
         GameItemOrder order = orderService.getById(orderId);
         if (order == null) {
             log.warn("[DeliveryConfirmation] 回执对应订单不存在 order_id={}", orderId);
@@ -123,11 +127,14 @@ public class DeliveryConfirmationService {
                 "request_id", requestId,
                 "machine_id", machineId,
                 "screenshot_path", order.getGameTradeScreenshot(),
-                "chat_closed", chatClosed);
+                "chat_closed", chatClosed,
+                "proof_already_sent", proofAlreadySent);
         appendEvent(
                 order,
                 proofReady ? "delivery_proof_sent" : "delivery_proof_failed",
-                proofReady
+                proofAlreadySent
+                        ? "最终确认截图此前已发送，本次未重复发送"
+                        : proofReady
                         ? "交易截图已发送，聊天页已关闭"
                         : chatSent
                                 ? "交易截图已发送，但聊天页关闭失败"
@@ -135,7 +142,7 @@ public class DeliveryConfirmationService {
                 proofPayload);
 
         if (!fullyCompleted) {
-            String fallback = !chatSent
+            String fallback = !proofAlreadySent && !chatSent
                     ? "交易截图发送失败"
                     : !chatClosed
                             ? "交易截图已发送，但聊天页关闭失败"

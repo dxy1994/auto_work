@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
@@ -27,12 +28,13 @@ import static org.mockito.Mockito.when;
 class TradeFinalConfirmationServiceTest {
 
     private ChatDispatchService chatDispatchService;
+    private GameItemOrderService orderService;
     private AgentRegistry agentRegistry;
     private TradeFinalConfirmationService service;
 
     @BeforeEach
     void setUp() {
-        GameItemOrderService orderService = mock(GameItemOrderService.class);
+        orderService = mock(GameItemOrderService.class);
         TradeAssignmentService assignmentService = mock(TradeAssignmentService.class);
         GameScriptService gameScriptService = mock(GameScriptService.class);
         RegionScriptService regionScriptService = mock(RegionScriptService.class);
@@ -146,5 +148,25 @@ class TradeFinalConfirmationServiceTest {
 
         verify(agentRegistry).sendTradeFinalConfirmationResult(
                 9, "request-1", true, true, "네", "");
+    }
+
+    @Test
+    void completedGameTradeCannotSendFinalScreenshotAgain() {
+        GameItemOrder order = new GameItemOrder();
+        order.setId(42);
+        order.setAssignmentId("assignment-1");
+        order.setStatus("processing");
+        order.setDeliveryStatus("wait_web_confirm");
+        when(orderService.getById(42)).thenReturn(order);
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> service.begin(
+                        "assignment-1",
+                        9,
+                        "request-1",
+                        "/uploads/trade-screenshots/proof.png"));
+
+        assertEquals("游戏交易已经完成，无需再次发送最终确认图片", error.getMessage());
     }
 }

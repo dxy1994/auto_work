@@ -24,9 +24,14 @@ from game_executor.executor.lineage_classic.navigation import (
     item_recognition_images,
 )
 from game_executor.executor.lineage_classic.policy import (
+    BUYER_POLL_POST_REJECT_FAST_WINDOW_SECONDS,
+    BUYER_POLL_POST_REJECT_INTERVAL_SECONDS,
     buyer_poll_schedule,
     trade_timeout_seconds,
 )
+
+
+TRADE_CLOSE_VERIFY_ATTEMPTS = 100
 
 
 class TradeUi:
@@ -51,6 +56,7 @@ class TradeUi:
     MY_TRADE_DROP_REGION = (80, 104, 259, 224)
     BUYER_TRADE_REGION = (35, 325, 304, 528)
     TRADE_ACTION_REGION = (192, 528, 360, 576)
+    TRADE_CANCEL_BUTTON_REGION = (250, 528, 376, 608)
     # 兼容仍引用旧名称的扩展代码。
     BOTH_TRADE_REGION = TRADE_WINDOW_REGION
     FINAL_ACCEPT_REGION = (845, 875, 875, 890)
@@ -377,7 +383,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             "接受买家申请后进入交易界面",
             lambda: navigator.vision.find(
                 TradeUi.CANCEL_BUTTON_TEMPLATE,
-                TradeUi.TRADE_ACTION_REGION,
+                TradeUi.TRADE_CANCEL_BUTTON_REGION,
                 threshold=0.90,
             ),
             profile="screen",
@@ -483,9 +489,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             reply_received = False
             confirmation_error = ""
         if not approved:
-            navigator.click_region(TradeUi.FINAL_REJECT_REGION)
-            navigator.wait_after_step("买家未肯定回复，拒绝最终交易", profile="panel")
-            if not self._wait_for_trade_closed(navigator, timeout=12):
+            if not self._cancel_final_trade(navigator):
                 return self._result(
                     False,
                     "verification_failed",
@@ -509,7 +513,7 @@ class LineageClassicExecutor(BaseGameExecutor):
         navigator.click_region(TradeUi.FINAL_ACCEPT_REGION)
 
         self._emit("verifying", "交易确认已提交，正在验证结果")
-        if not self._wait_for_trade_closed(navigator, timeout=12):
+        if not self._wait_for_trade_closed(navigator):
             return self._result(
                 False,
                 "verification_failed",
@@ -517,6 +521,30 @@ class LineageClassicExecutor(BaseGameExecutor):
                 "未获得高置信的交易完成证据",
             )
         return self._result(True, "wait_web_confirm", "", "游戏交易已完成，等待网站确认")
+
+    def _cancel_final_trade(self, navigator) -> bool:
+        """点击最终确认 No 后，再点击交易窗口 Cancel 并验证窗口关闭。"""
+        navigator.click_region(TradeUi.FINAL_REJECT_REGION)
+        navigator.wait_after_step(
+            "买家未肯定回复，拒绝最终交易",
+            profile="panel",
+        )
+        cancel_button = navigator.wait_for_step(
+            "最终确认拒绝后等待交易取消按钮",
+            lambda: navigator.vision.find(
+                TradeUi.CANCEL_BUTTON_TEMPLATE,
+                TradeUi.TRADE_CANCEL_BUTTON_REGION,
+                threshold=0.90,
+            ),
+            profile="panel",
+        )
+        if cancel_button is not None:
+            navigator.click(cancel_button)
+            navigator.wait_after_step(
+                "点击交易取消按钮",
+                profile="panel",
+            )
+        return self._wait_for_trade_closed(navigator)
 
     @staticmethod
     def _capture_final_trade_screenshot(navigator) -> str:
@@ -554,6 +582,7 @@ class LineageClassicExecutor(BaseGameExecutor):
         stable_frames = 0
         rejected_name = ""
         last_poll_phase = ""
+        fast_poll_until = 0.0
         while True:
             now = time.monotonic()
             if now >= deadline:
@@ -576,7 +605,12 @@ class LineageClassicExecutor(BaseGameExecutor):
                 last_name = ""
                 stable_frames = 0
                 rejected_name = ""
-                navigator.sleep(poll_interval)
+                idle_interval = (
+                    min(poll_interval, BUYER_POLL_POST_REJECT_INTERVAL_SECONDS)
+                    if now < fast_poll_until
+                    else poll_interval
+                )
+                navigator.sleep(idle_interval)
                 continue
 
             if not last_name:
@@ -641,6 +675,17 @@ class LineageClassicExecutor(BaseGameExecutor):
                     )
                     self._reject_buyer_request(navigator)
                     rejected_name = frame_key
+                    fast_poll_until = max(
+                        fast_poll_until,
+                        time.monotonic()
+                        + BUYER_POLL_POST_REJECT_FAST_WINDOW_SECONDS,
+                    )
+                    print(
+                        "[Lineage][等待买家] 拒绝后进入快速检测，"
+                        f"持续 {BUYER_POLL_POST_REJECT_FAST_WINDOW_SECONDS:g}s，"
+                        f"检测间隔={BUYER_POLL_POST_REJECT_INTERVAL_SECONDS:g}s",
+                        flush=True,
+                    )
                     self._emit(
                         "waiting_buyer",
                         "买家名 OCR 置信度低于 80% 或校验不匹配，已拒绝本次申请",
@@ -787,7 +832,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             raise NavigationError(f"{label} 交易数量必须是大于 0 的整数")
         return int(numeric)
 
-    def _wait_for_trade_closed(self, navigator, timeout: float) -> bool:
+    def _wait_for_trade_closed(self, navigator) -> bool:
         """连续三帧确认交易窗口和最终提示均消失，且已回到游戏主界面。"""
         stable_frames = 0
 
@@ -800,7 +845,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             )
             cancel_button = navigator.vision.find(
                 TradeUi.CANCEL_BUTTON_TEMPLATE,
-                TradeUi.TRADE_ACTION_REGION,
+                TradeUi.TRADE_CANCEL_BUTTON_REGION,
                 threshold=0.90,
             )
             if final_prompt is None and cancel_button is None and navigator._is_in_game():
@@ -816,6 +861,7 @@ class LineageClassicExecutor(BaseGameExecutor):
             trade_closed_sample,
             profile="final_verify",
             probe_interval=0.5,
+            attempts=TRADE_CLOSE_VERIFY_ATTEMPTS,
         )
         return bool(result)
 

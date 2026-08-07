@@ -107,7 +107,7 @@ class ChatDispatchServiceTest {
     }
 
     @Test
-    void deliveryConfirmationSendsStoredProofThenRequestsPlatformConfirmation() {
+    void deliveryConfirmationSkipsPreviouslySentProofAndRequestsPlatformConfirmation() {
         GameItemOrder order = itemManiaOrder();
         order.setDeliveryStatus("wait_web_confirm");
         order.setStatus("processing");
@@ -145,11 +145,10 @@ class ChatDispatchServiceTest {
                 anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
                 anyString(), anyString(), messages.capture(), anyMap(), action.capture());
 
-        assertEquals(1, receipt.imageCount());
-        assertEquals(
-                List.of("/uploads/trade-screenshots/2026/07/29/proof.png"),
-                messages.getValue().get(0).get("image_urls"));
+        assertEquals(0, receipt.imageCount());
+        assertEquals(List.of(), messages.getValue());
         assertEquals("confirm_delivery", action.getValue().get("type"));
+        assertEquals(true, action.getValue().get("skip_chat"));
         assertTrue(action.getValue().get("detail_url").toString()
                 .contains("sell_ing_view.html?id=IM-2026-42"));
         assertEquals("#trade_btn", action.getValue().get("open_confirm_selector"));

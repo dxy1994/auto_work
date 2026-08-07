@@ -30,7 +30,13 @@ def normalize_chat_command(message: dict[str, Any]) -> dict[str, Any]:
 
     messages = message.get("messages")
     target = message.get("target")
-    if not isinstance(messages, list) or not messages:
+    post_action = message.get("post_action")
+    action_only = (
+        isinstance(post_action, dict)
+        and post_action.get("type") == "confirm_delivery"
+        and post_action.get("skip_chat") is True
+    )
+    if not isinstance(messages, list) or (not messages and not action_only):
         raise ValueError("聊天消息列表为空")
     if not isinstance(target, dict):
         raise ValueError("聊天目标配置无效")
@@ -129,6 +135,7 @@ def report_chat_result(
                         "website_stage",
                         "website_status",
                         "already_completed",
+                        "proof_already_sent",
                         "reply_received",
                         "affirmative_reply",
                         "reply_text",
