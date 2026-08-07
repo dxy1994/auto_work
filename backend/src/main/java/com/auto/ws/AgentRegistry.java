@@ -11,6 +11,7 @@ import com.auto.trade.MachineSessionRestored;
 import com.auto.trade.OrderMonitorRestored;
 import com.auto.trade.OrderMonitorStopped;
 import com.auto.trade.GameClientDisconnected;
+import com.auto.trade.PlatformLoginVerificationChanged;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -294,6 +295,11 @@ public class AgentRegistry {
     }
 
     public void publishGameClientDisconnected(GameClientDisconnected event) {
+        eventPublisher.publishEvent(event);
+    }
+
+    public void publishPlatformLoginVerification(
+            PlatformLoginVerificationChanged event) {
         eventPublisher.publishEvent(event);
     }
 

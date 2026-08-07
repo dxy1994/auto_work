@@ -9,6 +9,7 @@ import com.auto.trade.MarketplaceOrderIngestionService;
 import com.auto.trade.OrderMonitorAutoStartService;
 import com.auto.trade.TradeDispatchCoordinator;
 import com.auto.trade.GameClientDisconnected;
+import com.auto.trade.PlatformLoginVerificationChanged;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -163,6 +164,28 @@ class AgentWebSocketHandlerHardwareBindingTest {
         assertEquals(19, event.getValue().gameAccountId());
         assertEquals(4321, event.getValue().processId());
         assertEquals(0.973, event.getValue().confidence());
+    }
+
+    @Test
+    void currentMonitorSessionPublishesLoginVerificationEvent() throws Exception {
+        session.getAttributes().put("machineId", 7);
+        when(registry.isCurrentSession(7, session)).thenReturn(true);
+
+        handler.handleTextMessage(session, new TextMessage("""
+                {"type":"platform_login_verification",
+                 "account_id":12,"platform":"barotem",
+                 "status":"required",
+                 "reason":"Google 验证码需要人工完成"}
+                """));
+
+        ArgumentCaptor<PlatformLoginVerificationChanged> event =
+                ArgumentCaptor.forClass(PlatformLoginVerificationChanged.class);
+        verify(registry).publishPlatformLoginVerification(event.capture());
+        assertEquals(7, event.getValue().machineId());
+        assertEquals(12, event.getValue().accountId());
+        assertEquals("barotem", event.getValue().platform());
+        assertEquals("required", event.getValue().status());
+        assertEquals("Google 验证码需要人工完成", event.getValue().reason());
     }
 
 }

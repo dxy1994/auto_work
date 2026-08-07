@@ -15,6 +15,7 @@ from monitor.monitoring.platforms.barotem import (  # noqa: E402
     BarotemMonitor,
     BarotemOrderWorker,
     BarotemRefreshWorker,
+    LOGIN_ALERT_SELECTOR,
     NEW_CHAT_ALERT_SELECTOR,
     ORDER_CONTENT_SELECTOR,
     ORDER_LIST_URL,
@@ -433,12 +434,70 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
         )
         worker._page = page
 
-        ready = await worker._ensure_order_page_ready(10000)
+        alert = AsyncMock()
+        with patch.object(
+            barotem_module, "play_alert_audio_async", alert
+        ):
+            ready = await worker._ensure_order_page_ready(10000)
 
         self.assertTrue(ready)
+        alert.assert_awaited_once_with(
+            text="barotem账号7登录已失效，正在自动重新登录"
+        )
         session.relogin.assert_awaited_once_with(page)
         page.goto.assert_awaited_once()
         self.assertEqual(ORDER_LIST_URL, page.goto.await_args.args[0])
+
+    async def test_login_check_only_reads_visible_common_alert(self):
+        check = SimpleNamespace(
+            get_attribute=AsyncMock(return_value="go('/auth/login')"),
+        )
+        checks = SimpleNamespace(
+            count=AsyncMock(return_value=1),
+            nth=MagicMock(return_value=check),
+        )
+        page = SimpleNamespace(
+            locator=MagicMock(return_value=checks),
+        )
+        monitor = SimpleNamespace(_log_tag="BarotemTest")
+
+        required = await BarotemMonitor.post_login_check(monitor, page)
+
+        self.assertTrue(required)
+        page.locator.assert_called_once_with(LOGIN_ALERT_SELECTOR)
+        self.assertIn(":visible", LOGIN_ALERT_SELECTOR)
+
+    async def test_relogin_alert_is_shared_between_workers_and_repeats(self):
+        session = SimpleNamespace(account_id=7)
+        monitor = SimpleNamespace(
+            post_login_check=AsyncMock(return_value=True),
+        )
+        order_worker = BarotemOrderWorker(session, None, monitor)
+        refresh_worker = BarotemRefreshWorker(session, None, monitor)
+        alert = AsyncMock()
+
+        with (
+            patch.object(
+                barotem_module, "RELOGIN_ALERT_INTERVAL_SECONDS", 0.01
+            ),
+            patch.object(barotem_module, "play_alert_audio_async", alert),
+        ):
+            await order_worker._start_relogin_alerts()
+            await refresh_worker._start_relogin_alerts()
+            await asyncio.sleep(0.025)
+            self.assertTrue(session._barotem_relogin_alert_active)
+            self.assertGreaterEqual(alert.await_count, 2)
+            await order_worker._stop_relogin_alerts()
+
+        self.assertEqual(
+            "barotem账号7登录已失效，正在自动重新登录",
+            alert.await_args_list[0].kwargs["text"],
+        )
+        self.assertIn(
+            "登录已失效，请完成登录验证",
+            alert.await_args_list[1].kwargs["text"],
+        )
+        self.assertFalse(session._barotem_relogin_alert_active)
 
     async def test_navigation_redirect_returns_control_to_relogin_flow(self):
         session = SimpleNamespace(

@@ -12,7 +12,7 @@ import asyncio
 import os
 import sys
 import threading
-from typing import Optional, Dict
+from typing import Callable, Optional, Dict
 
 from patchright.async_api import async_playwright, Page, Browser, BrowserContext
 
@@ -63,6 +63,7 @@ class BrowserSession:
         my_page_url: str = "",
         stop_event: Optional[threading.Event] = None,
         headless: bool = False,
+        login_verification_callback: Optional[Callable] = None,
     ):
         self._account_id = account_id
         self._login_url = login_url
@@ -76,6 +77,7 @@ class BrowserSession:
         self._my_page_url = my_page_url
         self._stop_event = stop_event
         self._headless = headless
+        self._login_verification_callback = login_verification_callback
 
         self._lock = threading.Lock()
         self._refcount = 0
@@ -193,6 +195,7 @@ class BrowserSession:
         my_page_url: str = "",
         stop_event: Optional[threading.Event] = None,
         headless: bool = False,
+        login_verification_callback: Optional[Callable] = None,
     ) -> 'BrowserSession':
         """获取或创建账户对应的 BrowserSession，同时递增引用计数。"""
         with _registry_lock:
@@ -206,8 +209,12 @@ class BrowserSession:
                     skip_login=skip_login, force_login=force_login,
                     website_id=website_id, my_page_url=my_page_url,
                     stop_event=stop_event, headless=headless,
+                    login_verification_callback=login_verification_callback,
                 )
                 _registry[account_id] = session
+            if login_verification_callback is not None:
+                session._login_verification_callback = (
+                    login_verification_callback)
             session._add_ref()
             return session
 
@@ -629,6 +636,7 @@ class BrowserSession:
                 my_page_url=self._my_page_url,
                 force_login=True,
                 stop_event=self._stop_event,
+                verification_callback=self._login_verification_callback,
             )
             self._login_result = result
             self._login_done = result.get("status") == "success"
@@ -658,6 +666,7 @@ class BrowserSession:
             my_page_url=self._my_page_url,
             force_login=True,
             stop_event=self._stop_event,
+            verification_callback=self._login_verification_callback,
         )
 
     async def get_main_page(self) -> Page:

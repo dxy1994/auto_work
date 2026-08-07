@@ -34,6 +34,7 @@
         <el-option label="机器掉线" value="machine_offline" />
         <el-option label="游戏客户端掉线" value="game_client_disconnected" />
         <el-option label="订单监控停止" value="order_monitor_stopped" />
+        <el-option label="平台登录验证码" value="platform_login_verification_required" />
         <el-option label="库存不一致" value="inventory_mismatch" />
         <el-option label="人工拒绝交易" value="buyer_review_rejected" />
       </el-select>
@@ -420,6 +421,7 @@ function alertTypeLabel(type) {
     machine_offline: '机器掉线',
     game_client_disconnected: '游戏客户端掉线',
     order_monitor_stopped: '订单监控停止',
+    platform_login_verification_required: '平台登录验证码',
     inventory_mismatch: '库存不一致',
   }[type] || type || '未知类型'
 }

@@ -14,6 +14,7 @@ import com.auto.trade.OrderMonitorAutoStartService;
 import com.auto.trade.SalesProductsSnapshotMessage;
 import com.auto.trade.SalesProductsSyncResult;
 import com.auto.trade.GameClientDisconnected;
+import com.auto.trade.PlatformLoginVerificationChanged;
 import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -141,6 +142,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                         handleTradeFinalConfirmation(session, raw);
                 case "game_client_disconnected" ->
                         handleGameClientDisconnected(session, raw);
+                case "platform_login_verification" ->
+                        handlePlatformLoginVerification(session, raw);
                 case "order_detected" -> handleOrderDetected(session, raw);
                 case "check_orders" -> handleCheckOrders(session, raw);
                 case "sales_products_snapshot" ->
@@ -235,6 +238,31 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                 processId,
                 confidence,
                 str(raw.get("reason"))));
+    }
+
+    private void handlePlatformLoginVerification(
+            WebSocketSession session, Map<String, Object> raw) {
+        Integer machineId = machineId(session);
+        if (machineId == null || !registry.isCurrentSession(machineId, session)) {
+            log.warn("[LoginVerification] 忽略非当前机器会话的验证码通知 machine_id={}",
+                    machineId);
+            return;
+        }
+        Integer accountId = asInt(raw.get("account_id"));
+        String status = str(raw.get("status"));
+        if (accountId == null || accountId <= 0
+                || !("required".equals(status) || "resolved".equals(status))) {
+            log.warn("[LoginVerification] 忽略字段不完整的验证码通知 machine_id={}",
+                    machineId);
+            return;
+        }
+        registry.publishPlatformLoginVerification(
+                new PlatformLoginVerificationChanged(
+                        machineId,
+                        accountId,
+                        str(raw.get("platform")),
+                        status,
+                        str(raw.get("reason"))));
     }
 
     private Object monitorTasksFromHeartbeat(Map<String, Object> raw) {

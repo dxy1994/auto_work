@@ -29,6 +29,7 @@ PRODUCT_DETAIL_URL = "https://www.barotem.com/product/view/{product_id}"
 
 NEW_CHAT_ALERT_SELECTOR = "#chargeModal:visible"
 TRADE_VERIFICATION_SELECTOR = ".preventionground:visible"
+LOGIN_ALERT_SELECTOR = "#commonAlert:visible .common_alert_check:visible"
 POPUP_ACTION_TIMEOUT_MS = 5000
 
 ORDER_CONTENT_SELECTOR = ".product_background .product_contents"
@@ -48,6 +49,7 @@ REFRESH_PAGE_MAX_ACTIONS = 30
 SCHEDULED_PRODUCT_REFRESH_ENABLED = False
 RELOGIN_MAX_ATTEMPTS = 3
 RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
+RELOGIN_ALERT_INTERVAL_SECONDS = 3.0
 
 
 def _compact_text(value) -> str:
@@ -417,17 +419,66 @@ class _BarotemWorker(PageWorker):
                   f"{', '.join(handled)}")
         return handled
 
+    async def on_stop(self):
+        await self._stop_relogin_alerts()
+
     async def _login_required(self) -> bool:
         await self._handle_page_popups()
         if self._session.is_login_page(self.page.url):
             return True
         return await self._monitor.post_login_check(self.page)
 
+    async def _start_relogin_alerts(self) -> None:
+        """登录恢复期间每 3 秒持续播报；同账号多个 Worker 共用一个任务。"""
+        if getattr(self._session, "_barotem_relogin_alert_active", False):
+            return
+        # 在第一次 await 前置位，避免订单页和商品页同时启动两套播报。
+        setattr(self._session, "_barotem_relogin_alert_active", True)
+        await play_alert_audio_async(
+            text=(f"barotem账号{self._session.account_id}登录已失效，"
+                  "正在自动重新登录")
+        )
+
+        async def _repeat():
+            try:
+                while getattr(
+                        self._session,
+                        "_barotem_relogin_alert_active",
+                        False):
+                    await asyncio.sleep(RELOGIN_ALERT_INTERVAL_SECONDS)
+                    if not getattr(
+                            self._session,
+                            "_barotem_relogin_alert_active",
+                            False):
+                        break
+                    await play_alert_audio_async(
+                        text=(
+                            f"barotem账号{self._session.account_id}"
+                            "登录已失效，请完成登录验证"
+                        )
+                    )
+            except asyncio.CancelledError:
+                return
+
+        task = asyncio.create_task(_repeat())
+        setattr(self._session, "_barotem_relogin_alert_task", task)
+
+    async def _stop_relogin_alerts(self) -> None:
+        """业务页确认恢复后立即停止登录提醒。"""
+        setattr(self._session, "_barotem_relogin_alert_active", False)
+        task = getattr(self._session, "_barotem_relogin_alert_task", None)
+        setattr(self._session, "_barotem_relogin_alert_task", None)
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     async def _recover_login_if_needed(
             self, target_url: str, ready_selector: str,
             wait_timeout: int, reason: str) -> Optional[bool]:
         """None=无需恢复，True=已恢复，False=退避或等待人工处理。"""
         if not await self._login_required():
+            await self._stop_relogin_alerts()
             if self._relogin_failures or self._relogin_disabled:
                 print(f"[{self._log_tag}] 已恢复业务页面，清除重新登录退避状态")
                 self._relogin_failures = 0
@@ -435,6 +486,7 @@ class _BarotemWorker(PageWorker):
                 self._relogin_disabled = False
             return None
 
+        await self._start_relogin_alerts()
         now = time.monotonic()
         if self._relogin_disabled:
             if now - self._last_relogin_wait_log_at >= 60:
@@ -487,6 +539,7 @@ class _BarotemWorker(PageWorker):
         if not ready:
             raise RuntimeError(
                 "Barotem 重新登录成功，但业务页仍要求登录")
+        await self._stop_relogin_alerts()
         print(f"[{self._log_tag}] Barotem 自动重新登录并恢复业务页成功")
         return True
 
@@ -1392,10 +1445,9 @@ class BarotemMonitor(BaseOrderMonitor):
         return normalized
 
     async def post_login_check(self, page) -> bool:
-        """检测 Barotem 在业务页内显示的登录提示弹窗。"""
+        """只检测当前可见的登录提示，忽略通用弹窗残留回调。"""
         try:
-            checks = page.locator(
-                "#common_alert_check, .common_alert_check")
+            checks = page.locator(LOGIN_ALERT_SELECTOR)
             for index in range(await checks.count()):
                 check = checks.nth(index)
                 onclick = await check.get_attribute("onclick") or ""

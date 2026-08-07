@@ -143,4 +143,41 @@ class SystemAlertEventListenerTest {
 
         verify(alertService).dismissBySourceKey("monitor:12:stopped");
     }
+
+    @Test
+    void loginVerificationCreatesAccountScopedPersistentAlert() {
+        Machine machine = new Machine();
+        machine.setId(7);
+        machine.setName("监控主机 A");
+        PlatformAccount account = new PlatformAccount();
+        account.setId(12);
+        account.setUsername("seller@example.com");
+        when(machineService.getById(7)).thenReturn(machine);
+        when(accountService.getById(12)).thenReturn(account);
+
+        listener.onPlatformLoginVerificationChanged(
+                new PlatformLoginVerificationChanged(
+                        7, 12, "barotem", "required",
+                        "Google 验证码需要人工完成"));
+
+        verify(alertService).openOrRefresh(
+                eq("platform_login_verification_required"),
+                eq("account:12:login-verification"),
+                eq(7), eq(12), eq("danger"),
+                eq("barotem账号需要登录验证码"),
+                argThat(message -> message.contains("seller@example.com")
+                        && message.contains("监控主机 A")
+                        && message.contains("Google 验证码需要人工完成")
+                        && message.contains("自动移除")));
+    }
+
+    @Test
+    void resolvedLoginVerificationDismissesAccountAlert() {
+        listener.onPlatformLoginVerificationChanged(
+                new PlatformLoginVerificationChanged(
+                        7, 12, "barotem", "resolved", "登录已恢复"));
+
+        verify(alertService).dismissBySourceKey(
+                "account:12:login-verification");
+    }
 }

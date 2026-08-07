@@ -13,6 +13,7 @@ from common.protocol import (
     sales_products_snapshot_msg,
     trade_offer_decision_msg, trade_status_msg, trade_buyer_review_msg,
     trade_game_screenshot_msg, trade_final_confirmation_msg,
+    platform_login_verification_msg,
     greeting_result_msg,
     chat_result_msg,
 )
@@ -66,6 +67,16 @@ class Reporter:
     def report_trade_buyer_review(self, assignment_id, review):
         self._client.send_threadsafe(
             trade_buyer_review_msg(assignment_id, review))
+
+    def report_login_verification(
+            self, account_id, platform, status, reason=""):
+        """上报平台登录验证码的待处理/已恢复状态。"""
+        self._client.send_threadsafe(platform_login_verification_msg(
+            account_id=account_id,
+            platform=platform,
+            status=status,
+            reason=reason,
+        ))
 
     def save_trade_game_screenshot(self, assignment_id, screenshot_path, timeout=10):
         request_id = str(uuid.uuid4())

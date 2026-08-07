@@ -25,6 +25,7 @@ TYPE_TRADE_BUYER_REVIEW = "trade_buyer_review"
 TYPE_TRADE_GAME_SCREENSHOT = "trade_game_screenshot"
 TYPE_TRADE_FINAL_CONFIRMATION = "trade_final_confirmation"
 TYPE_GAME_CLIENT_DISCONNECTED = "game_client_disconnected"
+TYPE_PLATFORM_LOGIN_VERIFICATION = "platform_login_verification"
 TYPE_GREETING_RESULT = "greeting_result"
 TYPE_CHAT_RESULT = "chat_result"
 
@@ -182,6 +183,18 @@ def game_client_disconnected_msg(
         "process_id": int(process_id),
         "confidence": float(confidence),
         "reason": "server_connection_lost_dialog",
+    }
+
+
+def platform_login_verification_msg(
+        *, account_id: int, platform: str, status: str,
+        reason: str = "") -> dict:
+    return {
+        "type": TYPE_PLATFORM_LOGIN_VERIFICATION,
+        "account_id": int(account_id),
+        "platform": str(platform or ""),
+        "status": str(status or ""),
+        "reason": str(reason or ""),
     }
 
 

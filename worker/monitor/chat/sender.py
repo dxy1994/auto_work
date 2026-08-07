@@ -933,55 +933,21 @@ class _BarotemImageSubmitUnavailable(RuntimeError):
 
 
 async def _submit_barotem_image_via_imgchg(page, file_path: str) -> None:
-    """将文件参数交给站内 imgchg()，再点击当前页图片确认按钮。"""
+    """在页面上下文直接调用 imgchg()，再点击当前页图片确认按钮。"""
     input_id = f"barotem_imgchg_file_{id(page)}"
-    trigger_id = f"barotem_imgchg_trigger_{id(page)}"
     await page.evaluate(
         """
-        args => {
-            document.getElementById(args.inputId)?.remove();
-            document.getElementById(args.triggerId)?.remove();
+        inputId => {
+            document.getElementById(inputId)?.remove();
             const input = document.createElement('input');
             input.type = 'file';
-            input.id = args.inputId;
+            input.id = inputId;
             input.accept = 'image/*';
             input.style.display = 'none';
             document.body.appendChild(input);
-
-            const trigger = document.createElement('button');
-            trigger.type = 'button';
-            trigger.id = args.triggerId;
-            trigger.style.cssText = [
-                'position:fixed', 'left:0', 'top:0', 'width:1px',
-                'height:1px', 'opacity:0.01', 'z-index:2147483647'
-            ].join(';');
-            const inputId = JSON.stringify(args.inputId);
-            trigger.setAttribute('onclick', `
-                try {
-                    const input = document.getElementById(${inputId});
-                    const file = input && input.files && input.files[0];
-                    if (!file) throw new Error('file missing');
-                    if (typeof imgchg !== 'function') {
-                        throw new Error('imgchg missing');
-                    }
-                    const transfer = new DataTransfer();
-                    transfer.items.add(file);
-                    imgchg({
-                        originalEvent: {clipboardData: transfer},
-                        preventDefault() {}
-                    });
-                    this.dataset.success = 'true';
-                } catch (error) {
-                    this.dataset.success = 'false';
-                    this.dataset.error = String(
-                        error && error.message ? error.message : error
-                    );
-                }
-            `);
-            document.body.appendChild(trigger);
         }
         """,
-        {"inputId": input_id, "triggerId": trigger_id},
+        input_id,
     )
 
     try:
@@ -993,15 +959,41 @@ async def _submit_barotem_image_via_imgchg(page, file_path: str) -> None:
 
         preview_items = page.locator("#imgpopup.inline .imgview li")
         preview_before = await preview_items.count()
-        imgchg_trigger = page.locator(f"#{trigger_id}").first
-        if await imgchg_trigger.count() != 1:
-            raise _BarotemImageSubmitUnavailable(
-                "无法创建站内图片处理触发器")
-        await imgchg_trigger.click(force=True, timeout=5000)
-        imgchg_success = await imgchg_trigger.get_attribute("data-success")
-        if imgchg_success != "true":
+        imgchg_result = await page.evaluate(
+            """
+            inputId => {
+                try {
+                    const input = document.getElementById(inputId);
+                    const file = input && input.files && input.files[0];
+                    if (!file) throw new Error('file missing');
+                    if (typeof imgchg !== 'function') {
+                        throw new Error('imgchg missing');
+                    }
+                    const transfer = new DataTransfer();
+                    transfer.items.add(file);
+                    imgchg({
+                        originalEvent: {clipboardData: transfer},
+                        preventDefault() {}
+                    });
+                    return {success: true, error: ''};
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: String(
+                            error && error.message ? error.message : error
+                        )
+                    };
+                }
+            }
+            """,
+            input_id,
+        )
+        if not isinstance(imgchg_result, dict) or not imgchg_result.get(
+                "success"):
             imgchg_error = str(
-                await imgchg_trigger.get_attribute("data-error") or ""
+                (imgchg_result or {}).get("error")
+                if isinstance(imgchg_result, dict)
+                else ""
             ).strip()
             raise _BarotemImageSubmitUnavailable(
                 imgchg_error or "imgchg 未处理图片文件")
@@ -1024,12 +1016,9 @@ async def _submit_barotem_image_via_imgchg(page, file_path: str) -> None:
         try:
             await page.evaluate(
                 """
-                args => {
-                    document.getElementById(args.inputId)?.remove();
-                    document.getElementById(args.triggerId)?.remove();
-                }
+                inputId => document.getElementById(inputId)?.remove()
                 """,
-                {"inputId": input_id, "triggerId": trigger_id},
+                input_id,
             )
         except Exception:
             pass

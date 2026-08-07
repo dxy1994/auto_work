@@ -709,19 +709,8 @@ class ChatCommandTest(unittest.TestCase):
             async def set_input_files(self, _path):
                 events.append("imgchg:file-selected")
 
-            async def get_attribute(self, name):
-                if (
-                    self.selector.startswith("#barotem_imgchg_trigger_")
-                    and name == "data-success"
-                ):
-                    return "true"
-                return None
-
             async def click(self, **_kwargs):
-                if self.selector.startswith("#barotem_imgchg_trigger_"):
-                    events.append("imgchg:file-argument")
-                    self.page.preview_ready = True
-                elif self.selector == (
+                if self.selector == (
                     '#imgpopup.inline button[onclick="confirmAndSend()"]'
                 ):
                     events.append("imgchg:confirm")
@@ -737,14 +726,24 @@ class ChatCommandTest(unittest.TestCase):
 
             async def evaluate(self, script, _arg=None):
                 if "input.type = 'file'" in script:
-                    self.assert_in_memory_imgchg = (
+                    self.assert_no_visual_trigger = (
+                        "createElement('button')" not in script
+                        and "onclick" not in script
+                    )
+                    events.append("imgchg:input-created")
+                    return None
+                if "new DataTransfer()" in script:
+                    self.assert_direct_imgchg = (
                         "imgchg({" in script
                         and "ClipboardEvent" not in script
                         and "dispatchEvent" not in script
+                        and ".click(" not in script
                     )
-                    events.append("imgchg:input-created")
-                else:
-                    events.append("imgchg:controls-removed")
+                    events.append("imgchg:direct-call")
+                    self.preview_ready = True
+                    return {"success": True, "error": ""}
+                events.append("imgchg:input-removed")
+                return None
 
             async def wait_for_timeout(self, _milliseconds):
                 return None
@@ -763,9 +762,10 @@ class ChatCommandTest(unittest.TestCase):
 
         self.assertEqual(1, page.sent_count)
         self.assertIn("imgchg:input-created", events)
-        self.assertIn("imgchg:file-argument", events)
+        self.assertIn("imgchg:direct-call", events)
         self.assertIn("imgchg:confirm", events)
-        self.assertTrue(page.assert_in_memory_imgchg)
+        self.assertTrue(page.assert_no_visual_trigger)
+        self.assertTrue(page.assert_direct_imgchg)
 
     def test_delivery_confirmation_closes_chat_before_opening_order_detail(self):
         events = []

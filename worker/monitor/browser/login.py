@@ -6,10 +6,107 @@
   - do_login_async: 执行登录操作（含登录态检测、captcha 手动登录、form 自动登录）
 """
 import asyncio
+import inspect
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from patchright.async_api import Page as AsyncPage
+
+
+GOOGLE_RECAPTCHA_ANCHOR_SELECTOR = (
+    "iframe[src*='recaptcha/api2/anchor'], "
+    "iframe[src*='recaptcha/enterprise/anchor']"
+)
+GOOGLE_RECAPTCHA_RESPONSE_SELECTOR = (
+    "textarea[name='g-recaptcha-response']"
+)
+GOOGLE_RECAPTCHA_TIMEOUT_SECONDS = 300
+
+
+async def _notify_login_verification(
+        callback: Optional[Callable], status: str, reason: str = "") -> None:
+    """验证码通知失败不能中断登录流程。"""
+    if callback is None:
+        return
+    try:
+        result = callback(status, reason)
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:
+        print(f"[DoLogin] 上报验证码状态失败: {exc}")
+
+
+async def _google_recaptcha_is_solved(page: AsyncPage) -> bool:
+    response = page.locator(GOOGLE_RECAPTCHA_RESPONSE_SELECTOR).first
+    if await response.count() == 0:
+        return False
+    try:
+        return bool((await response.input_value()).strip())
+    except Exception:
+        return False
+
+
+async def _try_click_google_recaptcha(page: AsyncPage) -> dict:
+    """用真实鼠标点击 Google reCAPTCHA 复选框，不伪造验证结果。"""
+    anchor_frame = page.locator(GOOGLE_RECAPTCHA_ANCHOR_SELECTOR).first
+    if await anchor_frame.count() == 0 or not await anchor_frame.is_visible():
+        return {"present": False, "attempted": False, "solved": False}
+    if await _google_recaptcha_is_solved(page):
+        return {"present": True, "attempted": False, "solved": True}
+
+    box = await anchor_frame.bounding_box()
+    if not box or box.get("width", 0) <= 0 or box.get("height", 0) <= 0:
+        return {"present": True, "attempted": False, "solved": False}
+
+    # 标准 reCAPTCHA 复选框位于锚点 iframe 左上区域；使用鼠标轨迹，
+    # 不调用 DOM click，也不写入 g-recaptcha-response。
+    x = box["x"] + min(30.0, box["width"] / 2)
+    y = box["y"] + min(30.0, box["height"] / 2)
+    await page.mouse.move(x, y, steps=12)
+    await page.mouse.click(x, y, delay=120)
+    await page.wait_for_timeout(1500)
+    return {
+        "present": True,
+        "attempted": True,
+        "solved": await _google_recaptcha_is_solved(page),
+    }
+
+
+async def _complete_google_recaptcha_if_present(
+        page: AsyncPage, account_id: int, stop_event=None,
+        verification_callback: Optional[Callable] = None) -> dict:
+    """尝试鼠标验证；图片挑战出现时保留可见页面等待人工完成。"""
+    result = await _try_click_google_recaptcha(page)
+    if not result["present"] or result["solved"]:
+        return result
+
+    print(
+        f"[DoLogin] 账号ID={account_id} Google 验证码未自动通过，"
+        "保留登录页等待人工完成"
+    )
+    await _notify_login_verification(
+        verification_callback,
+        "required",
+        "Google 验证码未自动通过，需要在监控浏览器中人工完成",
+    )
+    deadline = time.monotonic() + GOOGLE_RECAPTCHA_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            return {**result, "cancelled": True}
+        if await _google_recaptcha_is_solved(page):
+            await _notify_login_verification(
+                verification_callback,
+                "resolved",
+                "Google 验证码已完成",
+            )
+            return {**result, "solved": True}
+        try:
+            if page.is_closed():
+                break
+        except Exception:
+            break
+        await asyncio.sleep(1)
+    return {**result, "timed_out": True}
 
 
 async def check_already_logged_in_async(page: AsyncPage, my_page_url: str) -> bool:
@@ -149,6 +246,7 @@ async def do_login_async(
     login_config: dict, account_id: int,
     login_type: str = "form", my_page_url: str = "",
     force_login: bool = False, stop_event=None,
+    verification_callback: Optional[Callable] = None,
 ) -> dict:
     """
     异步版 do_login：先检测登录态，再按类型执行登录。
@@ -162,6 +260,8 @@ async def do_login_async(
     if not force_login:
         print(f"[DoLogin] 步骤1: 检测是否已登录...")
         if await check_already_logged_in_async(page, my_page_url):
+            await _notify_login_verification(
+                verification_callback, "resolved", "已确认平台登录状态正常")
             print(f"[DoLogin] ─── 登录流程结束（已登录，跳过）───")
             return {
                 "status": "success",
@@ -174,16 +274,31 @@ async def do_login_async(
     print(f"[DoLogin] 步骤2: 执行登录操作...")
     if login_type == "captcha":
         print(f"[DoLogin] 使用手动登录模式 (captcha)")
+        await _notify_login_verification(
+            verification_callback,
+            "required",
+            "该平台登录需要人工完成验证码",
+        )
         result = await _do_manual_login_on_page_async(
             page, login_url, username, password, login_config,
             account_id, stop_event=stop_event,
         )
+        if result.get("status") != "success":
+            await _notify_login_verification(
+                verification_callback,
+                "required",
+                result.get("message", "需要人工完成登录验证码"),
+            )
     else:
         print(f"[DoLogin] 使用自动登录模式 (form)")
         result = await _do_form_login_on_page_async(
             page, login_url, username, password, login_config,
             account_id, stop_event=stop_event,
+            verification_callback=verification_callback,
         )
+    if result.get("status") == "success":
+        await _notify_login_verification(
+            verification_callback, "resolved", "平台登录已恢复")
     print(f"[DoLogin] ─── 登录流程结束: {result['status']} - {result['message']} ───")
     return result
 
@@ -191,6 +306,7 @@ async def do_login_async(
 async def _do_form_login_on_page_async(
     page: AsyncPage, login_url: str, username: str, password: str,
     login_config: dict, account_id: int, stop_event=None,
+    verification_callback: Optional[Callable] = None,
 ) -> dict:
     """异步版自动表单登录。"""
     start = time.time()
@@ -206,6 +322,22 @@ async def _do_form_login_on_page_async(
         await page.fill(username_sel, username)
         await page.wait_for_selector(password_sel, timeout=10000)
         await page.fill(password_sel, password)
+
+        captcha = await _complete_google_recaptcha_if_present(
+            page, account_id, stop_event=stop_event,
+            verification_callback=verification_callback)
+        if captcha.get("cancelled"):
+            return {
+                "status": "cancelled",
+                "message": "登录任务已停止",
+                "duration_ms": int((time.time() - start) * 1000),
+            }
+        if captcha.get("timed_out"):
+            return {
+                "status": "timeout",
+                "message": "Google 验证码等待超时，请人工完成后重试",
+                "duration_ms": int((time.time() - start) * 1000),
+            }
 
         before_url = page.url
         await page.click(submit_sel)

@@ -11,6 +11,12 @@ import sys
 sys.path.insert(0, str(WORKER_ROOT))
 
 from monitor.browser.session import BrowserSession  # noqa: E402
+from monitor.browser.login import (  # noqa: E402
+    GOOGLE_RECAPTCHA_ANCHOR_SELECTOR,
+    GOOGLE_RECAPTCHA_RESPONSE_SELECTOR,
+    _try_click_google_recaptcha,
+    do_login_async,
+)
 from monitor.main import _active_order_task_snapshot, _heartbeat  # noqa: E402
 from monitor.monitoring.base import BaseOrderMonitor  # noqa: E402
 from monitor.monitoring.worker import PageWorker  # noqa: E402
@@ -22,6 +28,79 @@ class _NoopPageWorker(PageWorker):
 
 
 class MonitorBrowserLifecycleTest(unittest.TestCase):
+    def test_manual_captcha_login_notifies_central_immediately(self):
+        notifications = []
+
+        with patch(
+            "monitor.browser.login._do_manual_login_on_page_async",
+            new=AsyncMock(return_value={
+                "status": "success",
+                "message": "登录成功",
+                "duration_ms": 10,
+            }),
+        ):
+            result = asyncio.run(do_login_async(
+                page=SimpleNamespace(),
+                login_url="https://example.com/login",
+                username="seller",
+                password="secret",
+                login_config={},
+                account_id=7,
+                login_type="captcha",
+                force_login=True,
+                verification_callback=lambda status, reason: (
+                    notifications.append((status, reason))),
+            ))
+
+        self.assertEqual("success", result["status"])
+        self.assertEqual("required", notifications[0][0])
+        self.assertIn("人工完成验证码", notifications[0][1])
+        self.assertEqual("resolved", notifications[-1][0])
+
+    def test_google_recaptcha_uses_real_mouse_without_dom_click(self):
+        class FakeLocator:
+            def __init__(self, kind):
+                self.kind = kind
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return 1
+
+            async def is_visible(self):
+                return True
+
+            async def bounding_box(self):
+                return {"x": 100, "y": 200, "width": 304, "height": 78}
+
+            async def input_value(self):
+                return "" if self.kind == "response" else None
+
+        mouse = SimpleNamespace(move=AsyncMock(), click=AsyncMock())
+        locator = MagicMock(side_effect=lambda selector: FakeLocator(
+                "response"
+                if selector == GOOGLE_RECAPTCHA_RESPONSE_SELECTOR
+                else "anchor"
+            ))
+        page = SimpleNamespace(
+            locator=locator,
+            mouse=mouse,
+            wait_for_timeout=AsyncMock(),
+        )
+
+        result = asyncio.run(_try_click_google_recaptcha(page))
+
+        self.assertEqual(
+            GOOGLE_RECAPTCHA_ANCHOR_SELECTOR,
+            locator.call_args_list[0].args[0],
+        )
+        self.assertTrue(result["present"])
+        self.assertTrue(result["attempted"])
+        mouse.move.assert_awaited_once_with(130.0, 230.0, steps=12)
+        mouse.click.assert_awaited_once_with(130.0, 230.0, delay=120)
+
     def test_heartbeat_reports_active_order_monitors_immediately(self):
         client = SimpleNamespace(
             local_ip="192.168.1.88",

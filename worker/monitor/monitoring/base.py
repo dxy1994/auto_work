@@ -105,6 +105,14 @@ class BaseOrderMonitor:
         self._active_temp_pages: set = set()
         self._session: Optional[BrowserSession] = None
 
+    def _report_login_verification(self, status: str, reason: str = ""):
+        self.reporter.report_login_verification(
+            self.account_id,
+            self.tag or f"website-{self.website_id}",
+            status,
+            reason,
+        )
+
     # ── 聊天子任务（复用 Monitor 已有 session，如同开详情页）──
 
     def do_chat(self, msg: dict) -> dict:
@@ -383,6 +391,8 @@ class BaseOrderMonitor:
                         my_page_url=my_page_url,
                         stop_event=self.stop_event,
                         headless=False if is_captcha else PLAYWRIGHT_HEADLESS,
+                        login_verification_callback=(
+                            self._report_login_verification),
                     )
 
                 print(f"[{self._log_tag}] [1/6] session.init()...")

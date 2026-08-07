@@ -106,6 +106,39 @@ public class SystemAlertEventListener {
                 "monitor:" + event.accountId() + ":stopped");
     }
 
+    @EventListener
+    public void onPlatformLoginVerificationChanged(
+            PlatformLoginVerificationChanged event) {
+        String sourceKey = "account:" + event.accountId() + ":login-verification";
+        if ("resolved".equals(event.status())) {
+            alertService.dismissBySourceKey(sourceKey);
+            return;
+        }
+        if (!"required".equals(event.status())) {
+            return;
+        }
+
+        Machine machine = machineService.getById(event.machineId());
+        PlatformAccount account = accountService.getById(event.accountId());
+        String platform = safe(event.platform(), "平台");
+        String accountName = account == null || account.getUsername() == null
+                || account.getUsername().isBlank()
+                ? "账号 #" + event.accountId() : account.getUsername();
+        String message = "平台账号：" + accountName + "（ID #" + event.accountId() + "）"
+                + "；监控机器：" + machineIdentity(machine, event.machineId())
+                + "。原因：" + safe(event.reason(), "登录需要人工完成验证码")
+                + "。解决方案：请在该机器的监控浏览器完成验证码和登录；"
+                + "登录恢复后本提醒会自动移除。";
+        alertService.openOrRefresh(
+                "platform_login_verification_required",
+                sourceKey,
+                event.machineId(),
+                event.accountId(),
+                "danger",
+                platform + "账号需要登录验证码",
+                message);
+    }
+
     private String machineDisplayName(Machine machine, int machineId) {
         if (machine == null) return "#" + machineId;
         if (machine.getName() != null && !machine.getName().isBlank()) return machine.getName();
