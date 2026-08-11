@@ -19,6 +19,7 @@ from monitor.monitoring.platforms.barotem import (  # noqa: E402
     NEW_CHAT_ALERT_SELECTOR,
     ORDER_CONTENT_SELECTOR,
     ORDER_LIST_URL,
+    REFRESH_CONTENT_SELECTOR,
     SELL_LIST_URL,
     TRADE_VERIFICATION_SELECTOR,
     _BarotemHtmlSnapshot,
@@ -790,6 +791,138 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
         session.relogin.assert_awaited_once_with(page)
         page.goto.assert_awaited_once()
         self.assertEqual(ORDER_LIST_URL, page.goto.await_args.args[0])
+
+    async def test_successful_relogin_restores_both_worker_pages(self):
+        session = SimpleNamespace(
+            account_id=7,
+            is_login_page=MagicMock(return_value=False),
+            relogin=AsyncMock(return_value={
+                "status": "success",
+                "message": "登录成功",
+            }),
+        )
+        monitor = SimpleNamespace(
+            post_login_check=AsyncMock(return_value=True),
+        )
+        order_worker = BarotemOrderWorker(session, None, monitor)
+        refresh_worker = BarotemRefreshWorker(session, None, monitor)
+        order_worker._page = SimpleNamespace(
+            url=ORDER_LIST_URL,
+            is_closed=MagicMock(return_value=False),
+        )
+        refresh_worker._page = SimpleNamespace(
+            url=_product_list_url("money"),
+            is_closed=MagicMock(return_value=False),
+        )
+        order_worker._login_required = AsyncMock(return_value=True)
+        order_worker._background_business_session_ready = AsyncMock(
+            return_value=False)
+        order_worker._goto_business_page = AsyncMock(return_value=True)
+        refresh_worker._goto_business_page = AsyncMock(return_value=True)
+        order_worker._start_relogin_alerts = AsyncMock()
+        order_worker._stop_relogin_alerts = AsyncMock()
+        refresh_worker._stop_relogin_alerts = AsyncMock()
+
+        recovered = await order_worker._recover_login_if_needed(
+            ORDER_LIST_URL,
+            ORDER_CONTENT_SELECTOR,
+            10000,
+            reason="双页面恢复测试",
+        )
+
+        self.assertTrue(recovered)
+        session.relogin.assert_awaited_once_with(order_worker.page)
+        self.assertEqual(
+            {"BarotemRefresh"},
+            session._barotem_login_recovery_pending,
+        )
+        order_worker._stop_relogin_alerts.assert_not_awaited()
+
+        refresh_recovered = (
+            await refresh_worker._apply_pending_login_recovery(10000)
+        )
+
+        self.assertTrue(refresh_recovered)
+        self.assertEqual(set(), session._barotem_login_recovery_pending)
+        refresh_worker._goto_business_page.assert_awaited_once_with(
+            _product_list_url("money"),
+            REFRESH_CONTENT_SELECTOR,
+            10000,
+            reason="登录恢复后检查商品刷新页",
+        )
+        refresh_worker._stop_relogin_alerts.assert_awaited_once()
+        session.relogin.assert_awaited_once()
+
+    async def test_stale_login_popup_does_not_force_duplicate_relogin(self):
+        session = SimpleNamespace(
+            account_id=7,
+            is_login_page=MagicMock(return_value=False),
+            relogin=AsyncMock(),
+        )
+        monitor = SimpleNamespace(
+            post_login_check=AsyncMock(return_value=True),
+        )
+        worker = BarotemOrderWorker(session, None, monitor)
+        worker._page = SimpleNamespace(
+            url=ORDER_LIST_URL,
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._login_required = AsyncMock(return_value=True)
+        worker._background_business_session_ready = AsyncMock(
+            return_value=True)
+        worker._goto_business_page = AsyncMock(return_value=True)
+        worker._start_relogin_alerts = AsyncMock()
+        worker._stop_relogin_alerts = AsyncMock()
+
+        recovered = await worker._recover_login_if_needed(
+            ORDER_LIST_URL,
+            ORDER_CONTENT_SELECTOR,
+            10000,
+            reason="旧登录弹窗测试",
+        )
+
+        self.assertTrue(recovered)
+        session.relogin.assert_not_awaited()
+        worker._start_relogin_alerts.assert_not_awaited()
+        worker._goto_business_page.assert_awaited_once()
+        worker._stop_relogin_alerts.assert_awaited_once()
+
+    async def test_shared_login_recovery_rebuilds_closed_worker_page(self):
+        session = SimpleNamespace(account_id=7)
+        monitor = SimpleNamespace()
+        worker = BarotemRefreshWorker(session, None, monitor)
+        closed_page = SimpleNamespace(
+            url=_product_list_url("money"),
+            is_closed=MagicMock(return_value=True),
+        )
+        replacement = SimpleNamespace(
+            url="about:blank",
+            is_closed=MagicMock(return_value=False),
+        )
+        worker._page = closed_page
+
+        async def recycle(_reason):
+            worker._page = replacement
+            worker._page_crashed = False
+            return replacement
+
+        worker.recycle_page = AsyncMock(side_effect=recycle)
+        worker._goto_business_page = AsyncMock(return_value=True)
+        worker._stop_relogin_alerts = AsyncMock()
+        generation = worker._publish_login_recovery("页面缺失测试")
+
+        recovered = await worker._restore_page_after_shared_login(
+            10000, generation)
+
+        self.assertTrue(recovered)
+        worker.recycle_page.assert_awaited_once()
+        worker._goto_business_page.assert_awaited_once_with(
+            _product_list_url("money"),
+            REFRESH_CONTENT_SELECTOR,
+            10000,
+            reason="登录恢复后检查商品刷新页",
+        )
+        worker._stop_relogin_alerts.assert_awaited_once()
 
     async def test_login_check_only_reads_visible_common_alert(self):
         check = SimpleNamespace(

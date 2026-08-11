@@ -16,7 +16,7 @@ import re
 import time
 from decimal import Decimal
 from typing import List, Optional
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from monitor.browser.audio import play_alert_audio_async
 from monitor.monitoring.base import BaseOrderMonitor
@@ -41,10 +41,6 @@ REFRESH_TABLE_SELECTOR = "#frmMybay .list_type"
 REFRESH_ROW_SELECTOR = "#frmMybay .list_type tbody tr"
 EDIT_BUTTON_SELECTOR = 'a[title="수정"]'
 EDIT_SUBMIT_SELECTOR = "#imgSubmitButton"
-EDIT_PAGE_PATHS = (
-    "/item/sell/sellEdit",
-    "/item/sell/sellDivisionEdit",
-)
 LAST_PAGE_SELECTOR = (
     '#NavigationPanel a:has(img[alt="마지막 페이지"])'
 )
@@ -66,6 +62,10 @@ MAX_SALES_PRODUCT_PAGES = 1000
 PRESALE_POLL_INTERVAL_SECONDS = 5.0
 PRESALE_LIST_REFRESH_INTERVAL_SECONDS = 15.0
 PRESALE_ALERT_INTERVAL_SECONDS = 20.0
+
+
+class _ItembayEditDestinationMismatch(RuntimeError):
+    """列表按钮对应的商品编号与实际打开页面不一致。"""
 
 
 def _compact_text(value) -> str:
@@ -136,6 +136,27 @@ def _parse_edit_action(onclick: str) -> Optional[dict]:
         }
     except ValueError:
         return None
+
+
+def _item_seq_from_url(url: str) -> str:
+    """从 ItemBay 动态生成的修改页或返回列表地址读取商品编号。"""
+    query = parse_qs(urlparse(str(url or "")).query)
+    for name, values in query.items():
+        if name.casefold() in {"iitemseq", "itemseq"} and values:
+            value = _compact_text(values[0])
+            return value if re.fullmatch(r"\d+", value) else ""
+    return ""
+
+
+def _edit_target_selector(item_seq: str) -> str:
+    """用商品编号锁定具体行，避免 nth 定位在列表更新后指向另一商品。"""
+    if not re.fullmatch(r"\d+", str(item_seq or "")):
+        raise ValueError(f"无效 ItemBay 商品编号: {item_seq}")
+    return (
+        f'{REFRESH_ROW_SELECTOR}:has('
+        f'input[type="checkbox"][value="{item_seq}"]) '
+        f'{EDIT_BUTTON_SELECTOR}'
+    )
 
 
 def _extract_transaction_id(attributes: List[str]) -> str:
@@ -799,8 +820,58 @@ class ItembayRefreshWorker(PageWorker):
             await asyncio.sleep(5)
 
     async def _do_refresh(self, timeout: int) -> str:
-        await self._prepare_refresh_action_page(timeout)
+        for attempt in range(2):
+            target, target_action = await self._select_dynamic_edit_target(
+                timeout)
+            if target is None or target_action is None:
+                return "nothing_to_refresh"
 
+            item_seq = target_action["item_seq"]
+            print(
+                f"[{self._log_tag}] 通过当前列表动态进入商品修改页: "
+                f"item_seq={item_seq}, "
+                f"division={target_action['division']}"
+            )
+            try:
+                if await target.count() != 1:
+                    raise _ItembayEditDestinationMismatch(
+                        f"商品 {item_seq} 的修改按钮已从当前列表消失"
+                    )
+                current_action = _parse_edit_action(
+                    await target.get_attribute("onclick") or "")
+                if current_action != target_action:
+                    raise _ItembayEditDestinationMismatch(
+                        f"商品 {item_seq} 的修改按钮参数已变化: "
+                        f"current={current_action}, expected={target_action}"
+                    )
+                previous_list_origin = await _read_document_time_origin(
+                    self.page)
+                await target.click(
+                    timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
+                await _wait_for_document_change(
+                    self.page, previous_list_origin)
+                await self._wait_edit_page_ready(item_seq, timeout)
+            except _ItembayEditDestinationMismatch as exc:
+                if attempt >= 1:
+                    raise
+                print(
+                    f"[{self._log_tag}] 修改入口已变化，"
+                    f"重新读取最新销售列表后重试: {exc}"
+                )
+                continue
+
+            submit = self.page.locator(EDIT_SUBMIT_SELECTOR).first
+            previous_origin = await _read_document_time_origin(self.page)
+            await submit.click(
+                timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
+            return await self._wait_edit_save_result(
+                previous_origin, item_seq, timeout)
+
+        raise RuntimeError("ItemBay 动态商品修改入口连续两次发生变化")
+
+    async def _select_dynamic_edit_target(self, timeout: int):
+        """每次从最新销售列表读取当前商品行及站点提供的修改动作。"""
+        await self._prepare_refresh_action_page(timeout)
         last_link = self.page.locator(LAST_PAGE_SELECTOR)
         last_count = await last_link.count()
         if last_count > 0:
@@ -817,7 +888,7 @@ class ItembayRefreshWorker(PageWorker):
         edit_count = await edit_links.count()
         print(f"[{self._log_tag}] 可见商品修改按钮: {edit_count}")
         if edit_count == 0:
-            return "nothing_to_refresh"
+            return None, None
 
         target = None
         target_action = None
@@ -835,24 +906,12 @@ class ItembayRefreshWorker(PageWorker):
 
         if target is None:
             print(f"[{self._log_tag}] 当前没有可修改的上架商品")
-            return "nothing_to_refresh"
-
-        print(
-            f"[{self._log_tag}] 进入商品修改页: "
-            f"item_seq={target_action['item_seq']}, "
-            f"division={target_action['division']}"
-        )
-        await target.click(
-            timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
-        await self._wait_edit_page_ready(
-            target_action["item_seq"], timeout)
-
-        submit = self.page.locator(EDIT_SUBMIT_SELECTOR).first
-        previous_origin = await _read_document_time_origin(self.page)
-        await submit.click(
-            timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
-        return await self._wait_edit_save_result(
-            previous_origin, target_action["item_seq"], timeout)
+            return None, None
+        # nth(index) 是活定位器；若列表在读取参数后更新，同一个 index 会
+        # 指向另一商品。返回按商品编号约束的定位器，确保只可能点击原商品。
+        target = self.page.locator(
+            _edit_target_selector(target_action["item_seq"])).first
+        return target, target_action
 
     async def _sync_sales_products(self, timeout: int) -> dict:
         first = await self._crawl_sales_products_once(timeout)
@@ -1000,6 +1059,12 @@ class ItembayRefreshWorker(PageWorker):
 
     async def _wait_edit_page_ready(
             self, item_seq: str, timeout: int) -> None:
+        current_item_seq = _item_seq_from_url(self.page.url)
+        if current_item_seq and current_item_seq != item_seq:
+            raise _ItembayEditDestinationMismatch(
+                f"列表按钮商品={item_seq}, "
+                f"实际地址商品={current_item_seq}, 当前地址={self.page.url}"
+            )
         ready_timeout = max(timeout, MIN_READY_TIMEOUT_MS)
         try:
             await self.page.wait_for_selector(
@@ -1012,10 +1077,11 @@ class ItembayRefreshWorker(PageWorker):
                 f"商品 {item_seq} 修改页未出现保存按钮，"
                 f"当前地址={self.page.url}"
             ) from exc
-        if not any(path in self.page.url for path in EDIT_PAGE_PATHS):
-            raise RuntimeError(
-                f"商品 {item_seq} 未进入有效修改页，"
-                f"当前地址={self.page.url}"
+        current_item_seq = _item_seq_from_url(self.page.url)
+        if current_item_seq != item_seq:
+            raise _ItembayEditDestinationMismatch(
+                f"保存按钮所属商品={current_item_seq or 'unknown'}, "
+                f"预期商品={item_seq}, 当前地址={self.page.url}"
             )
 
     async def _wait_edit_save_result(
@@ -1054,39 +1120,10 @@ class ItembayRefreshWorker(PageWorker):
         )
 
     async def _prepare_refresh_action_page(self, timeout: int):
-        if SELL_LIST_URL not in self.page.url:
-            await self._goto_refresh_page(
-                SELL_LIST_URL, timeout, reason="刷新-恢复上架页")
-            return
-
-        previous_origin = await _read_document_time_origin(self.page)
-        committed = False
-        try:
-            await self.page.reload(
-                wait_until="commit",
-                timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS),
-            )
-            committed = True
-        except Exception as exc:
-            if self.page.is_closed():
-                raise
-            print(
-                f"[{self._log_tag}] [上架页刷新] reload 提交异常: "
-                f"{exc}；复核新文档是否已提交"
-            )
-            committed = await _wait_for_document_change(
-                self.page, previous_origin)
-
-        if self._session.is_login_page(self.page.url):
-            raise RuntimeError(
-                "上架页刷新后检测到 ItemBay 登录失效，"
-                "等待订单 Worker 处理登录恢复"
-            )
-        if committed and await self._wait_refresh_table(timeout):
-            return
-
+        # 保存成功后的返回地址会携带旧 ItemSeq/tiDirection。每轮都从
+        # 干净销售列表重新读取当前行及 onclick，不能 reload 旧查询地址。
         await self._goto_refresh_page(
-            SELL_LIST_URL, timeout, reason="刷新-受控恢复上架页")
+            SELL_LIST_URL, timeout, reason="刷新-读取最新动态修改入口")
 
     async def _ensure_refresh_page_ready(self, timeout: int):
         if SELL_LIST_URL in self.page.url:

@@ -339,6 +339,38 @@ class MonitorBrowserLifecycleTest(unittest.TestCase):
         blank.close.assert_awaited_once()
         healthy_older.close.assert_not_awaited()
 
+    def test_claimed_restored_page_accepts_site_confirm_dialog(self):
+        session = BrowserSession(account_id=4)
+        handlers = {}
+        on = MagicMock(
+            side_effect=lambda event, callback: handlers.__setitem__(
+                event, callback))
+        main_page = SimpleNamespace(url="https://example.com/main")
+        restored_page = SimpleNamespace(
+            url="https://www.itembay.com/mybay/status/mybayStatusSellList",
+            is_closed=MagicMock(return_value=False),
+            evaluate=AsyncMock(return_value=1),
+            close=AsyncMock(),
+            on=on,
+        )
+        session._main_page = main_page
+        session._context = SimpleNamespace(
+            pages=[main_page, restored_page],
+            new_page=AsyncMock(),
+        )
+
+        claimed = asyncio.run(session.claim_page())
+        self.assertIs(restored_page, claimed)
+        self.assertIn("dialog", handlers)
+
+        dialog = SimpleNamespace(accept=AsyncMock())
+        asyncio.run(handlers["dialog"](dialog))
+        dialog.accept.assert_awaited_once()
+
+        session.release_page(restored_page)
+        self.assertIs(restored_page, asyncio.run(session.claim_page()))
+        self.assertEqual(2, on.call_count)
+
     def test_worker_runner_only_rebuilds_failed_pages(self):
         worker_source = (WORKER_ROOT / "monitor" / "monitoring" / "worker.py").read_text(encoding="utf-8")
         monitor_source = (WORKER_ROOT / "monitor" / "monitoring" / "base.py").read_text(encoding="utf-8")

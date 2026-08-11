@@ -91,6 +91,7 @@ class BrowserSession:
         self._context: Optional[BrowserContext] = None
         self._main_page: Optional[Page] = None
         self._claimed_pages: set = set()
+        self._dialog_handler_page_ids: set = set()
         self._transient_page_ids: set = set()
         self._transient_tasks: set = set()
         self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -302,13 +303,7 @@ class BrowserSession:
         print(f"[BrowserSession:{self._account_id}] [5/5] 上下文已创建, 选取主页面...", flush=True)
 
         self._main_page = await self._pick_main_page()
-
-        async def _safe_accept(dialog):
-            try:
-                await dialog.accept()
-            except Exception:
-                pass
-        self._main_page.on("dialog", _safe_accept)
+        self._bind_default_page_handlers(self._main_page)
 
         print(f"[BrowserSession:{self._account_id}] 浏览器已启动, "
               f"main_page={self._main_page.url}")
@@ -400,6 +395,7 @@ class BrowserSession:
         self._context = None
         self._main_page = None
         self._claimed_pages.clear()
+        self._dialog_handler_page_ids.clear()
         self._transient_page_ids.clear()
         self._transient_tasks.clear()
         self._login_done = False
@@ -417,6 +413,28 @@ class BrowserSession:
         if not pages:
             return await self._context.new_page()
         return pages[-1]
+
+    def _bind_default_page_handlers(self, page: Page) -> None:
+        """为新建或恢复的标签页绑定一次默认弹窗处理。"""
+        page_id = id(page)
+        if page_id in self._dialog_handler_page_ids:
+            return
+
+        async def _safe_accept(dialog):
+            try:
+                await dialog.accept()
+            except Exception:
+                pass
+
+        try:
+            page.on("dialog", _safe_accept)
+            page.on(
+                "close",
+                lambda *_args: self._dialog_handler_page_ids.discard(page_id),
+            )
+        except Exception:
+            return
+        self._dialog_handler_page_ids.add(page_id)
 
     async def claim_page(self) -> Page:
         """为 Worker 分配页面：复用健康旧标签，跳过临时页和崩溃页。"""
@@ -439,6 +457,7 @@ class BrowserSession:
                     pass
                 continue
             self._claimed_pages.add(id(p))
+            self._bind_default_page_handlers(p)
             print(f"[BrowserSession:{self._account_id}] 复用已有页面 url={p.url}")
             return p
         page = await self.new_page()
@@ -482,13 +501,7 @@ class BrowserSession:
     async def new_page(self) -> Page:
         """从共享 Context 创建新标签页。"""
         page = await self._context.new_page()
-
-        async def _safe_accept(dialog):
-            try:
-                await dialog.accept()
-            except Exception:
-                pass
-        page.on("dialog", _safe_accept)
+        self._bind_default_page_handlers(page)
         return page
 
     @staticmethod

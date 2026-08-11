@@ -813,6 +813,10 @@ async def _wait_for_document_change(
 class _BarotemWorker(PageWorker):
     """Barotem 两个 Worker 共用的导航和登录恢复逻辑。"""
 
+    LOGIN_RECOVERY_URL = ""
+    LOGIN_RECOVERY_SELECTOR = ""
+    LOGIN_RECOVERY_LABEL = "业务"
+
     def __init__(self, session, stop_event, monitor: 'BarotemMonitor',
                  name: str):
         super().__init__(session, stop_event, name=name)
@@ -821,6 +825,14 @@ class _BarotemWorker(PageWorker):
         self._next_relogin_at = 0.0
         self._relogin_disabled = False
         self._last_relogin_wait_log_at = 0.0
+        worker_keys = getattr(
+            self._session, "_barotem_recovery_worker_keys", None)
+        if worker_keys is None:
+            worker_keys = set()
+            setattr(
+                self._session, "_barotem_recovery_worker_keys", worker_keys)
+        worker_keys.add(self._name)
+        self._handled_login_recovery_generation = 0
 
     async def _handle_page_popups(self) -> List[str]:
         if not callable(getattr(self.page, "locator", None)):
@@ -889,75 +901,199 @@ class _BarotemWorker(PageWorker):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
+    def _shared_relogin_lock(self) -> asyncio.Lock:
+        lock = getattr(self._session, "_barotem_shared_relogin_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            setattr(self._session, "_barotem_shared_relogin_lock", lock)
+        return lock
+
+    def _shared_recovery_pending(self) -> set:
+        pending = getattr(
+            self._session, "_barotem_login_recovery_pending", None)
+        if pending is None:
+            pending = set()
+            setattr(
+                self._session, "_barotem_login_recovery_pending", pending)
+        return pending
+
+    def _publish_login_recovery(self, reason: str) -> int:
+        generation = int(getattr(
+            self._session, "_barotem_login_recovery_generation", 0)) + 1
+        setattr(
+            self._session, "_barotem_login_recovery_generation", generation)
+        worker_keys = set(getattr(
+            self._session, "_barotem_recovery_worker_keys", set()))
+        if not worker_keys:
+            worker_keys.add(self._name)
+        pending = self._shared_recovery_pending()
+        pending.clear()
+        pending.update(worker_keys)
+        print(
+            f"[{self._log_tag}] Barotem 登录状态已恢复，"
+            f"开始检查订单页和商品页（generation={generation}, "
+            f"reason={reason}）"
+        )
+        return generation
+
+    async def _background_business_session_ready(
+            self, target_url: str, ready_selector: str,
+            wait_timeout: int) -> bool:
+        """忽略旧页面 DOM，用当前 Cookie 后台确认会话是否已经恢复。"""
+        try:
+            snapshot = await _fetch_authenticated_html(
+                self.page, target_url, wait_timeout)
+        except _BarotemLoginRequired:
+            return False
+        except Exception as exc:
+            print(f"[{self._log_tag}] 后台登录状态复核失败: {exc}")
+            return False
+        soup = BeautifulSoup(snapshot.html, "html.parser")
+        return soup.select_one(ready_selector) is not None
+
+    async def _restore_page_after_shared_login(
+            self, wait_timeout: int, generation: int) -> bool:
+        """登录恢复后强制检查并恢复当前 Worker 的长期业务页。"""
+        pending = self._shared_recovery_pending()
+        if self._name not in pending:
+            return True
+        if not self.LOGIN_RECOVERY_URL or not self.LOGIN_RECOVERY_SELECTOR:
+            raise RuntimeError(
+                f"{self._name} 未配置 Barotem 登录恢复目标页面")
+
+        if (
+            self._page is None
+            or self._page_crashed
+            or self._page.is_closed()
+        ):
+            await self.recycle_page(
+                f"Barotem 登录恢复后重建{self.LOGIN_RECOVERY_LABEL}页")
+
+        ready = await self._goto_business_page(
+            self.LOGIN_RECOVERY_URL,
+            self.LOGIN_RECOVERY_SELECTOR,
+            wait_timeout,
+            reason=f"登录恢复后检查{self.LOGIN_RECOVERY_LABEL}页",
+        )
+        if not ready:
+            print(
+                f"[{self._log_tag}] 登录恢复后"
+                f"{self.LOGIN_RECOVERY_LABEL}页仍要求登录"
+            )
+            return False
+
+        self._handled_login_recovery_generation = generation
+        pending.discard(self._name)
+        if pending:
+            print(
+                f"[{self._log_tag}] {self.LOGIN_RECOVERY_LABEL}页已恢复，"
+                f"等待其他页面: {sorted(pending)}"
+            )
+        else:
+            await self._stop_relogin_alerts()
+            print(f"[{self._log_tag}] Barotem 订单页和商品页均已恢复")
+        return True
+
+    async def _apply_pending_login_recovery(
+            self, wait_timeout: int) -> Optional[bool]:
+        pending = self._shared_recovery_pending()
+        if self._name not in pending:
+            return None
+        generation = int(getattr(
+            self._session, "_barotem_login_recovery_generation", 0))
+        return await self._restore_page_after_shared_login(
+            wait_timeout, generation)
+
+    def _clear_relogin_backoff(self) -> None:
+        self._relogin_failures = 0
+        self._next_relogin_at = 0.0
+        self._relogin_disabled = False
+
     async def _recover_login_if_needed(
             self, target_url: str, ready_selector: str,
             wait_timeout: int, reason: str) -> Optional[bool]:
         """None=无需恢复，True=已恢复，False=退避或等待人工处理。"""
+        pending_result = await self._apply_pending_login_recovery(wait_timeout)
+        if pending_result is not None:
+            return pending_result
+
         if not await self._login_required():
-            await self._stop_relogin_alerts()
+            if not self._shared_recovery_pending():
+                await self._stop_relogin_alerts()
             if self._relogin_failures or self._relogin_disabled:
                 print(f"[{self._log_tag}] 已恢复业务页面，清除重新登录退避状态")
-                self._relogin_failures = 0
-                self._next_relogin_at = 0.0
-                self._relogin_disabled = False
+                self._clear_relogin_backoff()
             return None
 
-        await self._start_relogin_alerts()
-        now = time.monotonic()
-        if self._relogin_disabled:
-            if now - self._last_relogin_wait_log_at >= 60:
-                print(f"[{self._log_tag}] 自动重新登录已暂停，等待人工登录或重启监控")
-                self._last_relogin_wait_log_at = now
-            return False
-        if now < self._next_relogin_at:
-            if now - self._last_relogin_wait_log_at >= 15:
-                remaining = max(1, int(self._next_relogin_at - now))
-                print(f"[{self._log_tag}] 自动重新登录退避中，"
-                      f"{remaining} 秒后再试")
-                self._last_relogin_wait_log_at = now
-            return False
+        async with self._shared_relogin_lock():
+            # 另一个 Worker 可能已在等待锁期间完成登录。
+            pending_result = await self._apply_pending_login_recovery(
+                wait_timeout)
+            if pending_result is not None:
+                return pending_result
 
-        print(f"[{self._log_tag}] 检测到 Barotem 登录失效"
-              f"（{reason}），当前页面={self.page.url}")
-        result = await self._session.relogin(self.page)
-        if result.get("status") != "success":
-            self._relogin_failures += 1
-            message = result.get("message", "未知原因")
-            if self._relogin_failures >= RELOGIN_MAX_ATTEMPTS:
-                self._relogin_disabled = True
-                print(f"[{self._log_tag}] Barotem 自动重新登录连续失败 "
-                      f"{self._relogin_failures} 次，已暂停: {message}")
-                await play_alert_audio_async(
-                    text=(f"barotem账号{self._session.account_id}"
-                          "连续登录失败，已暂停自动登录，请检查凭证")
-                )
+            # 人工可能已在同一浏览器上下文的另一个标签完成登录；旧业务页
+            # 仍保留登录弹窗。以后台业务 HTML 为准，避免再次强制登录。
+            if await self._background_business_session_ready(
+                    target_url, ready_selector, wait_timeout):
+                self._clear_relogin_backoff()
+                generation = self._publish_login_recovery(
+                    "后台接口确认会话已登录")
+                return await self._restore_page_after_shared_login(
+                    wait_timeout, generation)
+
+            await self._start_relogin_alerts()
+            now = time.monotonic()
+            if self._relogin_disabled:
+                if now - self._last_relogin_wait_log_at >= 60:
+                    print(f"[{self._log_tag}] 自动重新登录已暂停，等待人工登录或重启监控")
+                    self._last_relogin_wait_log_at = now
+                return False
+            if now < self._next_relogin_at:
+                if now - self._last_relogin_wait_log_at >= 15:
+                    remaining = max(1, int(self._next_relogin_at - now))
+                    print(f"[{self._log_tag}] 自动重新登录退避中，"
+                          f"{remaining} 秒后再试")
+                    self._last_relogin_wait_log_at = now
                 return False
 
-            backoff_index = min(
-                self._relogin_failures - 1,
-                len(RELOGIN_BACKOFF_SECONDS) - 1,
-            )
-            backoff_seconds = RELOGIN_BACKOFF_SECONDS[backoff_index]
-            self._next_relogin_at = time.monotonic() + backoff_seconds
-            self._last_relogin_wait_log_at = 0.0
-            print(f"[{self._log_tag}] Barotem 自动重新登录失败"
-                  f"（第 {self._relogin_failures}/{RELOGIN_MAX_ATTEMPTS} 次）: "
-                  f"{message}；{int(backoff_seconds)} 秒后再试")
-            return False
+            print(f"[{self._log_tag}] 检测到 Barotem 登录失效"
+                  f"（{reason}），当前页面={self.page.url}")
+            result = await self._session.relogin(self.page)
+            if result.get("status") != "success":
+                self._relogin_failures += 1
+                message = result.get("message", "未知原因")
+                if self._relogin_failures >= RELOGIN_MAX_ATTEMPTS:
+                    self._relogin_disabled = True
+                    print(f"[{self._log_tag}] Barotem 自动重新登录连续失败 "
+                          f"{self._relogin_failures} 次，已暂停: {message}")
+                    await play_alert_audio_async(
+                        text=(f"barotem账号{self._session.account_id}"
+                              "连续登录失败，已暂停自动登录，请检查凭证")
+                    )
+                    return False
 
-        self._relogin_failures = 0
-        self._next_relogin_at = 0.0
-        self._relogin_disabled = False
-        ready = await self._goto_business_page(
-            target_url, ready_selector, wait_timeout,
-            reason="重新登录后返回业务页",
-        )
-        if not ready:
-            raise RuntimeError(
-                "Barotem 重新登录成功，但业务页仍要求登录")
-        await self._stop_relogin_alerts()
-        print(f"[{self._log_tag}] Barotem 自动重新登录并恢复业务页成功")
-        return True
+                backoff_index = min(
+                    self._relogin_failures - 1,
+                    len(RELOGIN_BACKOFF_SECONDS) - 1,
+                )
+                backoff_seconds = RELOGIN_BACKOFF_SECONDS[backoff_index]
+                self._next_relogin_at = time.monotonic() + backoff_seconds
+                self._last_relogin_wait_log_at = 0.0
+                print(f"[{self._log_tag}] Barotem 自动重新登录失败"
+                      f"（第 {self._relogin_failures}/{RELOGIN_MAX_ATTEMPTS} 次）: "
+                      f"{message}；{int(backoff_seconds)} 秒后再试")
+                return False
+
+            self._clear_relogin_backoff()
+            generation = self._publish_login_recovery("自动重新登录成功")
+            ready = await self._restore_page_after_shared_login(
+                wait_timeout, generation)
+            if not ready:
+                raise RuntimeError(
+                    "Barotem 重新登录成功，但业务页仍要求登录")
+            print(f"[{self._log_tag}] Barotem 自动重新登录并恢复当前业务页成功")
+            return True
 
     async def _wait_business_area(
             self, selector: str, wait_timeout: int) -> bool:
@@ -1068,6 +1204,10 @@ class _BarotemWorker(PageWorker):
 class BarotemOrderWorker(_BarotemWorker):
     """订单 Worker：保留 판매중 长期页面，后台轮询并提取订单。"""
 
+    LOGIN_RECOVERY_URL = ORDER_LIST_URL
+    LOGIN_RECOVERY_SELECTOR = ORDER_CONTENT_SELECTOR
+    LOGIN_RECOVERY_LABEL = "订单"
+
     def __init__(self, session, stop_event, monitor: 'BarotemMonitor'):
         super().__init__(
             session, stop_event, monitor, name="BarotemOrder")
@@ -1085,6 +1225,11 @@ class BarotemOrderWorker(_BarotemWorker):
             self._touch()
             if self._page_crashed:
                 raise RuntimeError("订单页渲染进程已崩溃")
+            pending_recovery = await self._apply_pending_login_recovery(
+                wait_timeout)
+            if pending_recovery is False:
+                await asyncio.sleep(refresh_interval)
+                continue
             if not await self._ensure_order_page_ready(wait_timeout):
                 await asyncio.sleep(refresh_interval)
                 continue
@@ -1200,6 +1345,10 @@ class BarotemOrderWorker(_BarotemWorker):
 class BarotemRefreshWorker(_BarotemWorker):
     """商品刷新 Worker：轮换有商品的分类并点击「끌어올리기」。"""
 
+    LOGIN_RECOVERY_URL = _product_list_url("money")
+    LOGIN_RECOVERY_SELECTOR = REFRESH_CONTENT_SELECTOR
+    LOGIN_RECOVERY_LABEL = "商品刷新"
+
     def __init__(self, session, stop_event, monitor: 'BarotemMonitor'):
         super().__init__(
             session, stop_event, monitor, name="BarotemRefresh")
@@ -1228,6 +1377,11 @@ class BarotemRefreshWorker(_BarotemWorker):
             self._touch()
             if self._page_crashed:
                 raise RuntimeError("上架页渲染进程已崩溃")
+            pending_recovery = await self._apply_pending_login_recovery(
+                wait_timeout)
+            if pending_recovery is False:
+                await asyncio.sleep(5)
+                continue
             elapsed = (
                 datetime.datetime.now() - self._last_refresh
             ).total_seconds()

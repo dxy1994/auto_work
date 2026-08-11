@@ -21,6 +21,7 @@ from monitor.monitoring.platforms.itembay import (  # noqa: E402
     _parse_order_row_payload,
     _parse_presale_inquiry_payload,
     _parse_edit_action,
+    _item_seq_from_url,
 )
 from monitor.orders.adapters import adapter_for  # noqa: E402
 
@@ -294,14 +295,35 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(3, alert.await_count)
 
     def test_refresh_flow_matches_live_edit_and_save_contract(self):
-        source = inspect.getsource(ItembayRefreshWorker._do_refresh)
+        source = (
+            inspect.getsource(ItembayRefreshWorker._do_refresh)
+            + inspect.getsource(
+                ItembayRefreshWorker._select_dynamic_edit_target)
+        )
 
         self.assertIn("EDIT_BUTTON_SELECTOR", source)
         self.assertIn("_parse_edit_action", source)
+        self.assertIn("_edit_target_selector", source)
         self.assertIn("EDIT_SUBMIT_SELECTOR", source)
         self.assertIn("_wait_edit_page_ready", source)
         self.assertIn("_wait_edit_save_result", source)
         self.assertNotIn("query_selector", source)
+
+    def test_dynamic_edit_item_seq_is_read_from_actual_url(self):
+        self.assertEqual(
+            "33625899605",
+            _item_seq_from_url(
+                "https://www.itembay.com/item/sell/sellDivisionEdit"
+                "?iItemSeq=33625899605"
+            ),
+        )
+        self.assertEqual(
+            "33625899605",
+            _item_seq_from_url(
+                f"{itembay_module.SELL_LIST_URL}"
+                "?ItemSeq=33625899605&tiDirection=2"
+            ),
+        )
 
     async def test_refresh_opens_oldest_edit_page_then_saves(self):
         events = []
@@ -313,6 +335,9 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
 
             async def get_attribute(self, name):
                 return self.onclick if name == "onclick" else None
+
+            async def count(self):
+                return 1
 
             async def click(self, **_kwargs):
                 events.append(f"click:{self.label}")
@@ -336,6 +361,7 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
             Link("fncSellEdit('202', '0', '1');return false;", "oldest"),
         ])
         submit = Link("", "save")
+        oldest_selector = itembay_module._edit_target_selector("202")
         page = SimpleNamespace(
             url=itembay_module.SELL_LIST_URL,
             locator=lambda selector: (
@@ -346,9 +372,11 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
                     f"{itembay_module.REFRESH_ROW_SELECTOR} "
                     f"{itembay_module.EDIT_BUTTON_SELECTOR}"
                 )
+                else LocatorList([edit_links.items[1]])
+                if selector == oldest_selector
                 else LocatorList([submit])
             ),
-            evaluate=AsyncMock(return_value=100.0),
+            evaluate=AsyncMock(side_effect=[100.0, 200.0, 300.0]),
         )
         worker = ItembayRefreshWorker(
             _FakeSession(), None,
@@ -366,7 +394,7 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
         worker._wait_edit_page_ready.assert_awaited_once_with(
             "202", 10000)
         worker._wait_edit_save_result.assert_awaited_once_with(
-            100.0, "202", 10000)
+            300.0, "202", 10000)
 
     async def test_edit_page_waits_for_real_save_button(self):
         worker = ItembayRefreshWorker(
@@ -388,6 +416,96 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
             state="visible",
             timeout=itembay_module.MIN_READY_TIMEOUT_MS,
         )
+
+    async def test_edit_page_rejects_different_dynamic_item_seq(self):
+        worker = ItembayRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(get_order_cfg=lambda: {}))
+        page = SimpleNamespace(
+            url=(
+                f"{itembay_module.SELL_LIST_URL}"
+                "?ItemSeq=33625899605&tiDirection=2"
+            ),
+            wait_for_selector=AsyncMock(),
+        )
+        worker._page = page
+
+        with self.assertRaisesRegex(
+                RuntimeError,
+                "列表按钮商品=33625888583, 实际地址商品=33625899605"):
+            await worker._wait_edit_page_ready("33625888583", 10000)
+
+        page.wait_for_selector.assert_not_awaited()
+
+    async def test_dynamic_edit_mismatch_reloads_list_and_retries(self):
+        events = []
+
+        class Link:
+            def __init__(self, onclick):
+                self.onclick = onclick
+
+            async def count(self):
+                return 1
+
+            async def get_attribute(self, name):
+                return self.onclick if name == "onclick" else None
+
+            async def click(self, **_kwargs):
+                events.append("click:edit")
+
+        class SubmitLocator:
+            @property
+            def first(self):
+                return self
+
+            async def click(self, **_kwargs):
+                events.append("click:save")
+
+        worker = ItembayRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(get_order_cfg=lambda: {}))
+        worker._page = SimpleNamespace(
+            url=itembay_module.SELL_LIST_URL,
+            locator=lambda _selector: SubmitLocator(),
+        )
+        worker._select_dynamic_edit_target = AsyncMock(side_effect=[
+            (Link("fncSellEdit('33625888583', '0', '1');return false;"), {
+                "item_seq": "33625888583",
+                "sell_status": 0,
+                "division": True,
+            }),
+            (Link("fncSellEdit('33625899605', '0', '1');return false;"), {
+                "item_seq": "33625899605",
+                "sell_status": 0,
+                "division": True,
+            }),
+        ])
+        worker._wait_edit_page_ready = AsyncMock(side_effect=[
+            itembay_module._ItembayEditDestinationMismatch(
+                "动态地址已变化"),
+            None,
+        ])
+        worker._wait_edit_save_result = AsyncMock(
+            return_value="refreshed")
+
+        with (
+            patch.object(
+                itembay_module, "_read_document_time_origin",
+                AsyncMock(return_value=100.0),
+            ),
+            patch.object(
+                itembay_module, "_wait_for_document_change",
+                AsyncMock(return_value=True),
+            ),
+        ):
+            result = await worker._do_refresh(10000)
+
+        self.assertEqual("refreshed", result)
+        self.assertEqual(
+            ["click:edit", "click:edit", "click:save"], events)
+        self.assertEqual(2, worker._select_dynamic_edit_target.await_count)
+        worker._wait_edit_save_result.assert_awaited_once_with(
+            100.0, "33625899605", 10000)
 
     async def test_edit_save_accepts_returned_listing_document(self):
         worker = ItembayRefreshWorker(
