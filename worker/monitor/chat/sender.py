@@ -27,6 +27,9 @@ DEFAULT_ITEMMANIA_TARGET = {
     "file_selector": "#attach_layer input[type=file]",
     "upload_auto_send": True,
     "upload_close_selector": "#attach_layer .close",
+    "itemmania_image_upload": True,
+    "image_sent_timeout_ms": 30_000,
+    "image_sent_refresh_on_timeout": True,
 }
 DEFAULT_KOREAN_AFFIRMATIVE_REPLIES = (
     "네",
@@ -35,6 +38,7 @@ DEFAULT_KOREAN_AFFIRMATIVE_REPLIES = (
     "네네",
     "네 맞습니다",
     "예 맞습니다",
+    "넵 맞습니다",
     "네 본인 맞습니다",
     "네 본인 맛습니다",
     "맛습니다",
@@ -226,6 +230,7 @@ async def _do_send_chat_locked(
         reply_anchor_index = None
         reply_anchor_start = None
         reply_anchor_text = ""
+        reply_anchor_lookback = 0
         if target.get("wait_for_reply"):
             text_indexes = [
                 index for index, message in enumerate(messages)
@@ -248,6 +253,10 @@ async def _do_send_chat_locked(
             reply_anchor_index = (
                 choice_indexes[-1] if choice_indexes else text_indexes[-1]
             )
+            reply_anchor_lookback = sum(
+                len(message["image_urls"])
+                for message in messages[:reply_anchor_index + 1]
+            )
 
         image_base = _image_base_url()
         for index, message in enumerate(messages):
@@ -261,6 +270,7 @@ async def _do_send_chat_locked(
                     return {
                         "success": False,
                         "message": f"第 {index + 1} 条消息的图片发送失败: {exc}",
+                        "error_code": "CHAT_IMAGE_SEND_FAILED",
                     }
 
             content = message["content"]
@@ -285,13 +295,17 @@ async def _do_send_chat_locked(
                             f"第 {index + 1} 条文字点击发送后"
                             "未在会话中显示"
                         ),
+                        "error_code": "CHAT_TEXT_SEND_FAILED",
                     }
 
         if target.get("wait_for_reply"):
             reply, anchor_seen = await _wait_for_customer_reply_after_anchor(
                 page,
                 target,
-                reply_anchor_start or 0,
+                max(
+                    0,
+                    (reply_anchor_start or 0) - reply_anchor_lookback,
+                ),
                 reply_anchor_text,
             )
             if reply is None:
@@ -305,6 +319,11 @@ async def _do_send_chat_locked(
                     "reply_received": False,
                     "affirmative_reply": False,
                     "reply_text": "",
+                    "error_code": (
+                        "CHAT_REPLY_ANCHOR_NOT_FOUND"
+                        if not anchor_seen
+                        else "BUYER_FINAL_REPLY_TIMEOUT"
+                    ),
                 }
             affirmative = _is_korean_affirmative_reply(
                 reply, target.get("affirmative_replies") or ())
@@ -488,6 +507,7 @@ async def _do_send_chat_with_post_action(
             "proof_already_sent": True,
             "delivery_confirmed": bool(delivery_result.get("success")),
         }
+    proof_already_sent = action.get("proof_already_sent") is True
     chat_result = await _do_send_chat(
         session,
         target,
@@ -497,10 +517,26 @@ async def _do_send_chat_with_post_action(
     if not action:
         return chat_result
     if not chat_result.get("success"):
+        if (
+            action.get("type") == "confirm_delivery"
+            and action.get("chat_failure_non_blocking") is True
+        ):
+            delivery_result = await _do_confirm_delivery(session, action)
+            return {
+                **delivery_result,
+                "chat_sent": False,
+                "chat_closed": True,
+                "proof_already_sent": proof_already_sent,
+                "completion_message_error": str(
+                    chat_result.get("message") or "交易完成话术发送失败"
+                )[:500],
+                "delivery_confirmed": bool(delivery_result.get("success")),
+            }
         return {
             **chat_result,
             "chat_sent": False,
             "chat_closed": True,
+            "proof_already_sent": proof_already_sent,
             "delivery_confirmed": False,
         }
     if action.get("type") != "confirm_delivery":
@@ -516,6 +552,7 @@ async def _do_send_chat_with_post_action(
         **delivery_result,
         "chat_sent": True,
         "chat_closed": True,
+        "proof_already_sent": proof_already_sent,
         "delivery_confirmed": bool(delivery_result.get("success")),
     }
 
@@ -919,7 +956,11 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
         file_input = page.locator(target["file_selector"]).first
         if await file_input.count() == 0:
             raise RuntimeError("未找到聊天图片上传控件")
-        await file_input.set_input_files(temp_file.name)
+        if target.get("itemmania_image_upload"):
+            await _select_itemmania_image_and_verify_upload(
+                page, file_input, temp_file.name, target)
+        else:
+            await file_input.set_input_files(temp_file.name)
 
         if not target.get("upload_auto_send", True):
             if not _page_is_closed(page):
@@ -936,8 +977,21 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
             await page.wait_for_timeout(
                 _positive_int(target.get("image_settle_ms"), 2000)
             )
-        elif not await _wait_for_sent_message(page, target, sent_before):
-            raise RuntimeError("图片选择后未在会话中显示")
+        else:
+            image_receipt_target = {
+                **target,
+                "sent_timeout_ms": _positive_int(
+                    target.get("image_sent_timeout_ms"),
+                    _positive_int(target.get("sent_timeout_ms"), 10_000),
+                ),
+                "sent_refresh_on_timeout": (
+                    target.get("image_sent_refresh_on_timeout") is True
+                ),
+            }
+            image_sent = await _wait_for_sent_message(
+                page, image_receipt_target, sent_before)
+            if not image_sent:
+                raise RuntimeError("图片选择后未在会话中显示")
         close_selector = str(target.get("upload_close_selector") or "").strip()
         if close_selector:
             close_button = page.locator(close_selector).first
@@ -953,6 +1007,46 @@ async def _send_image_via_chat(page, image_url: str, target: dict):
 
 class _BarotemImageSubmitUnavailable(RuntimeError):
     """当前聊天页不能完成 Barotem 图片粘贴与确认发送流程。"""
+
+
+async def _select_itemmania_image_and_verify_upload(
+        page, file_input, file_path: str, target: dict) -> None:
+    """等待 ItemMania 图片上传接口回执，区分上传失败与聊天回执延迟。"""
+    timeout_ms = max(
+        5_000,
+        _positive_int(target.get("image_upload_timeout_ms"), 30_000),
+    )
+    try:
+        async with page.expect_response(
+            lambda response: response.url.rstrip("/").endswith(
+                "/myroom/chat/ajax_send_file.php"
+            ),
+            timeout=timeout_ms,
+        ) as response_info:
+            await file_input.set_input_files(file_path)
+        response = await response_info.value
+    except Exception as exc:
+        raise RuntimeError(
+            "等待 ItemMania 图片上传接口回执超时"
+        ) from exc
+
+    if not response.ok:
+        raise RuntimeError(
+            f"ItemMania 图片上传接口返回 HTTP {response.status}"
+        )
+    try:
+        payload = await response.json()
+    except Exception as exc:
+        raise RuntimeError("ItemMania 图片上传接口未返回有效 JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("ItemMania 图片上传接口回执格式无效")
+    if payload.get("RST") is False:
+        message = str(payload.get("MSG") or "平台拒绝上传").strip()
+        raise RuntimeError(f"ItemMania 图片上传失败: {message}")
+    uploaded_files = payload.get("DATA2")
+    if not isinstance(uploaded_files, list) or not any(
+            str(value or "").strip() for value in uploaded_files):
+        raise RuntimeError("ItemMania 图片上传成功回执缺少文件结果")
 
 
 async def _submit_barotem_image_via_paste(page, file_path: str) -> None:
@@ -1143,6 +1237,23 @@ def _normalize_target(target: dict, messages: list) -> dict:
     result["upload_send_selector"] = str(
         result.get("upload_send_selector") or ""
     ).strip()
+    result["itemmania_image_upload"] = (
+        result.get("itemmania_image_upload") is True
+    )
+    result["image_sent_refresh_on_timeout"] = (
+        result.get("image_sent_refresh_on_timeout") is True
+    )
+    result["image_upload_timeout_ms"] = max(
+        5_000,
+        _positive_int(result.get("image_upload_timeout_ms"), 30_000),
+    )
+    result["image_sent_timeout_ms"] = max(
+        100,
+        _positive_int(
+            result.get("image_sent_timeout_ms"),
+            _positive_int(result.get("sent_timeout_ms"), 10_000),
+        ),
+    )
     result["blocking_popup_selector"] = str(
         result.get("blocking_popup_selector") or ""
     ).strip()
@@ -1204,6 +1315,13 @@ def _normalize_target(target: dict, messages: list) -> dict:
         result["affirmative_replies"] = tuple(
             str(value).strip() for value in replies if str(value).strip()
         ) or DEFAULT_KOREAN_AFFIRMATIVE_REPLIES
+        refresh_interval_ms = _positive_int(
+            result.get("reply_refresh_interval_ms"), 0)
+        result["reply_refresh_interval_ms"] = (
+            min(60_000, max(1_000, refresh_interval_ms))
+            if refresh_interval_ms > 0
+            else 0
+        )
     max_text_length = _positive_int(
         result.get("max_text_length"), 0)
     if max_text_length > 0:
@@ -1274,7 +1392,76 @@ async def _wait_for_sent_message(
     )
     deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
     sent_items = page.locator(selector)
+    refresh_interval_ms = _positive_int(
+        target.get("reply_refresh_interval_ms"), 0)
+    next_refresh_at = (
+        asyncio.get_running_loop().time() + refresh_interval_ms / 1000
+        if refresh_interval_ms > 0
+        else None
+    )
     while asyncio.get_running_loop().time() < deadline:
+        if await sent_items.count() > previous_count:
+            return True
+        if (
+            next_refresh_at is not None
+            and asyncio.get_running_loop().time() >= next_refresh_at
+        ):
+            try:
+                await page.reload(
+                    wait_until="domcontentloaded",
+                    timeout=15_000,
+                )
+                await page.wait_for_timeout(500)
+                await _dismiss_blocking_popup(page, target)
+                sent_items = page.locator(selector)
+                if await sent_items.count() > previous_count:
+                    return True
+                print(
+                    "[Chat][ItemBay] 已刷新聊天页面并复核发送结果",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(
+                    f"[Chat][ItemBay] 刷新聊天发送结果失败，继续复核: {exc}",
+                    flush=True,
+                )
+            next_refresh_at = (
+                asyncio.get_running_loop().time()
+                + refresh_interval_ms / 1000
+            )
+        await page.wait_for_timeout(100)
+    if await sent_items.count() > previous_count:
+        return True
+    if target.get("sent_refresh_on_timeout") is not True:
+        return False
+
+    try:
+        await page.reload(
+            wait_until="domcontentloaded",
+            timeout=15_000,
+        )
+        await page.wait_for_timeout(500)
+        await _dismiss_blocking_popup(page, target)
+        sent_items = page.locator(selector)
+        print(
+            "[Chat][ItemMania] 发送回执超时，已刷新聊天页面复核历史消息",
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[Chat][ItemMania] 刷新聊天历史失败: {exc}",
+            flush=True,
+        )
+        return False
+
+    refresh_timeout_ms = max(
+        2_000,
+        _positive_int(target.get("sent_refresh_timeout_ms"), 10_000),
+    )
+    refresh_deadline = (
+        asyncio.get_running_loop().time() + refresh_timeout_ms / 1000
+    )
+    while asyncio.get_running_loop().time() < refresh_deadline:
         if await sent_items.count() > previous_count:
             return True
         await page.wait_for_timeout(100)
@@ -1304,7 +1491,7 @@ async def _read_conversation_message(item, target: dict):
 
 async def _wait_for_customer_reply_after_anchor(
         page, target: dict, start_index: int, anchor_text: str):
-    """只读取本次动态确认问句之后的第一条买家消息。"""
+    """只读取本次动态确认问句之后的第一条买家消息；按配置刷新页面。"""
     selector = str(target.get("conversation_selector") or "").strip()
     timeout_ms = min(
         300_000,
@@ -1316,9 +1503,47 @@ async def _wait_for_customer_reply_after_anchor(
     expected_anchor = _normalize_reply_candidate(anchor_text)
     deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
     conversation = page.locator(selector)
-    next_index = max(0, int(start_index))
+    anchor_search_start = max(0, int(start_index))
+    next_index = anchor_search_start
     anchor_seen = False
+    refresh_interval_ms = _positive_int(
+        target.get("reply_refresh_interval_ms"), 0)
+    next_refresh_at = (
+        asyncio.get_running_loop().time() + refresh_interval_ms / 1000
+        if refresh_interval_ms > 0
+        else None
+    )
     while asyncio.get_running_loop().time() < deadline:
+        if not anchor_seen:
+            # ItemMania may insert an asynchronously uploaded image after the
+            # text message and shift the just-sent anchor to an earlier index.
+            # Re-scan the bounded anchor window until the exact anchor appears.
+            next_index = anchor_search_start
+        if (
+            next_refresh_at is not None
+            and asyncio.get_running_loop().time() >= next_refresh_at
+        ):
+            try:
+                await page.reload(
+                    wait_until="domcontentloaded",
+                    timeout=15_000,
+                )
+                await page.wait_for_timeout(500)
+                await _dismiss_blocking_popup(page, target)
+                conversation = page.locator(selector)
+                print(
+                    "[Chat][ItemBay] 已刷新聊天页面并继续等待买家回复",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(
+                    f"[Chat][ItemBay] 刷新聊天页面失败，继续等待: {exc}",
+                    flush=True,
+                )
+            next_refresh_at = (
+                asyncio.get_running_loop().time()
+                + refresh_interval_ms / 1000
+            )
         count = await conversation.count()
         while next_index < count:
             item = conversation.nth(next_index)
@@ -1328,6 +1553,12 @@ async def _wait_for_customer_reply_after_anchor(
                 # ItemBay 日期/系统通知行也位于同一列表，不属于对话。
                 continue
             is_self, text, text_item = entry
+            if not text:
+                await page.wait_for_timeout(100)
+                try:
+                    text = str(await text_item.inner_text()).strip()
+                except Exception:
+                    text = ""
             if not anchor_seen:
                 if (
                     is_self

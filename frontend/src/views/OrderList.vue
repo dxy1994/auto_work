@@ -1148,6 +1148,7 @@ function orderLogLabel(type) {
     queued_worker_disconnected: '队首机器断线，继续排队',
     trade_completed: '交易完成',
     game_trade_completed: '游戏内交易完成',
+    trade_completion_message_failed: '交易完成话术发送失败（已继续）',
     trade_screenshot_stored: '交易截图已存入 RustFS',
     delivery_proof_sent: '交易截图已发送并关闭聊天',
     delivery_proof_failed: '交易截图发送失败',
@@ -1168,7 +1169,7 @@ function orderLogLabel(type) {
 }
 function orderLogType(type) {
   if (['greeting_success', 'chat_message_sent', 'dequeue_assignment', 'offer_accepted', 'trade_completed', 'game_trade_completed', 'trade_screenshot_stored', 'delivery_proof_sent', 'delivery_confirmation_completed'].includes(type)) return 'success'
-  if (['chat_command_sent', 'delivery_confirmation_dispatched', 'queue_assignment', 'queued_offer_rejected', 'queued_offer_expired', 'queued_start_failed', 'queued_worker_disconnected', 'retry_greeting', 'retry_assignment', 'reset_to_greeting', 'manual_dispatch'].includes(type)) return 'warning'
+  if (['chat_command_sent', 'trade_completion_message_failed', 'delivery_confirmation_dispatched', 'queue_assignment', 'queued_offer_rejected', 'queued_offer_expired', 'queued_start_failed', 'queued_worker_disconnected', 'retry_greeting', 'retry_assignment', 'reset_to_greeting', 'manual_dispatch'].includes(type)) return 'warning'
   if (type?.includes('failed') || ['no_greeting_script', 'no_sub_order', 'offer_rejected', 'offer_expired', 'worker_disconnected', 'trade_timed_out', 'trade_cancelled', 'buyer_review_rejected'].includes(type)) return 'danger'
   return 'primary'
 }

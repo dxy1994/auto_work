@@ -33,4 +33,13 @@ class TradeErrorGuidanceTest {
         assertTrue(result.contains("复核为已完成"));
         assertTrue(result.contains("复核为已取消"));
     }
+
+    @Test
+    void imageSendFailureSuggestsRefreshingNonRealtimeChat() {
+        String result = TradeErrorGuidance.ensureGuidance(
+                "FINAL_CONFIRMATION_IMAGE_SEND_FAILED",
+                "图片选择后未在会话中显示");
+
+        assertTrue(result.contains("刷新会话核对图片是否已发送"));
+    }
 }

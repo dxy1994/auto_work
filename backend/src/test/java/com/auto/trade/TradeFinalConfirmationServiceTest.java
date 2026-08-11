@@ -76,7 +76,7 @@ class TradeFinalConfirmationServiceTest {
                         "request-1", 42, 7, "barotem", 2, 1));
         when(agentRegistry.sendTradeFinalConfirmationResult(
                 eq(9), eq("request-1"), anyBoolean(),
-                anyBoolean(), any(), any()))
+                anyBoolean(), any(), any(), any()))
                 .thenReturn(true);
     }
 
@@ -124,6 +124,7 @@ class TradeFinalConfirmationServiceTest {
                 false,
                 true,
                 "아니요",
+                "BUYER_FINAL_REPLY_REJECTED",
                 "买家回复不是韩文肯定答复");
     }
 
@@ -147,7 +148,36 @@ class TradeFinalConfirmationServiceTest {
                         "reply_text", "네"));
 
         verify(agentRegistry).sendTradeFinalConfirmationResult(
-                9, "request-1", true, true, "네", "");
+                9, "request-1", true, true, "네", "", "");
+    }
+
+    @Test
+    void imageSendFailureUsesSpecificFinalConfirmationErrorCode() {
+        service.begin(
+                "assignment-1",
+                9,
+                "request-1",
+                "/uploads/trade-screenshots/proof.png");
+
+        service.handleChatResult(
+                7,
+                "request-1",
+                42,
+                false,
+                "第 2 条消息的图片发送失败: 图片选择后未在会话中显示",
+                Map.of(
+                        "reply_received", false,
+                        "affirmative_reply", false,
+                        "error_code", "CHAT_IMAGE_SEND_FAILED"));
+
+        verify(agentRegistry).sendTradeFinalConfirmationResult(
+                9,
+                "request-1",
+                false,
+                false,
+                "",
+                "FINAL_CONFIRMATION_IMAGE_SEND_FAILED",
+                "第 2 条消息的图片发送失败: 图片选择后未在会话中显示");
     }
 
     @Test

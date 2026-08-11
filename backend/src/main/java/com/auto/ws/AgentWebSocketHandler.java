@@ -394,7 +394,8 @@ public class AgentWebSocketHandler extends TextWebSocketHandler {
                     machineId, requestId, error);
             if (machineId != null && requestId != null && !requestId.isBlank()) {
                 registry.sendTradeFinalConfirmationResult(
-                        machineId, requestId, false, false, "", error);
+                        machineId, requestId, false, false, "",
+                        "FINAL_CONFIRMATION_REQUEST_FAILED", error);
             }
         }
     }

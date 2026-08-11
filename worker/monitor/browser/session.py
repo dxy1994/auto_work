@@ -558,7 +558,9 @@ class BrowserSession:
                 return self._login_result
 
         self._login_result = await self._do_login()
-        self._login_done = True
+        # 只有成功结果才能缓存。网络超时等失败必须允许外层监控下一轮
+        # 重新执行真实登录，不能反复返回第一次失败的旧结果。
+        self._login_done = self._login_result.get("status") == "success"
         return self._login_result
 
     def is_login_page(self, url: str) -> bool:

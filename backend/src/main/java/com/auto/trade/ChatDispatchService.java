@@ -49,6 +49,8 @@ public class ChatDispatchService {
     private static final String ITEMMANIA_DELIVERY_URL_TEMPLATE =
             "https://www.itemmania.com/myroom/sell/sell_ing_view.html"
                     + "?id={order_no}&type=sell";
+    private static final int ITEMMANIA_IMAGE_UPLOAD_TIMEOUT_MS = 30_000;
+    private static final int ITEMMANIA_IMAGE_SENT_TIMEOUT_MS = 30_000;
     private static final String ITEMBAY_URL_TEMPLATE =
             "https://www.itembay.com/ibmessenger/bayTalkChatTran"
                     + "?iTranSeq={order_no}";
@@ -61,6 +63,7 @@ public class ChatDispatchService {
                     + "?iTranSeq={order_no}";
     private static final int ITEMBAY_MAX_TEXT_LENGTH = 800;
     private static final int ITEMBAY_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+    private static final int ITEMBAY_REPLY_REFRESH_INTERVAL_MS = 5_000;
     private static final List<String> KOREAN_AFFIRMATIVE_REPLIES = List.of(
             "네",
             "예",
@@ -68,6 +71,7 @@ public class ChatDispatchService {
             "네네",
             "네 맞습니다",
             "예 맞습니다",
+            "넵 맞습니다",
             "네 본인 맞습니다",
             "네 본인 맛습니다",
             "맛습니다",
@@ -163,6 +167,13 @@ public class ChatDispatchService {
 
     /** 游戏交易完成后只确认网站商品交付；最终确认截图此前已经发送。 */
     public DispatchReceipt dispatchDeliveryConfirmation(int orderId) {
+        return dispatchDeliveryConfirmation(orderId, List.of());
+    }
+
+    /** 游戏交易完成后先发送完成话术，再确认网站商品交付。 */
+    public DispatchReceipt dispatchDeliveryConfirmation(
+            int orderId,
+            List<Map<String, Object>> rawMessages) {
         GameItemOrder order = requireOrder(orderId);
         if (!"wait_web_confirm".equals(order.getDeliveryStatus())) {
             throw ApiException.badRequest("订单尚未进入等待网站确认状态");
@@ -176,13 +187,18 @@ public class ChatDispatchService {
 
         Route route = resolveRoute(order);
         Map<String, Object> action = resolveDeliveryAction(route.platform(), order);
-        action.put("skip_chat", true);
+        List<ChatMessage> messages = rawMessages == null || rawMessages.isEmpty()
+                ? List.of()
+                : normalizeMessages(rawMessages);
+        action.put("skip_chat", messages.isEmpty());
+        action.put("proof_already_sent", true);
+        action.put("chat_failure_non_blocking", !messages.isEmpty());
         return dispatch(
                 route.machineId(),
                 order,
                 route.platform(),
                 route.accountId(),
-                List.of(),
+                messages,
                 "delivery_confirmation",
                 action);
     }
@@ -586,9 +602,12 @@ public class ChatDispatchService {
                 chatConfig, "conversation_text_selector");
         boolean uploadAutoSend = configBoolean(chatConfig, "upload_auto_send", true);
         int sentTimeoutMs = configInt(chatConfig, "sent_timeout_ms", 0);
+        int replyRefreshIntervalMs = configInt(
+                chatConfig, "reply_refresh_interval_ms", 0);
         int maxTextLength = configInt(chatConfig, "max_text_length", 0);
         int maxImageBytes = configInt(chatConfig, "max_image_bytes", 0);
         boolean barotemImageSubmit = false;
+        boolean itemmaniaImageUpload = false;
 
         if ("itemmania".equals(platformCode)) {
             if (urlTemplate.isBlank()) urlTemplate = ITEMMANIA_URL_TEMPLATE;
@@ -603,6 +622,9 @@ public class ChatDispatchService {
             if (sentSelector.isBlank()) {
                 sentSelector = ".chat_item.me";
             }
+            // ItemMania chat is updated by WebSocket. Reloading the page while
+            // waiting resets the live conversation DOM and can hide a reply.
+            replyRefreshIntervalMs = 0;
             if (conversationSelector.isBlank()) {
                 conversationSelector = ".chat_item.me, .chat_item.another";
             }
@@ -613,6 +635,7 @@ public class ChatDispatchService {
                 conversationTextSelector = ".chat_msg";
             }
             if (sentTimeoutMs <= 0) sentTimeoutMs = 10_000;
+            itemmaniaImageUpload = true;
         }
         if ("itembay".equals(platformCode)) {
             if (urlTemplate.isBlank()) urlTemplate = ITEMBAY_URL_TEMPLATE;
@@ -643,6 +666,9 @@ public class ChatDispatchService {
             }
             if (maxImageBytes <= 0) {
                 maxImageBytes = ITEMBAY_MAX_IMAGE_BYTES;
+            }
+            if (replyRefreshIntervalMs <= 0) {
+                replyRefreshIntervalMs = ITEMBAY_REPLY_REFRESH_INTERVAL_MS;
             }
             uploadAutoSend = true;
         }
@@ -719,6 +745,16 @@ public class ChatDispatchService {
         if (!barotemImageSubmit) {
             target.put("upload_auto_send", uploadAutoSend);
         }
+        if (itemmaniaImageUpload) {
+            target.put("itemmania_image_upload", true);
+            target.put(
+                    "image_upload_timeout_ms",
+                    ITEMMANIA_IMAGE_UPLOAD_TIMEOUT_MS);
+            target.put(
+                    "image_sent_timeout_ms",
+                    ITEMMANIA_IMAGE_SENT_TIMEOUT_MS);
+            target.put("image_sent_refresh_on_timeout", true);
+        }
         if ("barotem".equals(platformCode)) {
             target.put("conversation_resolver", "barotem_order_list");
             target.put("order_no", orderNo);
@@ -751,6 +787,9 @@ public class ChatDispatchService {
             target.put("conversation_text_selector", conversationTextSelector);
             target.put("reply_timeout_ms", 300_000);
             target.put("affirmative_replies", KOREAN_AFFIRMATIVE_REPLIES);
+            if (replyRefreshIntervalMs > 0) {
+                target.put("reply_refresh_interval_ms", replyRefreshIntervalMs);
+            }
         }
         if (maxTextLength > 0) {
             target.put("max_text_length", maxTextLength);

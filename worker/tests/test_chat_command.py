@@ -31,6 +31,7 @@ class ChatCommandTest(unittest.TestCase):
             "네 본인 맛습니다.",
             "네 맞습니다",
             "예 맞습니다",
+            "넵 맞습니다",
             "네",
             "넵",
             "맛습니다",
@@ -134,6 +135,223 @@ class ChatCommandTest(unittest.TestCase):
         self.assertTrue(anchor_seen)
         self.assertEqual("<네>", reply)
 
+    def test_itembay_reply_wait_refreshes_page_before_reading_new_reply(self):
+        class TextLocator:
+            def __init__(self, item):
+                self.item = item
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return 1
+
+            async def inner_text(self):
+                return self.item["text"]
+
+        class ItemLocator:
+            def __init__(self, item):
+                self.item = item
+
+            def locator(self, _selector):
+                return TextLocator(self.item)
+
+            async def get_attribute(self, name):
+                return self.item["class"] if name == "class" else None
+
+        class ConversationLocator:
+            def __init__(self, page):
+                self.page = page
+
+            async def count(self):
+                return len(self.page.items)
+
+            def nth(self, index):
+                return ItemLocator(self.page.items[index])
+
+        class Page:
+            def __init__(self):
+                self.items = [
+                    {"class": "send", "text": "네 또는 아니요라고 답해주세요"},
+                ]
+                self.reload_count = 0
+
+            def locator(self, _selector):
+                return ConversationLocator(self)
+
+            async def reload(self, **_kwargs):
+                self.reload_count += 1
+                self.items.append(
+                    {"class": "receive", "text": "네 맞습니다"}
+                )
+
+            async def wait_for_timeout(self, _milliseconds):
+                await asyncio.sleep(0.002)
+
+        page = Page()
+        with patch.object(sender, "_dismiss_blocking_popup") as dismiss:
+            dismiss.return_value = None
+            reply, anchor_seen = asyncio.run(
+                sender._wait_for_customer_reply_after_anchor(
+                    page,
+                    {
+                        "conversation_selector": ".message",
+                        "conversation_self_class": "send",
+                        "conversation_text_selector": ".text",
+                        "reply_timeout_ms": 1000,
+                        "reply_refresh_interval_ms": 1,
+                    },
+                    start_index=0,
+                    anchor_text="네 또는 아니요라고 답해주세요",
+                )
+            )
+
+        self.assertTrue(anchor_seen)
+        self.assertEqual("네 맞습니다", reply)
+        self.assertEqual(1, page.reload_count)
+
+    def test_reply_wait_does_not_use_buyer_message_when_anchor_missing(self):
+        class TextLocator:
+            def __init__(self, item):
+                self.item = item
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return 1
+
+            async def inner_text(self):
+                return self.item["text"]
+
+        class ItemLocator:
+            def __init__(self, item):
+                self.item = item
+
+            def locator(self, _selector):
+                return TextLocator(self.item)
+
+            async def get_attribute(self, name):
+                return self.item["class"] if name == "class" else None
+
+        class ConversationLocator:
+            def __init__(self, page):
+                self.page = page
+
+            async def count(self):
+                return len(self.page.items)
+
+            def nth(self, index):
+                return ItemLocator(self.page.items[index])
+
+        class Page:
+            def __init__(self):
+                self.items = [
+                    {"class": "me", "text": "질문입니다"},
+                    {"class": "another", "text": "네"},
+                ]
+
+            def locator(self, _selector):
+                return ConversationLocator(self)
+
+            async def wait_for_timeout(self, _milliseconds):
+                await asyncio.sleep(0.002)
+
+        page = Page()
+        reply, anchor_seen = asyncio.run(
+            sender._wait_for_customer_reply_after_anchor(
+                page,
+                {
+                    "conversation_selector": ".message",
+                    "conversation_self_class": "me",
+                    "conversation_text_selector": ".text",
+                    "reply_timeout_ms": 500,
+                },
+                start_index=0,
+                anchor_text="다음은 아님",
+            )
+        )
+
+        self.assertFalse(anchor_seen)
+        self.assertIsNone(reply)
+
+    def test_reply_wait_rescans_when_image_inserts_anchor_before_cursor(self):
+        class TextLocator:
+            def __init__(self, item):
+                self.item = item
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return 1
+
+            async def inner_text(self):
+                return self.item["text"]
+
+        class ItemLocator:
+            def __init__(self, item):
+                self.item = item
+
+            def locator(self, _selector):
+                return TextLocator(self.item)
+
+            async def get_attribute(self, name):
+                return self.item["class"] if name == "class" else None
+
+        class ConversationLocator:
+            def __init__(self, page):
+                self.page = page
+
+            async def count(self):
+                return len(self.page.items)
+
+            def nth(self, index):
+                return ItemLocator(self.page.items[index])
+
+        class Page:
+            def __init__(self):
+                self.items = [
+                    {"class": "another", "text": "아닙니다."},
+                    {"class": "me", "text": ""},
+                ]
+                self.inserted = False
+
+            def locator(self, _selector):
+                return ConversationLocator(self)
+
+            async def wait_for_timeout(self, _milliseconds):
+                if not self.inserted:
+                    self.inserted = True
+                    self.items.insert(1, {
+                        "class": "me",
+                        "text": "지금 거래하시는 분이 본인이라면 네라고 답장해주세요",
+                    })
+                    self.items.append({"class": "another", "text": "네"})
+                await asyncio.sleep(0.002)
+
+        reply, anchor_seen = asyncio.run(
+            sender._wait_for_customer_reply_after_anchor(
+                Page(),
+                {
+                    "conversation_selector": ".chat_item",
+                    "conversation_self_class": "me",
+                    "conversation_text_selector": ".chat_msg",
+                    "reply_timeout_ms": 1000,
+                },
+                start_index=1,
+                anchor_text=(
+                    "지금 거래하시는 분이 본인이라면 네라고 답장해주세요"
+                ),
+            )
+        )
+
+        self.assertTrue(anchor_seen)
+        self.assertEqual("네", reply)
+
     def test_normalize_legacy_greeting_as_chat(self):
         command = normalize_chat_command({
             "type": "greeting",
@@ -186,6 +404,63 @@ class ChatCommandTest(unittest.TestCase):
         self.assertTrue(result["proof_already_sent"])
         self.assertTrue(result["delivery_confirmed"])
         self.assertEqual(1, len(calls))
+
+    def test_completion_chat_keeps_previous_proof_marker(self):
+        async def send_chat(_session, _target, _messages, keep_open=False):
+            return {"success": True, "message": "sent"}
+
+        async def confirm_delivery(_session, _action):
+            return {"success": True, "message": "confirmed"}
+
+        with (
+            patch.object(sender, "_do_send_chat", send_chat),
+            patch.object(sender, "_do_confirm_delivery", confirm_delivery),
+        ):
+            result = asyncio.run(sender._do_send_chat_with_post_action(
+                object(),
+                {},
+                [{"content": "交易完成，谢谢"}],
+                {
+                    "type": "confirm_delivery",
+                    "skip_chat": False,
+                    "proof_already_sent": True,
+                },
+            ))
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["chat_sent"])
+        self.assertTrue(result["chat_closed"])
+        self.assertTrue(result["proof_already_sent"])
+        self.assertTrue(result["delivery_confirmed"])
+
+    def test_completion_chat_failure_does_not_block_delivery(self):
+        async def send_chat(_session, _target, _messages, keep_open=False):
+            return {"success": False, "message": "聊天发送失败"}
+
+        async def confirm_delivery(_session, _action):
+            return {"success": True, "message": "confirmed"}
+
+        with (
+            patch.object(sender, "_do_send_chat", send_chat),
+            patch.object(sender, "_do_confirm_delivery", confirm_delivery),
+        ):
+            result = asyncio.run(sender._do_send_chat_with_post_action(
+                object(),
+                {},
+                [{"content": "交易完成，谢谢"}],
+                {
+                    "type": "confirm_delivery",
+                    "skip_chat": False,
+                    "proof_already_sent": True,
+                    "chat_failure_non_blocking": True,
+                },
+            ))
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["chat_sent"])
+        self.assertTrue(result["proof_already_sent"])
+        self.assertEqual("聊天发送失败", result["completion_message_error"])
+        self.assertTrue(result["delivery_confirmed"])
 
     def test_chat_result_keeps_automatic_and_manual_callbacks_separate(self):
         class FakeReporter:
@@ -713,6 +988,175 @@ class ChatCommandTest(unittest.TestCase):
             ))
 
         self.assertEqual(1, page.sent_count)
+
+    def test_itemmania_image_upload_waits_for_successful_server_receipt(self):
+        class Response:
+            url = "https://www.itemmania.com/myroom/chat/ajax_send_file.php"
+            ok = True
+            status = 200
+
+            async def json(self):
+                return {"RST": True, "DATA2": ["proof.png"]}
+
+        class ResponseInfo:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            @property
+            def value(self):
+                async def result():
+                    return Response()
+                return result()
+
+        class Page:
+            def __init__(self):
+                self.timeout = None
+
+            def expect_response(self, predicate, timeout):
+                self.timeout = timeout
+                self.asserted = predicate(Response())
+                return ResponseInfo()
+
+        class FileInput:
+            def __init__(self):
+                self.path = None
+
+            async def set_input_files(self, path):
+                self.path = path
+
+        page = Page()
+        file_input = FileInput()
+        asyncio.run(sender._select_itemmania_image_and_verify_upload(
+            page,
+            file_input,
+            "proof.png",
+            {"image_upload_timeout_ms": 30_000},
+        ))
+
+        self.assertTrue(page.asserted)
+        self.assertEqual(30_000, page.timeout)
+        self.assertEqual("proof.png", file_input.path)
+
+    def test_itemmania_image_upload_surfaces_platform_error(self):
+        class Response:
+            url = "https://www.itemmania.com/myroom/chat/ajax_send_file.php"
+            ok = True
+            status = 200
+
+            async def json(self):
+                return {"RST": False, "MSG": "이미지 업로드 실패"}
+
+        class ResponseInfo:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            @property
+            def value(self):
+                async def result():
+                    return Response()
+                return result()
+
+        class Page:
+            def expect_response(self, _predicate, _timeout=None, **_kwargs):
+                return ResponseInfo()
+
+        class FileInput:
+            async def set_input_files(self, _path):
+                return None
+
+        with self.assertRaisesRegex(
+                RuntimeError, "ItemMania 图片上传失败"):
+            asyncio.run(sender._select_itemmania_image_and_verify_upload(
+                Page(),
+                FileInput(),
+                "proof.png",
+                {},
+            ))
+
+    def test_itembay_sent_receipt_refreshes_non_realtime_chat(self):
+        class SentLocator:
+            def __init__(self, page):
+                self.page = page
+
+            async def count(self):
+                return self.page.sent_count
+
+        class Page:
+            def __init__(self):
+                self.sent_count = 0
+                self.reload_count = 0
+
+            def locator(self, _selector):
+                return SentLocator(self)
+
+            async def reload(self, **_kwargs):
+                self.reload_count += 1
+                self.sent_count = 1
+
+            async def wait_for_timeout(self, _milliseconds):
+                await asyncio.sleep(0.002)
+
+        page = Page()
+        with patch.object(sender, "_dismiss_blocking_popup") as dismiss:
+            dismiss.return_value = None
+            sent = asyncio.run(sender._wait_for_sent_message(
+                page,
+                {
+                    "sent_selector": ".send",
+                    "sent_timeout_ms": 1000,
+                    "reply_refresh_interval_ms": 1,
+                },
+                previous_count=0,
+            ))
+
+        self.assertTrue(sent)
+        self.assertEqual(1, page.reload_count)
+
+    def test_itemmania_image_receipt_refreshes_history_after_timeout(self):
+        class SentLocator:
+            def __init__(self, page):
+                self.page = page
+
+            async def count(self):
+                return self.page.sent_count
+
+        class Page:
+            def __init__(self):
+                self.sent_count = 0
+                self.reload_count = 0
+
+            def locator(self, _selector):
+                return SentLocator(self)
+
+            async def reload(self, **_kwargs):
+                self.reload_count += 1
+                self.sent_count = 1
+
+            async def wait_for_timeout(self, _milliseconds):
+                await asyncio.sleep(0.03)
+
+        page = Page()
+        with patch.object(sender, "_dismiss_blocking_popup") as dismiss:
+            dismiss.return_value = None
+            sent = asyncio.run(sender._wait_for_sent_message(
+                page,
+                {
+                    "sent_selector": ".chat_item.me",
+                    "sent_timeout_ms": 100,
+                    "sent_refresh_on_timeout": True,
+                    "sent_refresh_timeout_ms": 100,
+                },
+                previous_count=0,
+            ))
+
+        self.assertTrue(sent)
+        self.assertEqual(1, page.reload_count)
 
     def test_barotem_dispatches_paste_event_then_clicks_real_send(self):
         events = []

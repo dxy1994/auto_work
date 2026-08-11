@@ -637,6 +637,77 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
 
         response.text.assert_awaited_once()
 
+    async def test_background_request_detects_login_alert_in_inline_script(self):
+        html = """
+          <article id="commonAlert" class="common_alert">
+            <div class="common_alert_wrap"></div>
+            <div class="common_alert_check" onclick=""></div>
+          </article>
+          <script>
+            alertopen({
+              title: '로그인 후 이용가능합니다.',
+              customFunction: 'location.href = "/auth/login";'
+            });
+          </script>
+        """
+        response = SimpleNamespace(
+            url=_order_list_url("money"),
+            ok=True,
+            status=200,
+            headers={"content-type": "text/html; charset=UTF-8"},
+            text=AsyncMock(return_value=html),
+        )
+        request = SimpleNamespace(get=AsyncMock(return_value=response))
+        page = SimpleNamespace(context=SimpleNamespace(request=request))
+
+        self.assertTrue(_html_requires_login(html))
+        with self.assertRaises(_BarotemLoginRequired):
+            await _fetch_authenticated_html(
+                page, _order_list_url("money"), 10000)
+
+    async def test_order_api_detects_login_alert_in_inline_script(self):
+        html = """
+          <article id="commonAlert" class="common_alert"></article>
+          <script>
+            alertopen({title: '로그인 후 이용가능합니다.',
+              customFunction: 'location.href = "/auth/login";'});
+          </script>
+        """
+        response = SimpleNamespace(
+            url="https://www.barotem.com/mypage/DealList",
+            ok=True,
+            status=200,
+            headers={"content-type": "text/html; charset=UTF-8"},
+            text=AsyncMock(return_value=html),
+        )
+        request = SimpleNamespace(post=AsyncMock(return_value=response))
+        page = SimpleNamespace(context=SimpleNamespace(request=request))
+
+        with self.assertRaises(_BarotemLoginRequired):
+            await _fetch_orders_page(page, "money", 1, 10000)
+
+    async def test_product_api_detects_login_alert_in_inline_script(self):
+        html = """
+          <article id="commonAlert" class="common_alert"></article>
+          <script>
+            alertopen({title: '로그인 후 이용가능합니다.',
+              customFunction: 'location.href = "/auth/login";'});
+          </script>
+        """
+        response = SimpleNamespace(
+            url="https://www.barotem.com/mypage/productlist",
+            ok=True,
+            status=200,
+            headers={"content-type": "text/html; charset=UTF-8"},
+            text=AsyncMock(return_value=html),
+        )
+        request = SimpleNamespace(post=AsyncMock(return_value=response))
+        page = SimpleNamespace(context=SimpleNamespace(request=request))
+
+        with self.assertRaises(_BarotemLoginRequired):
+            await barotem_module._fetch_sales_products_page(
+                page, "money", 1, 10000)
+
     async def test_monitor_extracts_orders_from_background_snapshot(self):
         monitor = object.__new__(BarotemMonitor)
         monitor._session = SimpleNamespace(
@@ -869,9 +940,30 @@ class BarotemNavigationTest(unittest.IsolatedAsyncioTestCase):
             result = await worker._run_refresh_cycle(10000)
 
         self.assertEqual("scheduled_refresh_disabled", result)
-        worker._prepare_refresh_action_page.assert_not_awaited()
+        worker._prepare_refresh_action_page.assert_awaited_once_with(10000)
         worker._sync_sales_products.assert_awaited_once_with(10000)
         worker._do_refresh.assert_not_awaited()
+
+    async def test_incomplete_order_categories_stop_before_json_requests(self):
+        worker, page = self._order_worker()
+        snapshot = _BarotemHtmlSnapshot(
+            _order_list_url("money"),
+            '<div class="product_background"></div>',
+            None,
+        )
+
+        with patch.object(
+                barotem_module, "_fetch_authenticated_html",
+                AsyncMock(return_value=snapshot)):
+            with patch.object(
+                    barotem_module, "_fetch_orders_page",
+                    AsyncMock()) as fetch:
+                with self.assertRaisesRegex(
+                        RuntimeError, "订单分类计数不完整"):
+                    await worker._collect_all_order_categories(10000)
+
+        fetch.assert_not_awaited()
+        page.goto.assert_not_awaited()
 
     async def test_order_categories_skip_zero_counts(self):
         worker, _page = self._order_worker()

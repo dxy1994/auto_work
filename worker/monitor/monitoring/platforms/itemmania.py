@@ -32,7 +32,7 @@ MIN_COMMIT_TIMEOUT_MS = 15000
 MIN_READY_TIMEOUT_MS = 20000
 COMMIT_GRACE_SECONDS = 3.0
 REFRESH_RESULT_TIMEOUT_SECONDS = 15.0
-REFRESH_PAGE_MAX_ACTIONS = 30
+REFRESH_PAGE_MAX_ACTIONS = 100
 RELOGIN_MAX_ATTEMPTS = 3
 RELOGIN_BACKOFF_SECONDS = (30.0, 120.0)
 MAX_SALES_PRODUCT_PAGES = 1000
@@ -356,6 +356,7 @@ class ManiaRefreshWorker(PageWorker):
         self._monitor = monitor
         self._last_refresh = datetime.datetime.now()
         self._coupon_required_alert_count = 0
+        self._refresh_actions_on_page = 0
 
     async def run(self):
         wait_timeout = self._monitor.get_order_cfg().get("wait_timeout", 10000)
@@ -369,7 +370,6 @@ class ManiaRefreshWorker(PageWorker):
             if self.page_failure_requires_rebuild(e):
                 raise
         print(f"[{self._log_tag}] 刷新就绪 (间隔={interval}s)")
-        actions_on_page = 0
 
         while not self.stopped:
             self._touch()
@@ -381,8 +381,9 @@ class ManiaRefreshWorker(PageWorker):
                 try:
                     result = await self._do_refresh(wait_timeout)
                     self._last_refresh = datetime.datetime.now()
+                    self._refresh_actions_on_page += 1
+                    await self._recycle_refresh_page_if_due(wait_timeout)
                     await self._sync_sales_products(wait_timeout)
-                    actions_on_page += 1
                     if result == "coupon_required":
                         message = (
                             f"mania账号{self._session.account_id}"
@@ -397,13 +398,6 @@ class ManiaRefreshWorker(PageWorker):
                             await play_alert_audio_async(text=message)
                     elif result == "refreshed":
                         self._coupon_required_alert_count = 0
-                    if actions_on_page >= REFRESH_PAGE_MAX_ACTIONS:
-                        await self.recycle_page(
-                            f"上架页已执行 {actions_on_page} 次刷新，"
-                            "主动释放页面内存"
-                        )
-                        await self._ensure_refresh_page_ready(wait_timeout)
-                        actions_on_page = 0
                 except Exception as e:
                     print(f"[{self._log_tag}] 刷新或销售商品快照同步异常: {e}")
                     if self.page_failure_requires_rebuild(e):
@@ -411,6 +405,23 @@ class ManiaRefreshWorker(PageWorker):
                             "上架页已不可用，需要重建标签"
                         ) from e
             await asyncio.sleep(5)
+
+    async def _recycle_refresh_page_if_due(self, wait_timeout: int) -> bool:
+        """累计刷新达到阈值后关闭旧标签，并等待新上架页恢复可用。"""
+        if self._refresh_actions_on_page < REFRESH_PAGE_MAX_ACTIONS:
+            return False
+        completed_actions = self._refresh_actions_on_page
+        await self.recycle_page(
+            f"上架页已执行 {completed_actions} 次刷新，"
+            "自动关闭旧商品刷新页面并重新打开"
+        )
+        self._refresh_actions_on_page = 0
+        print(
+            f"[{self._log_tag}] 旧商品刷新页面已关闭，"
+            "等待新上架页自动打开"
+        )
+        await self._ensure_refresh_page_ready(wait_timeout)
+        return True
 
     def _consume_coupon_required_alert(self) -> bool:
         """同一次连续次数不足最多播报三次，成功上架后重新计数。"""

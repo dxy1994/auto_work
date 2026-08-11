@@ -574,6 +574,7 @@ public class AgentRegistry {
             boolean approved,
             boolean replyReceived,
             String replyText,
+            String errorCode,
             String error) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "trade_final_confirmation_result");
@@ -581,6 +582,7 @@ public class AgentRegistry {
         payload.put("approved", approved);
         payload.put("reply_received", replyReceived);
         payload.put("reply_text", replyText == null ? "" : replyText);
+        payload.put("error_code", errorCode == null ? "" : errorCode);
         payload.put("error", error == null ? "" : error);
         return sendToAgent(machineId, payload);
     }

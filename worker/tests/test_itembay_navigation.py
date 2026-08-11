@@ -20,7 +20,7 @@ from monitor.monitoring.platforms.itembay import (  # noqa: E402
     _combine_order_row_payloads,
     _parse_order_row_payload,
     _parse_presale_inquiry_payload,
-    _parse_refresh_action,
+    _parse_edit_action,
 )
 from monitor.orders.adapters import adapter_for  # noqa: E402
 
@@ -156,15 +156,14 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
             "cells": ["** 상품전달완료 하실 상품이 없습니다. **"],
         }))
 
-    def test_refresh_action_reads_status_and_remaining_count(self):
-        action = _parse_refresh_action(
-            "fncSetReRegistTop('33572289620', '3786', "
-            "'12727', '0', '1', '100');return false;"
+    def test_edit_action_reads_status_and_trade_method(self):
+        action = _parse_edit_action(
+            "fncSellEdit('33625030823', '0', '1');return false;"
         )
 
-        self.assertEqual("33572289620", action["item_seq"])
+        self.assertEqual("33625030823", action["item_seq"])
         self.assertEqual(0, action["sell_status"])
-        self.assertEqual(100, action["remaining"])
+        self.assertTrue(action["division"])
 
     async def test_normalized_order_uses_row_data_without_fake_buyer(self):
         monitor = object.__new__(ItembayMonitor)
@@ -294,13 +293,125 @@ class ItembayStructureTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(3, alert.await_count)
 
-    def test_refresh_flow_matches_live_ajax_page_contract(self):
+    def test_refresh_flow_matches_live_edit_and_save_contract(self):
         source = inspect.getsource(ItembayRefreshWorker._do_refresh)
 
-        self.assertIn("REFRESH_BUTTON_SELECTOR", source)
-        self.assertIn("_parse_refresh_action", source)
+        self.assertIn("EDIT_BUTTON_SELECTOR", source)
+        self.assertIn("_parse_edit_action", source)
+        self.assertIn("EDIT_SUBMIT_SELECTOR", source)
+        self.assertIn("_wait_edit_page_ready", source)
+        self.assertIn("_wait_edit_save_result", source)
         self.assertNotIn("query_selector", source)
-        self.assertNotIn("imgSubmitButton", source)
+
+    async def test_refresh_opens_oldest_edit_page_then_saves(self):
+        events = []
+
+        class Link:
+            def __init__(self, onclick, label):
+                self.onclick = onclick
+                self.label = label
+
+            async def get_attribute(self, name):
+                return self.onclick if name == "onclick" else None
+
+            async def click(self, **_kwargs):
+                events.append(f"click:{self.label}")
+
+        class LocatorList:
+            def __init__(self, items):
+                self.items = items
+
+            @property
+            def first(self):
+                return self.items[0]
+
+            async def count(self):
+                return len(self.items)
+
+            def nth(self, index):
+                return self.items[index]
+
+        edit_links = LocatorList([
+            Link("fncSellEdit('101', '0', '');return false;", "newer"),
+            Link("fncSellEdit('202', '0', '1');return false;", "oldest"),
+        ])
+        submit = Link("", "save")
+        page = SimpleNamespace(
+            url=itembay_module.SELL_LIST_URL,
+            locator=lambda selector: (
+                LocatorList([])
+                if selector == itembay_module.LAST_PAGE_SELECTOR
+                else edit_links
+                if selector == (
+                    f"{itembay_module.REFRESH_ROW_SELECTOR} "
+                    f"{itembay_module.EDIT_BUTTON_SELECTOR}"
+                )
+                else LocatorList([submit])
+            ),
+            evaluate=AsyncMock(return_value=100.0),
+        )
+        worker = ItembayRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(get_order_cfg=lambda: {}))
+        worker._page = page
+        worker._prepare_refresh_action_page = AsyncMock()
+        worker._wait_edit_page_ready = AsyncMock()
+        worker._wait_edit_save_result = AsyncMock(
+            return_value="refreshed")
+
+        result = await worker._do_refresh(10000)
+
+        self.assertEqual("refreshed", result)
+        self.assertEqual(["click:oldest", "click:save"], events)
+        worker._wait_edit_page_ready.assert_awaited_once_with(
+            "202", 10000)
+        worker._wait_edit_save_result.assert_awaited_once_with(
+            100.0, "202", 10000)
+
+    async def test_edit_page_waits_for_real_save_button(self):
+        worker = ItembayRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(get_order_cfg=lambda: {}))
+        page = SimpleNamespace(
+            url=(
+                "https://www.itembay.com/item/sell/"
+                "sellDivisionEdit?iItemSeq=202"
+            ),
+            wait_for_selector=AsyncMock(),
+        )
+        worker._page = page
+
+        await worker._wait_edit_page_ready("202", 10000)
+
+        page.wait_for_selector.assert_awaited_once_with(
+            itembay_module.EDIT_SUBMIT_SELECTOR,
+            state="visible",
+            timeout=itembay_module.MIN_READY_TIMEOUT_MS,
+        )
+
+    async def test_edit_save_accepts_returned_listing_document(self):
+        worker = ItembayRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(get_order_cfg=lambda: {}))
+        page = SimpleNamespace(
+            url=(
+                f"{itembay_module.SELL_LIST_URL}?iTranNum=0"
+            ),
+            is_closed=MagicMock(return_value=False),
+            evaluate=AsyncMock(return_value=200.0),
+            wait_for_selector=AsyncMock(),
+        )
+        worker._page = page
+
+        result = await worker._wait_edit_save_result(
+            100.0, "202", 10000)
+
+        self.assertEqual("refreshed", result)
+        page.wait_for_selector.assert_awaited_once_with(
+            itembay_module.REFRESH_TABLE_SELECTOR,
+            state="attached",
+            timeout=itembay_module.MIN_READY_TIMEOUT_MS,
+        )
 
 
 if __name__ == "__main__":

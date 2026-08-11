@@ -136,9 +136,11 @@ def report_chat_result(
                         "website_status",
                         "already_completed",
                         "proof_already_sent",
+                        "completion_message_error",
                         "reply_received",
                         "affirmative_reply",
                         "reply_text",
+                        "error_code",
                     )
                     if key in result
                 },

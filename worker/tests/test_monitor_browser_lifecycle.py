@@ -28,6 +28,37 @@ class _NoopPageWorker(PageWorker):
 
 
 class MonitorBrowserLifecycleTest(unittest.TestCase):
+    def test_failed_initial_login_is_retried_instead_of_cached(self):
+        session = BrowserSession(
+            account_id=6,
+            login_url="https://www.itembay.com/login/loginAdult",
+            username="seller",
+            password="secret",
+            login_config={"username_selector": "#userId"},
+            force_login=True,
+        )
+        login_results = [
+            {
+                "status": "failed",
+                "message": "Page.goto: net::ERR_TIMED_OUT",
+            },
+            {"status": "success", "message": "登录成功"},
+        ]
+
+        with patch.object(
+            session,
+            "_do_login",
+            new=AsyncMock(side_effect=login_results),
+        ) as do_login:
+            first = asyncio.run(session.ensure_login())
+            second = asyncio.run(session.ensure_login())
+
+        self.assertEqual("failed", first["status"])
+        self.assertEqual("success", second["status"])
+        self.assertEqual(2, do_login.await_count)
+        self.assertTrue(session._login_done)
+        self.assertEqual(second, session._login_result)
+
     def test_manual_captcha_login_notifies_central_immediately(self):
         notifications = []
 

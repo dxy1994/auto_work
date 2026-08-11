@@ -300,7 +300,19 @@ def _order_list_url(item_type: str) -> str:
 
 def _html_requires_login(html: str) -> bool:
     """识别 Barotem 在原业务 URL 上返回的 HTTP 200 登录提示页。"""
-    soup = BeautifulSoup(str(html or ""), "html.parser")
+    source = str(html or "")
+    # Barotem 的后台 JSON 接口在登录过期时仍返回 HTTP 200 HTML。
+    # 提示标题与跳转地址只写在 alertopen(...) 的内联脚本里，初始
+    # #commonAlert 节点本身没有标题和 onclick，不能只检查渲染后的弹窗。
+    soup = BeautifulSoup(source, "html.parser")
+    for script in soup.find_all("script"):
+        script_text = script.get_text(" ", strip=False)
+        if (
+            "로그인 후 이용가능합니다." in script_text
+            and "/auth/login" in script_text
+        ):
+            return True
+
     alert = soup.select_one("#commonAlert")
     if alert is None:
         return False
@@ -314,6 +326,23 @@ def _html_requires_login(html: str) -> bool:
         heading_text == "로그인 후 이용가능합니다."
         and "/auth/login" in onclick
         and "display:none" not in style
+    )
+
+
+def _unexpected_response_summary(response, text: str) -> str:
+    """生成不包含业务数据的响应摘要，便于定位 HTML/风控错误页。"""
+    headers = getattr(response, "headers", {}) or {}
+    content_type = ""
+    if isinstance(headers, dict):
+        content_type = str(headers.get("content-type", ""))
+    soup = BeautifulSoup(str(text or ""), "html.parser")
+    title = _compact_text(soup.title.get_text(" ", strip=True)) \
+        if soup.title else ""
+    return (
+        f"HTTP {getattr(response, 'status', 'unknown')}, "
+        f"content-type={content_type or 'unknown'}, "
+        f"length={len(str(text or ''))}, "
+        f"title={title or 'unknown'}"
     )
 
 
@@ -516,7 +545,10 @@ async def _fetch_orders_page(
     try:
         payload = json.loads(text)
     except (TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Barotem 订单接口未返回 JSON") from exc
+        raise RuntimeError(
+            "Barotem 订单接口未返回 JSON: "
+            f"{_unexpected_response_summary(response, text)}"
+        ) from exc
     payloads, total = _order_payloads_from_api(payload, item_type)
     return _BarotemOrderSnapshot(
         _order_list_url(item_type), payloads, total, page.context)
@@ -647,7 +679,10 @@ async def _fetch_sales_products_page(
     try:
         payload = json.loads(text)
     except (TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Barotem 商品接口未返回 JSON") from exc
+        raise RuntimeError(
+            "Barotem 商品接口未返回 JSON: "
+            f"{_unexpected_response_summary(response, text)}"
+        ) from exc
     return _sales_products_page_from_api(payload, item_type)
 
 
@@ -1082,14 +1117,13 @@ class BarotemOrderWorker(_BarotemWorker):
         counts = _category_counts_from_html(probe.html)
         missing = [value for value in PRODUCT_TYPES if value not in counts]
         if missing:
-            print(f"[{self._log_tag}] 订单分类计数不完整 {missing}，"
-                  "本轮保守抓取全部分类")
-            available_types = list(PRODUCT_TYPES)
-        else:
-            available_types = [
-                item_type for item_type in PRODUCT_TYPES
-                if counts[item_type] > 0
-            ]
+            raise RuntimeError(
+                f"Barotem 订单分类计数不完整 {missing}，停止本轮接口抓取"
+            )
+        available_types = [
+            item_type for item_type in PRODUCT_TYPES
+            if counts[item_type] > 0
+        ]
         if not available_types:
             return 0
 
@@ -1220,6 +1254,9 @@ class BarotemRefreshWorker(_BarotemWorker):
 
     async def _run_refresh_cycle(self, timeout: int) -> str:
         if not SCHEDULED_PRODUCT_REFRESH_ENABLED:
+            # 即使关闭自动顶帖，也保留每 40 秒刷新一次长期商品页。
+            # 页面刷新会让 HTTP 200 登录提示真正渲染出来并触发恢复流程。
+            await self._prepare_refresh_action_page(timeout)
             await self._sync_sales_products(timeout)
             return "scheduled_refresh_disabled"
 

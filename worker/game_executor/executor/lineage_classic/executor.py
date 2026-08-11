@@ -482,11 +482,15 @@ class LineageClassicExecutor(BaseGameExecutor):
         if isinstance(confirmation, dict):
             approved = bool(confirmation.get("approved"))
             reply_received = bool(confirmation.get("reply_received"))
+            confirmation_error_code = str(
+                confirmation.get("error_code") or ""
+            ).strip()
             confirmation_error = str(confirmation.get("error") or "").strip()
         else:
             # 兼容旧回调；只有明确的 True 才允许最终确认。
             approved = confirmation is True
             reply_received = False
+            confirmation_error_code = ""
             confirmation_error = ""
         if not approved:
             if not self._cancel_final_trade(navigator):
@@ -503,10 +507,15 @@ class LineageClassicExecutor(BaseGameExecutor):
                     "message": message,
                 }
             message = confirmation_error or "等待买家回答超时，已取消交易"
+            error_code = confirmation_error_code or (
+                "FINAL_CONFIRMATION_IMAGE_SEND_FAILED"
+                if "图片" in message and "发送失败" in message
+                else "BUYER_FINAL_REPLY_TIMEOUT"
+            )
             return self._result(
                 False,
                 "cancelled",
-                "BUYER_FINAL_REPLY_TIMEOUT",
+                error_code,
                 message,
             )
         navigator.click_region(TradeUi.FINAL_ACCEPT_REGION)

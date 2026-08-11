@@ -26,6 +26,12 @@ public final class TradeErrorGuidance {
                     "检查执行端网络和游戏状态，并人工确认本次交易结果后决定重试或完成";
             case "FINAL_CONFIRMATION_NOT_FOUND" ->
                     "系统未能识别最终确认提示，无法据此判断当前界面；请人工核对游戏和平台的实际交易结果，再选择“复核为已完成”或“复核为已取消”";
+            case "FINAL_CONFIRMATION_IMAGE_SEND_FAILED" ->
+                    "检查平台聊天页登录状态和图片上传控件；若平台聊天不会实时更新，请刷新会话核对图片是否已发送后再重试";
+            case "FINAL_CONFIRMATION_TEXT_SEND_FAILED", "FINAL_CONFIRMATION_ANCHOR_NOT_FOUND" ->
+                    "刷新平台聊天页并检查确认话术是否已显示；确认页面元素配置有效后再重试";
+            case "BUYER_FINAL_REPLY_TIMEOUT" ->
+                    "刷新平台聊天页确认买家是否已经回复；若确实未回复，请联系买家后重新发起交易";
             case "TRADE_RESULT_UNCERTAIN" ->
                     "在游戏和平台核对实际交易结果，完成人工复核后再更新订单状态";
             case "TRADE_RETRYABLE_FAILURE" ->

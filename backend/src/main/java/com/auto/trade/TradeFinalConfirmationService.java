@@ -145,6 +145,7 @@ public class TradeFinalConfirmationService {
                     requestId, orderId, monitorMachineId);
             sendResult(
                     value, requestId, false, false, "",
+                    "FINAL_CONFIRMATION_RESULT_SOURCE_MISMATCH",
                     "聊天确认回执来源不匹配");
             return;
         }
@@ -163,6 +164,12 @@ public class TradeFinalConfirmationService {
                         replyReceived
                                 ? "买家回复不是韩文肯定答复"
                                 : "等待买家韩文肯定回复超时");
+        String errorCode = approved
+                ? ""
+                : finalConfirmationErrorCode(
+                        safe(safeDetails.get("error_code")),
+                        error,
+                        replyReceived);
 
         chatDispatchService.handleResult(
                 monitorMachineId, requestId, orderId, approved,
@@ -186,7 +193,8 @@ public class TradeFinalConfirmationService {
                     payload);
         }
         sendResult(
-                value, requestId, approved, replyReceived, replyText, error);
+                value, requestId, approved, replyReceived, replyText,
+                errorCode, error);
     }
 
     private void sendResult(
@@ -195,14 +203,48 @@ public class TradeFinalConfirmationService {
             boolean approved,
             boolean replyReceived,
             String replyText,
+            String errorCode,
             String error) {
         if (!agentRegistry.sendTradeFinalConfirmationResult(
                 value.gameMachineId(), requestId, approved, replyReceived,
-                replyText, error)) {
+                replyText, errorCode, error)) {
             log.warn(
                     "[TradeFinalConfirmation] 游戏机器回执发送失败 request_id={} machine_id={}",
                     requestId, value.gameMachineId());
         }
+    }
+
+    private static String finalConfirmationErrorCode(
+            String monitorErrorCode,
+            String error,
+            boolean replyReceived) {
+        if (replyReceived) {
+            return "BUYER_FINAL_REPLY_REJECTED";
+        }
+        return switch (monitorErrorCode) {
+            case "CHAT_IMAGE_SEND_FAILED" ->
+                    "FINAL_CONFIRMATION_IMAGE_SEND_FAILED";
+            case "CHAT_TEXT_SEND_FAILED" ->
+                    "FINAL_CONFIRMATION_TEXT_SEND_FAILED";
+            case "CHAT_REPLY_ANCHOR_NOT_FOUND" ->
+                    "FINAL_CONFIRMATION_ANCHOR_NOT_FOUND";
+            case "BUYER_FINAL_REPLY_TIMEOUT" -> monitorErrorCode;
+            default -> inferLegacyFinalConfirmationErrorCode(error);
+        };
+    }
+
+    private static String inferLegacyFinalConfirmationErrorCode(String error) {
+        String value = error == null ? "" : error;
+        if (value.contains("图片") && value.contains("发送失败")) {
+            return "FINAL_CONFIRMATION_IMAGE_SEND_FAILED";
+        }
+        if (value.contains("未在会话中定位") && value.contains("确认")) {
+            return "FINAL_CONFIRMATION_ANCHOR_NOT_FOUND";
+        }
+        if (value.contains("等待买家") && value.contains("超时")) {
+            return "BUYER_FINAL_REPLY_TIMEOUT";
+        }
+        return "FINAL_CONFIRMATION_DISPATCH_FAILED";
     }
 
     private List<Map<String, Object>> confirmationScripts(GameItemOrder order) {

@@ -3,7 +3,7 @@ ItemBay 订单监控（Async 多页面并行架构）。
 
 Worker 分工：
   - ItembayOrderWorker：固定在销售进行页，刷新、提取并上报订单
-  - ItembayRefreshWorker：固定在上架列表页，定时点击「끌올」
+  - ItembayRefreshWorker：从上架列表进入修改页，定时保存商品
 
 ItemBay 的销售进行页在站点主页面中由 iframe 承载。Worker 直接打开
 iframe 的 SSL 地址，让订单表格成为顶层文档，避免父页面和 iframe
@@ -39,7 +39,12 @@ ORDER_TABLE_SELECTOR = "table.list_type"
 ORDER_ROW_SELECTOR = "table.list_type tbody tr"
 REFRESH_TABLE_SELECTOR = "#frmMybay .list_type"
 REFRESH_ROW_SELECTOR = "#frmMybay .list_type tbody tr"
-REFRESH_BUTTON_SELECTOR = 'a.drag_top[title="끌올"]'
+EDIT_BUTTON_SELECTOR = 'a[title="수정"]'
+EDIT_SUBMIT_SELECTOR = "#imgSubmitButton"
+EDIT_PAGE_PATHS = (
+    "/item/sell/sellEdit",
+    "/item/sell/sellDivisionEdit",
+)
 LAST_PAGE_SELECTOR = (
     '#NavigationPanel a:has(img[alt="마지막 페이지"])'
 )
@@ -109,10 +114,10 @@ def _parse_sales_product_row_payload(payload: dict) -> dict:
     }
 
 
-def _parse_refresh_action(onclick: str) -> Optional[dict]:
-    """解析 fncSetReRegistTop(..., sellstatus, ..., count)。"""
+def _parse_edit_action(onclick: str) -> Optional[dict]:
+    """解析 fncSellEdit(itemSeq, sellStatus, divisionFlag)。"""
     match = re.search(
-        r"fncSetReRegistTop\s*\((?P<args>[^)]*)\)",
+        r"fncSellEdit\s*\((?P<args>[^)]*)\)",
         str(onclick or ""),
     )
     if not match:
@@ -121,13 +126,13 @@ def _parse_refresh_action(onclick: str) -> Optional[dict]:
         part.strip().strip("'\"")
         for part in match.group("args").split(",")
     ]
-    if len(args) < 6:
+    if len(args) < 3 or not re.fullmatch(r"\d+", args[0]):
         return None
     try:
         return {
             "item_seq": args[0],
-            "sell_status": int(args[3] or "0"),
-            "remaining": int(args[5] or "0"),
+            "sell_status": int(args[1] or "0"),
+            "division": args[2] == "1",
         }
     except ValueError:
         return None
@@ -743,13 +748,12 @@ class ItembayPresaleChatWorker(PageWorker):
 
 
 class ItembayRefreshWorker(PageWorker):
-    """商品刷新 Worker：固定在上架列表页，定时点击「끌올」。"""
+    """商品刷新 Worker：进入商品修改页并保存，使商品重新排到前列。"""
 
     def __init__(self, session, stop_event, monitor: 'ItembayMonitor'):
         super().__init__(session, stop_event, name="ItembayRefresh")
         self._monitor = monitor
         self._last_refresh = datetime.datetime.now()
-        self._refresh_exhaustion_alerted = False
 
     async def run(self):
         wait_timeout = self._monitor.get_order_cfg().get(
@@ -778,17 +782,6 @@ class ItembayRefreshWorker(PageWorker):
                     self._last_refresh = datetime.datetime.now()
                     await self._sync_sales_products(wait_timeout)
                     actions_on_page += 1
-                    if result == "refresh_count_exhausted":
-                        if not self._refresh_exhaustion_alerted:
-                            await play_alert_audio_async(
-                                text=(
-                                    f"itemBay账号{self._session.account_id}"
-                                    "商品끌올次数已用完，请检查自动重新上架服务"
-                                )
-                            )
-                            self._refresh_exhaustion_alerted = True
-                    elif result == "refreshed":
-                        self._refresh_exhaustion_alerted = False
 
                     if actions_on_page >= REFRESH_PAGE_MAX_ACTIONS:
                         await self.recycle_page(
@@ -819,39 +812,47 @@ class ItembayRefreshWorker(PageWorker):
         else:
             print(f"[{self._log_tag}] 当前上架列表没有末页链接")
 
-        buttons = self.page.locator(
-            f"{REFRESH_ROW_SELECTOR} {REFRESH_BUTTON_SELECTOR}")
-        button_count = await buttons.count()
-        print(f"[{self._log_tag}] 可见 끌올 按钮: {button_count}")
-        if button_count == 0:
+        edit_links = self.page.locator(
+            f"{REFRESH_ROW_SELECTOR} {EDIT_BUTTON_SELECTOR}")
+        edit_count = await edit_links.count()
+        print(f"[{self._log_tag}] 可见商品修改按钮: {edit_count}")
+        if edit_count == 0:
             return "nothing_to_refresh"
 
         target = None
-        exhausted = False
-        for index in range(button_count - 1, -1, -1):
-            button = buttons.nth(index)
-            action = _parse_refresh_action(
-                await button.get_attribute("onclick") or "")
+        target_action = None
+        for index in range(edit_count - 1, -1, -1):
+            edit_link = edit_links.nth(index)
+            action = _parse_edit_action(
+                await edit_link.get_attribute("onclick") or "")
             if action is None:
                 continue
             if action["sell_status"] == 7:
                 continue
-            if action["remaining"] <= 0:
-                exhausted = True
-                continue
-            target = button
+            target = edit_link
+            target_action = action
             break
 
         if target is None:
-            if exhausted:
-                print(f"[{self._log_tag}] 所有商品的 끌올 次数均已用完")
-                return "refresh_count_exhausted"
-            raise RuntimeError("끌올 按钮结构已变化，未找到可安全执行的按钮")
+            print(f"[{self._log_tag}] 当前没有可修改的上架商品")
+            return "nothing_to_refresh"
 
-        previous_origin = await _read_document_time_origin(self.page)
+        print(
+            f"[{self._log_tag}] 进入商品修改页: "
+            f"item_seq={target_action['item_seq']}, "
+            f"division={target_action['division']}"
+        )
         await target.click(
             timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
-        return await self._wait_refresh_result(previous_origin, timeout)
+        await self._wait_edit_page_ready(
+            target_action["item_seq"], timeout)
+
+        submit = self.page.locator(EDIT_SUBMIT_SELECTOR).first
+        previous_origin = await _read_document_time_origin(self.page)
+        await submit.click(
+            timeout=max(timeout, MIN_COMMIT_TIMEOUT_MS))
+        return await self._wait_edit_save_result(
+            previous_origin, target_action["item_seq"], timeout)
 
     async def _sync_sales_products(self, timeout: int) -> dict:
         first = await self._crawl_sales_products_once(timeout)
@@ -997,17 +998,38 @@ class ItembayRefreshWorker(PageWorker):
             for payload in payloads
         ]
 
-    async def _wait_refresh_result(
-            self, previous_origin: Optional[float], timeout: int) -> str:
+    async def _wait_edit_page_ready(
+            self, item_seq: str, timeout: int) -> None:
+        ready_timeout = max(timeout, MIN_READY_TIMEOUT_MS)
+        try:
+            await self.page.wait_for_selector(
+                EDIT_SUBMIT_SELECTOR,
+                state="visible",
+                timeout=ready_timeout,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"商品 {item_seq} 修改页未出现保存按钮，"
+                f"当前地址={self.page.url}"
+            ) from exc
+        if not any(path in self.page.url for path in EDIT_PAGE_PATHS):
+            raise RuntimeError(
+                f"商品 {item_seq} 未进入有效修改页，"
+                f"当前地址={self.page.url}"
+            )
+
+    async def _wait_edit_save_result(
+            self, previous_origin: Optional[float],
+            item_seq: str, timeout: int) -> str:
         deadline = time.monotonic() + max(
             REFRESH_RESULT_TIMEOUT_SECONDS,
             max(timeout, MIN_COMMIT_TIMEOUT_MS) / 1000,
         )
         while time.monotonic() < deadline:
             if self.page.is_closed():
-                raise RuntimeError("끌올 结果检查时页面已关闭")
+                raise RuntimeError("保存商品结果检查时页面已关闭")
             if self._session.is_login_page(self.page.url):
-                raise RuntimeError("끌올 后检测到 ItemBay 登录失效")
+                raise RuntimeError("保存商品后检测到 ItemBay 登录失效")
 
             current_origin = await _read_document_time_origin(self.page)
             document_changed = (
@@ -1019,12 +1041,16 @@ class ItembayRefreshWorker(PageWorker):
             )
             if document_changed and SELL_LIST_URL in self.page.url:
                 if await self._wait_refresh_table(timeout):
-                    print(f"[{self._log_tag}] 商品 끌올 成功")
+                    print(
+                        f"[{self._log_tag}] 商品修改保存成功: "
+                        f"item_seq={item_seq}"
+                    )
                     return "refreshed"
             await asyncio.sleep(0.25)
 
         raise RuntimeError(
-            f"끌올 提交后未返回有效上架列表，当前地址={self.page.url}"
+            f"商品 {item_seq} 保存后未返回有效上架列表，"
+            f"当前地址={self.page.url}"
         )
 
     async def _prepare_refresh_action_page(self, timeout: int):

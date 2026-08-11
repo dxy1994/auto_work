@@ -532,6 +532,7 @@ async def _dispatch_message(msg, ctx: AppContext):
                 "approved": bool(msg.get("approved")),
                 "reply_received": bool(msg.get("reply_received")),
                 "reply_text": str(msg.get("reply_text") or ""),
+                "error_code": str(msg.get("error_code") or ""),
                 "error": str(msg.get("error") or ""),
             },
         )

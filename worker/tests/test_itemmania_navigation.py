@@ -321,11 +321,37 @@ class ItemmaniaNavigationTest(unittest.IsolatedAsyncioTestCase):
 
     def test_only_refresh_worker_periodically_recycles_its_long_running_page(self):
         refresh_source = inspect.getsource(ManiaRefreshWorker.run)
+        recycle_source = inspect.getsource(
+            ManiaRefreshWorker._recycle_refresh_page_if_due)
         order_source = inspect.getsource(ManiaOrderWorker.run)
 
-        self.assertIn("REFRESH_PAGE_MAX_ACTIONS", refresh_source)
-        self.assertIn("recycle_page", refresh_source)
+        self.assertEqual(100, itemmania_module.REFRESH_PAGE_MAX_ACTIONS)
+        self.assertIn("_refresh_actions_on_page += 1", refresh_source)
+        self.assertIn("REFRESH_PAGE_MAX_ACTIONS", recycle_source)
+        self.assertIn("recycle_page", recycle_source)
         self.assertNotIn("recycle_page", order_source)
+
+    async def test_refresh_worker_recycles_page_on_100th_action(self):
+        worker = ManiaRefreshWorker(
+            _FakeSession(), None,
+            SimpleNamespace(navigation_lock=asyncio.Lock()))
+        worker.recycle_page = AsyncMock()
+        worker._ensure_refresh_page_ready = AsyncMock()
+
+        worker._refresh_actions_on_page = 99
+        self.assertFalse(
+            await worker._recycle_refresh_page_if_due(10000)
+        )
+        worker.recycle_page.assert_not_awaited()
+
+        worker._refresh_actions_on_page = 100
+        self.assertTrue(
+            await worker._recycle_refresh_page_if_due(10000)
+        )
+
+        worker.recycle_page.assert_awaited_once()
+        worker._ensure_refresh_page_ready.assert_awaited_once_with(10000)
+        self.assertEqual(0, worker._refresh_actions_on_page)
 
     def test_worker_pages_navigate_independently_and_only_relogin_is_locked(self):
         navigation_source = "\n".join((

@@ -104,6 +104,12 @@ class ChatDispatchServiceTest {
                 messages.getValue().get(1).get("image_urls"));
         assertTrue(target.getValue().get("url").toString().contains("tid=IM-2026-42"));
         assertEquals("#write_chat", target.getValue().get("input_selector"));
+        assertEquals(true, target.getValue().get("itemmania_image_upload"));
+        assertEquals(30_000, target.getValue().get("image_upload_timeout_ms"));
+        assertEquals(30_000, target.getValue().get("image_sent_timeout_ms"));
+        assertEquals(
+                true,
+                target.getValue().get("image_sent_refresh_on_timeout"));
     }
 
     @Test
@@ -149,11 +155,60 @@ class ChatDispatchServiceTest {
         assertEquals(List.of(), messages.getValue());
         assertEquals("confirm_delivery", action.getValue().get("type"));
         assertEquals(true, action.getValue().get("skip_chat"));
+        assertEquals(true, action.getValue().get("proof_already_sent"));
         assertTrue(action.getValue().get("detail_url").toString()
                 .contains("sell_ing_view.html?id=IM-2026-42"));
         assertEquals("#trade_btn", action.getValue().get("open_confirm_selector"));
         assertEquals(".caution_list .caution", action.getValue().get("stage_selector"));
         assertEquals(3, action.getValue().get("pending_stage"));
+    }
+
+    @Test
+    void deliveryConfirmationSendsCompletionMessageBeforePlatformAction() {
+        GameItemOrder order = itemManiaOrder();
+        order.setDeliveryStatus("wait_web_confirm");
+        order.setStatus("processing");
+        order.setGameTradeScreenshot(
+                "/uploads/trade-screenshots/2026/07/29/proof.png");
+        PlatformAccount account = new PlatformAccount();
+        account.setId(5);
+        account.setWebsiteId(1);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(7);
+        binding.setAccountId(5);
+
+        when(orderService.getById(42)).thenReturn(order);
+        when(accountService.getById(5)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(5))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(7)).thenReturn(7);
+        when(platformService.getById(1)).thenReturn(itemMania());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap(), anyMap()))
+                .thenReturn(true);
+
+        ChatDispatchService.DispatchReceipt receipt =
+                service.dispatchDeliveryConfirmation(
+                        42,
+                        List.of(Map.of("content", "交易完成，谢谢")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Map<String, Object>>> messages =
+                ArgumentCaptor.forClass(List.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> action =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), messages.capture(), anyMap(), action.capture());
+
+        assertEquals(1, receipt.messageCount());
+        assertEquals("交易完成，谢谢", messages.getValue().get(0).get("content"));
+        assertEquals(false, action.getValue().get("skip_chat"));
+        assertEquals(true, action.getValue().get("proof_already_sent"));
+        assertEquals(true, action.getValue().get("chat_failure_non_blocking"));
     }
 
     @Test
@@ -237,6 +292,86 @@ class ChatDispatchServiceTest {
         assertEquals(true, target.getValue().get("upload_auto_send"));
         assertEquals(800, target.getValue().get("max_text_length"));
         assertEquals(5 * 1024 * 1024, target.getValue().get("max_image_bytes"));
+    }
+
+    @Test
+    void itemBayFinalConfirmationRefreshesChatWhileWaitingForReply() {
+        GameItemOrder order = itemBayOrder();
+        PlatformAccount account = new PlatformAccount();
+        account.setId(6);
+        account.setWebsiteId(2);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(8);
+        binding.setAccountId(6);
+
+        when(orderService.getById(43)).thenReturn(order);
+        when(accountService.getById(6)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(6))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(8)).thenReturn(8);
+        when(platformService.getById(2)).thenReturn(itemBay());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap()))
+                .thenReturn(true);
+
+        service.dispatchTradeFinalConfirmation(
+                43,
+                "itembay-final-1",
+                List.of(Map.of("content", "네 또는 아니요라고 답해주세요")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> target =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), target.capture());
+
+        assertEquals(true, target.getValue().get("wait_for_reply"));
+        assertEquals(
+                5_000,
+                target.getValue().get("reply_refresh_interval_ms"));
+    }
+
+    @Test
+    void itemManiaFinalConfirmationDoesNotRefreshRealtimeChat() {
+        GameItemOrder order = itemManiaOrder();
+        PlatformAccount account = new PlatformAccount();
+        account.setId(5);
+        account.setWebsiteId(1);
+        account.setIsActive(1);
+        MachinePlatformAccount binding = new MachinePlatformAccount();
+        binding.setMachineId(7);
+        binding.setAccountId(5);
+
+        when(orderService.getById(42)).thenReturn(order);
+        when(accountService.getById(5)).thenReturn(account);
+        when(machinePlatformAccountService.findByAccountIdActive(5))
+                .thenReturn(List.of(binding));
+        when(agentRegistry.pickAgent(7)).thenReturn(7);
+        when(platformService.getById(1)).thenReturn(itemMania());
+        when(agentRegistry.sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), anyMap()))
+                .thenReturn(true);
+
+        service.dispatchTradeFinalConfirmation(
+                42,
+                "itemmania-final-1",
+                List.of(Map.of("content", "交易确认: 这次交易我已核对金额")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> target =
+                ArgumentCaptor.forClass(Map.class);
+        verify(agentRegistry).sendChat(
+                anyInt(), anyString(), anyInt(), anyInt(), anyInt(), anyString(),
+                anyString(), anyString(), anyList(), target.capture());
+
+        assertEquals(true, target.getValue().get("wait_for_reply"));
+        assertEquals(
+                false,
+                target.getValue().containsKey("reply_refresh_interval_ms"));
     }
 
     @Test
@@ -366,6 +501,7 @@ class ChatDispatchServiceTest {
                         "네네",
                         "네 맞습니다",
                         "예 맞습니다",
+                        "넵 맞습니다",
                         "네 본인 맞습니다",
                         "네 본인 맛습니다",
                         "맛습니다",

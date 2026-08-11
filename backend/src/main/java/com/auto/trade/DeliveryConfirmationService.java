@@ -1,14 +1,20 @@
 package com.auto.trade;
 
 import com.auto.entity.GameItemOrder;
+import com.auto.entity.GameScript;
+import com.auto.entity.RegionScript;
 import com.auto.entity.TradeEvent;
 import com.auto.service.GameItemOrderService;
+import com.auto.service.GameScriptService;
+import com.auto.service.RegionScriptService;
 import com.auto.service.TradeEventService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -18,6 +24,7 @@ import java.util.Map;
 public class DeliveryConfirmationService {
 
     public static final String PURPOSE = "delivery_confirmation";
+    public static final String COMPLETION_SCRIPT_CATEGORY = "交易完成";
     private static final Logger log =
             LoggerFactory.getLogger(DeliveryConfirmationService.class);
 
@@ -25,16 +32,22 @@ public class DeliveryConfirmationService {
     private final GameItemOrderService orderService;
     private final ManualOrderStatusService manualOrderStatusService;
     private final TradeEventService tradeEventService;
+    private final GameScriptService gameScriptService;
+    private final RegionScriptService regionScriptService;
 
     public DeliveryConfirmationService(
             ChatDispatchService chatDispatchService,
             GameItemOrderService orderService,
             ManualOrderStatusService manualOrderStatusService,
-            TradeEventService tradeEventService) {
+            TradeEventService tradeEventService,
+            GameScriptService gameScriptService,
+            RegionScriptService regionScriptService) {
         this.chatDispatchService = chatDispatchService;
         this.orderService = orderService;
         this.manualOrderStatusService = manualOrderStatusService;
         this.tradeEventService = tradeEventService;
+        this.gameScriptService = gameScriptService;
+        this.regionScriptService = regionScriptService;
     }
 
     public void dispatch(int orderId) {
@@ -44,20 +57,46 @@ public class DeliveryConfirmationService {
             return;
         }
         try {
+            List<Map<String, Object>> completionMessages;
+            try {
+                completionMessages = completionScripts(order);
+            } catch (RuntimeException scriptError) {
+                recordCompletionMessageFailure(
+                        order, "load", normalizeMessage(
+                                scriptError.getMessage(), "读取交易完成话术失败"));
+                completionMessages = List.of();
+            }
             appendEvent(
                     order,
                     "trade_screenshot_stored",
                     "最终确认前截图已直传 RustFS",
                     Map.of("screenshot_path", order.getGameTradeScreenshot()));
-            ChatDispatchService.DispatchReceipt receipt =
-                    chatDispatchService.dispatchDeliveryConfirmation(orderId);
+            ChatDispatchService.DispatchReceipt receipt;
+            try {
+                receipt = chatDispatchService.dispatchDeliveryConfirmation(
+                        orderId, completionMessages);
+            } catch (RuntimeException completionDispatchError) {
+                if (completionMessages.isEmpty()) {
+                    throw completionDispatchError;
+                }
+                recordCompletionMessageFailure(
+                        order, "dispatch", normalizeMessage(
+                                completionDispatchError.getMessage(),
+                                "交易完成话术指令下发失败"));
+                completionMessages = List.of();
+                receipt = chatDispatchService.dispatchDeliveryConfirmation(
+                        orderId, completionMessages);
+            }
             appendEvent(
                     order,
                     "delivery_confirmation_dispatched",
-                    "网站商品交付确认指令已下发，最终确认截图不再重复发送",
+                    completionMessages.isEmpty()
+                            ? "网站商品交付确认指令已下发；未配置交易完成话术，最终确认截图不再重复发送"
+                            : "交易完成话术与网站商品交付确认指令已下发，最终确认截图不再重复发送",
                     Map.of(
                             "request_id", receipt.requestId(),
                             "machine_id", receipt.machineId(),
+                            "completion_message_count", completionMessages.size(),
                             "screenshot_path", order.getGameTradeScreenshot()));
             log.info(
                     "[DeliveryConfirmation] 指令已下发 order_id={} request_id={} machine_id={}",
@@ -123,6 +162,20 @@ public class DeliveryConfirmationService {
             return;
         }
 
+        String completionMessageError = normalizeOptionalMessage(
+                safeDetails.get("completion_message_error"));
+        if (!completionMessageError.isBlank()) {
+            appendEvent(
+                    order,
+                    "trade_completion_message_failed",
+                    "交易完成话术发送失败，已继续执行网站交付确认："
+                            + completionMessageError,
+                    Map.of(
+                            "request_id", requestId,
+                            "machine_id", machineId,
+                            "error", completionMessageError));
+        }
+
         Map<String, Object> proofPayload = Map.of(
                 "request_id", requestId,
                 "machine_id", machineId,
@@ -133,7 +186,9 @@ public class DeliveryConfirmationService {
                 order,
                 proofReady ? "delivery_proof_sent" : "delivery_proof_failed",
                 proofAlreadySent
-                        ? "最终确认截图此前已发送，本次未重复发送"
+                        ? chatSent
+                                ? "交易完成话术已发送；最终确认截图此前已发送，本次未重复发送"
+                                : "最终确认截图此前已发送，本次未重复发送"
                         : proofReady
                         ? "交易截图已发送，聊天页已关闭"
                         : chatSent
@@ -190,6 +245,54 @@ public class DeliveryConfirmationService {
                 "completed");
     }
 
+    private List<Map<String, Object>> completionScripts(GameItemOrder order) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        if (order.getGameId() != null) {
+            for (GameScript script : gameScriptService.findAllByGameIdAndCategory(
+                    order.getGameId(), COMPLETION_SCRIPT_CATEGORY)) {
+                addScript(messages, script.getContent(), script.getImageUrl());
+            }
+        }
+        if (order.getRegionId() != null) {
+            for (RegionScript script : regionScriptService.findAllByRegionIdAndCategory(
+                    order.getRegionId(), COMPLETION_SCRIPT_CATEGORY)) {
+                addScript(messages, script.getContent(), script.getImageUrl());
+            }
+        }
+        return messages;
+    }
+
+    private void addScript(
+            List<Map<String, Object>> messages,
+            String content,
+            String imageUrl) {
+        Map<String, Object> message = new LinkedHashMap<>();
+        if (content != null && !content.isBlank()) {
+            message.put("content", content.trim());
+        }
+        if (imageUrl != null && !imageUrl.isBlank()) {
+            message.put("image_url", imageUrl.trim());
+        }
+        if (!message.isEmpty()) {
+            messages.add(message);
+        }
+    }
+
+    private void recordCompletionMessageFailure(
+            GameItemOrder order,
+            String stage,
+            String error) {
+        appendEvent(
+                order,
+                "trade_completion_message_failed",
+                "交易完成话术处理失败，已继续执行网站交付确认：" + error,
+                Map.of("stage", stage, "error", error));
+        log.warn(
+                "[DeliveryConfirmation] 交易完成话术处理失败，继续网站确认 "
+                        + "order_id={} stage={}: {}",
+                order.getId(), stage, error);
+    }
+
     private void appendEvent(
             GameItemOrder order,
             String eventType,
@@ -233,6 +336,11 @@ public class DeliveryConfirmationService {
         if (result.isBlank()) {
             result = fallback;
         }
+        return result.substring(0, Math.min(300, result.length()));
+    }
+
+    private static String normalizeOptionalMessage(Object value) {
+        String result = value == null ? "" : value.toString().strip();
         return result.substring(0, Math.min(300, result.length()));
     }
 }

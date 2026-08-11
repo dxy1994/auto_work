@@ -1395,6 +1395,42 @@ class LineageNavigationTest(unittest.TestCase):
         navigator.click_region.assert_any_call(TradeUi.FINAL_REJECT_REGION)
         navigator.click.assert_any_call((320, 560))
 
+    def test_confirmation_image_send_failure_keeps_specific_error_code(self):
+        executor = LineageClassicExecutor(object())
+        navigator = mock.Mock()
+        navigator.wait_for_step.side_effect = [
+            (100, 100),
+            (200, 200),
+            (300, 300),
+            (320, 560),
+        ]
+        executor._wait_for_expected_buyer = mock.Mock(return_value="Buyer")
+        executor._build_transfers = mock.Mock(return_value=[])
+        executor._capture_final_trade_screenshot = mock.Mock(
+            return_value="data:image/png;base64,proof")
+        executor._wait_for_trade_closed = mock.Mock(return_value=False)
+        executor.set_trade_screenshot_callback(lambda _screenshot: {
+            "approved": False,
+            "reply_received": False,
+            "error_code": "FINAL_CONFIRMATION_IMAGE_SEND_FAILED",
+            "error": "第 2 条消息的图片发送失败: 图片选择后未在会话中显示",
+        })
+
+        with mock.patch(
+            "game_executor.executor.lineage_classic.executor.build_navigator",
+            return_value=navigator,
+        ):
+            result = executor._execute_sync({
+                **ORDER,
+                "buyer_character": "Buyer",
+            })
+
+        self.assertEqual("cancelled", result["status"])
+        self.assertEqual(
+            "FINAL_CONFIRMATION_IMAGE_SEND_FAILED",
+            result["error_code"],
+        )
+
     def test_final_rejection_clicks_trade_cancel_before_waiting_for_close(self):
         executor = LineageClassicExecutor(object())
         executor._wait_for_trade_closed = mock.Mock(return_value=True)
