@@ -16,6 +16,10 @@ import java.util.Map;
 @RequestMapping("/api/games")
 public class GameController {
 
+    private static final int DEFAULT_TRADE_TIMEOUT_SECONDS = 600;
+    private static final int MIN_TRADE_TIMEOUT_SECONDS = 30;
+    private static final int MAX_TRADE_TIMEOUT_SECONDS = 7200;
+
     private final GameService gameService;
 
     public GameController(GameService gameService) {
@@ -52,6 +56,7 @@ public class GameController {
         }
         payload.setId(null);
         payload.setIsActive(1);
+        payload.setTradeTimeoutSeconds(validateTradeTimeout(payload.getTradeTimeoutSeconds()));
         gameService.save(payload);
         return payload;
     }
@@ -65,6 +70,10 @@ public class GameController {
         if (payload.getIcon() != null) g.setIcon(payload.getIcon());
         if (payload.getPlatform() != null) g.setPlatform(payload.getPlatform());
         if (payload.getRemark() != null) g.setRemark(payload.getRemark());
+        if (payload.getTradeType() != null) g.setTradeType(payload.getTradeType());
+        if (payload.getTradeTimeoutSeconds() != null) {
+            g.setTradeTimeoutSeconds(validateTradeTimeout(payload.getTradeTimeoutSeconds()));
+        }
         if (payload.getSortOrder() != null) g.setSortOrder(payload.getSortOrder());
         if (payload.getIsActive() != null) g.setIsActive(payload.getIsActive());
         gameService.updateById(g);
@@ -76,7 +85,14 @@ public class GameController {
     public void delete(@PathVariable Integer id) {
         Game g = gameService.getById(id);
         if (g == null) throw ApiException.notFound("游戏不存在");
-        g.setIsActive(0);
-        gameService.updateById(g);
+        gameService.removeById(id);
+    }
+
+    private int validateTradeTimeout(Integer seconds) {
+        int value = seconds != null ? seconds : DEFAULT_TRADE_TIMEOUT_SECONDS;
+        if (value < MIN_TRADE_TIMEOUT_SECONDS || value > MAX_TRADE_TIMEOUT_SECONDS) {
+            throw ApiException.badRequest("交易超时时间必须在 30 到 7200 秒之间");
+        }
+        return value;
     }
 }

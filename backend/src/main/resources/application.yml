@@ -14,15 +14,16 @@ spring:
       max-lifetime: 3600000
   jackson:
     property-naming-strategy: SNAKE_CASE
-    serialization:
-      write-dates-as-timestamps: false
     default-property-inclusion: always
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
   servlet:
     multipart:
-      max-file-size: 20MB
-      max-request-size: 20MB
+      max-file-size: 2GB
+      max-request-size: 2050MB
 
 mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
   global-config:
     banner: false
     db-config:
@@ -34,8 +35,8 @@ mybatis-plus:
 app:
   # AES 加密密钥（32字节，与原 Python 后端 backend/.env 保持一致以兼容历史加密数据）
   secret-key: ${SECRET_KEY:your-32-byte-secret-key-change-this!}
-  # CORS 允许来源
-  cors-origins: ${CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+  # CORS 允许来源（* 表示允许任意来源）
+  cors-origins: ${CORS_ORIGINS:*}
   # 对象存储（RustFS / S3 兼容）
   storage:
     endpoint: ${STORAGE_ENDPOINT:http://127.0.0.1:9000}
@@ -49,4 +50,3 @@ app:
 logging:
   level:
     root: INFO
-    org.hibernate.SQL: WARN

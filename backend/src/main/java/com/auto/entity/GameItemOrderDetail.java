@@ -28,16 +28,25 @@ public class GameItemOrderDetail {
 
     private String itemImage;
 
+    private String itemSelectedImage;
+
     private Integer quantity = 1;
 
     private BigDecimal unitPrice = BigDecimal.ZERO;
 
     private BigDecimal subtotal = BigDecimal.ZERO;
 
-    /** pending / processing / completed / failed。 */
+    private BigDecimal purchasePrice;
+
+    private BigDecimal sellingPrice;
+
+    /** pending / processing / completed / failed / cancelled。 */
     private String status = "pending";
 
     private String remark;
+
+    /** 来源套装名称（套装拆分时记录，单物品为空） */
+    private String bundleName;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;

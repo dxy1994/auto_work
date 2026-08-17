@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.auto.mapper.GameRegionMapper">
+
+    <select id="maxSortOrder" resultType="integer">
+        select max(sort_order) from game_regions where game_id = #{gameId}
+    </select>
+
+</mapper>

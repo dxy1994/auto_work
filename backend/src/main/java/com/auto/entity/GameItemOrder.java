@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -22,9 +23,31 @@ public class GameItemOrder {
 
     private String orderNo;
 
+    private Integer websiteId;
+
+    /** 实际采集该订单的平台账号，用于后续招呼和平台确认。 */
+    private Integer platformAccountId;
+
+    private String sourceOrderNo;
+
     private Integer gameId;
 
     private Integer regionId;
+
+    private Integer gameAccountId;
+
+    private String buyerCharacter;
+
+    private String assetType = "adena";
+
+    private BigDecimal assetAmount;
+
+    private String deliveryStatus = "detected";
+
+    private String assignmentId;
+
+    @Version
+    private Integer rowVersion = 0;
 
     private String customerName;
 
@@ -32,7 +55,7 @@ public class GameItemOrder {
 
     private BigDecimal totalAmount = BigDecimal.ZERO;
 
-    /** pending / assigned / processing / completed / cancelled。 */
+    /** pending / assigned / processing / completed / cancelled / abnormal。 */
     private String status = "pending";
 
     private Integer assignedMachineId;
@@ -41,7 +64,40 @@ public class GameItemOrder {
 
     private LocalDateTime completedAt;
 
+    private LocalDateTime gameDeliveredAt;
+
+    private String gameTradeScreenshot;
+
+    private LocalDateTime gameTradeScreenshotAt;
+
+    private LocalDateTime websiteConfirmedAt;
+
+    private String lastErrorCode;
+
+    private String lastErrorMessage;
+
     private String remark;
+
+    /** 平台原始下单时间（Marketplace 采集） */
+    private LocalDateTime platformOrderTime;
+
+    /** 平台售价-원（Marketplace 采集） */
+    private BigDecimal platformPrice;
+
+    /** 平台物品分类-게임머니/아이템/계정（Marketplace 采集） */
+    private String platformItemType;
+
+    /** 平台商品标题（Marketplace 采集） */
+    private String productTitle;
+
+    /** 实际交易物品标识（从标题的 %...% 中解析，按物品名称或编码匹配子订单） */
+    private String tradeItemName;
+
+    /** 上架数量（Marketplace 采集） */
+    private Integer quantity;
+
+    /** 已售数量（Marketplace 采集） */
+    private Integer saleQuantity;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;

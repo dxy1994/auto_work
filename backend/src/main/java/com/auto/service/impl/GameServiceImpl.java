@@ -6,7 +6,7 @@ import com.auto.service.GameService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -35,5 +35,12 @@ public class GameServiceImpl extends ServiceImpl<GameMapper, Game> implements Ga
     @Override
     public Game findByCode(String code) {
         return getOne(new LambdaQueryWrapper<Game>().eq(Game::getCode, code), false);
+    }
+
+    @Override
+    public Game findByName(String name) {
+        return getOne(new LambdaQueryWrapper<Game>()
+                .eq(Game::getIsActive, 1)
+                .like(Game::getName, name), false);
     }
 }

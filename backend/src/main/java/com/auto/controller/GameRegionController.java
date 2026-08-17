@@ -4,9 +4,10 @@ import com.auto.common.ApiException;
 import com.auto.common.PageRequests;
 import com.auto.entity.GameItem;
 import com.auto.entity.GameRegion;
-import com.auto.entity.GameRegionItem;
+import com.auto.entity.GameRegionInventory;
 import com.auto.service.GameItemService;
-import com.auto.service.GameRegionItemService;
+import com.auto.service.GameRegionInventoryService;
+import com.auto.service.GameRegionInventoryShopPriceService;
 import com.auto.service.GameRegionService;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpStatus;
@@ -25,13 +26,16 @@ public class GameRegionController {
 
     private final GameRegionService regionService;
     private final GameItemService itemService;
-    private final GameRegionItemService inventoryService;
+    private final GameRegionInventoryService inventoryService;
+    private final GameRegionInventoryShopPriceService shopPriceService;
 
     public GameRegionController(GameRegionService regionService, GameItemService itemService,
-                                GameRegionItemService inventoryService) {
+                                GameRegionInventoryService inventoryService,
+                                GameRegionInventoryShopPriceService shopPriceService) {
         this.regionService = regionService;
         this.itemService = itemService;
         this.inventoryService = inventoryService;
+        this.shopPriceService = shopPriceService;
     }
 
     @GetMapping
@@ -52,6 +56,7 @@ public class GameRegionController {
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     public GameRegion create(@RequestBody GameRegion payload) {
+        validateNavigation(payload);
         if (regionService.findByGameIdAndCode(payload.getGameId(), payload.getCode()) != null) {
             throw ApiException.badRequest("该游戏下大区编码 " + payload.getCode() + " 已存在");
         }
@@ -59,6 +64,7 @@ public class GameRegionController {
         int autoSort = (maxSort == null ? 0 : maxSort) + 1;
         payload.setId(null);
         if (payload.getSortOrder() == null) payload.setSortOrder(autoSort);
+        if (payload.getSelectPage() == null) payload.setSelectPage(1);
         payload.setIsActive(1);
         regionService.save(payload);
         initRegionInventory(payload);
@@ -68,17 +74,18 @@ public class GameRegionController {
     /** 为新大区初始化该游戏下所有有效物品的库存记录（默认 0）。 */
     private void initRegionInventory(GameRegion region) {
         Set<Integer> existing = new HashSet<>();
-        for (GameRegionItem inv : inventoryService.findByRegionId(region.getId())) {
+        for (GameRegionInventory inv : inventoryService.findByRegionId(region.getId())) {
             existing.add(inv.getItemId());
         }
         for (GameItem item : itemService.findByGameIdActive(region.getGameId())) {
             if (existing.contains(item.getId())) continue;
-            GameRegionItem inv = new GameRegionItem();
+            GameRegionInventory inv = new GameRegionInventory();
             inv.setGameId(region.getGameId());
             inv.setRegionId(region.getId());
             inv.setItemId(item.getId());
-            inv.setStock(0);
+            inv.setStock(0L);
             inventoryService.save(inv);
+            shopPriceService.initForInventory(inv.getId());
         }
     }
 
@@ -86,9 +93,13 @@ public class GameRegionController {
     public GameRegion update(@PathVariable Integer regionId, @RequestBody GameRegion payload) {
         GameRegion r = regionService.getById(regionId);
         if (r == null) throw ApiException.notFound("大区不存在");
+        validateNavigation(payload);
         if (payload.getName() != null) r.setName(payload.getName());
         if (payload.getCode() != null) r.setCode(payload.getCode());
         if (payload.getSortOrder() != null) r.setSortOrder(payload.getSortOrder());
+        r.setSelectX(payload.getSelectX());
+        r.setSelectY(payload.getSelectY());
+        if (payload.getSelectPage() != null) r.setSelectPage(payload.getSelectPage());
         if (payload.getIsActive() != null) r.setIsActive(payload.getIsActive());
         regionService.updateById(r);
         return r;
@@ -99,7 +110,21 @@ public class GameRegionController {
     public void delete(@PathVariable Integer regionId) {
         GameRegion r = regionService.getById(regionId);
         if (r == null) throw ApiException.notFound("大区不存在");
-        r.setIsActive(0);
-        regionService.updateById(r);
+        regionService.removeById(regionId);
+    }
+
+    private void validateNavigation(GameRegion payload) {
+        if (payload.getSelectPage() != null && payload.getSelectPage() < 1) {
+            throw ApiException.badRequest("大区页码必须大于或等于 1");
+        }
+        Integer x = payload.getSelectX();
+        Integer y = payload.getSelectY();
+        if (x == null && y == null) return;
+        if (x == null || y == null) {
+            throw ApiException.badRequest("大区选择坐标 X、Y 必须同时填写");
+        }
+        if (x < 0 || x >= 1280 || y < 0 || y >= 960) {
+            throw ApiException.badRequest("大区选择坐标必须位于 1280x960 游戏客户区内");
+        }
     }
 }

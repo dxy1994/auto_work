@@ -6,7 +6,7 @@ import com.auto.service.MachineService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -35,5 +35,19 @@ public class MachineServiceImpl extends ServiceImpl<MachineMapper, Machine> impl
     public Machine findByMacAddress(String macAddress) {
         return getOne(new LambdaQueryWrapper<Machine>()
                 .eq(Machine::getMacAddress, macAddress), false);
+    }
+
+    @Override
+    public Machine findByMkDeviceId(Integer mkDeviceId) {
+        return getOne(new LambdaQueryWrapper<Machine>()
+                .eq(Machine::getMkDeviceId, mkDeviceId)
+                .eq(Machine::getIsActive, 1), false);
+    }
+
+    @Override
+    public Machine findByVsDeviceId(Integer vsDeviceId) {
+        return getOne(new LambdaQueryWrapper<Machine>()
+                .eq(Machine::getVsDeviceId, vsDeviceId)
+                .eq(Machine::getIsActive, 1), false);
     }
 }

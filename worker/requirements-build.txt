@@ -1,0 +1,4 @@
+# Worker Windows packaging toolchain.
+# Keep this separate from runtime requirements so deployment hosts do not
+# install build-only packages.
+pyinstaller==6.21.0

@@ -16,12 +16,19 @@ import software.amazon.awssdk.services.s3.model.BucketAlreadyExistsException;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -77,14 +84,68 @@ public class StorageService {
      */
     public String upload(String keyPrefix, String extension, MultipartFile file) throws IOException {
         String objectKey = keyPrefix + "/" + UUID.randomUUID().toString().replace("-", "") + extension;
+        uploadObject(objectKey, file, Map.of());
+        return objectKey;
+    }
+
+    /**
+     * 使用指定对象键上传文件，并保存供业务列表使用的自定义元数据。
+     */
+    public void uploadObject(String objectKey, MultipartFile file, Map<String, String> metadata) throws IOException {
         PutObjectRequest.Builder req = PutObjectRequest.builder()
                 .bucket(props.getBucket())
-                .key(objectKey);
-        if (file.getContentType() != null) {
+                .key(objectKey)
+                .metadata(metadata != null ? metadata : Map.of());
+        if (file.getContentType() != null && !file.getContentType().isBlank()) {
             req.contentType(file.getContentType());
         }
         client.putObject(req.build(), RequestBody.fromInputStream(file.getInputStream(), file.getSize()));
-        return objectKey;
+    }
+
+    /**
+     * 列出指定前缀下的对象。对象元数据由 HEAD 请求补齐，适合数量较少的安装包目录。
+     */
+    public List<StoredObject> list(String keyPrefix) {
+        List<StoredObject> result = new ArrayList<>();
+        ListObjectsV2Request request = ListObjectsV2Request.builder()
+                .bucket(props.getBucket())
+                .prefix(keyPrefix)
+                .build();
+        client.listObjectsV2Paginator(request).contents().forEach(object -> {
+            StoredObject info = getInfo(object.key());
+            if (info != null) {
+                result.add(new StoredObject(
+                        info.key(),
+                        object.size() != null ? object.size() : info.size(),
+                        object.lastModified() != null ? object.lastModified() : info.lastModified(),
+                        info.contentType(),
+                        info.metadata()));
+            }
+        });
+        return result;
+    }
+
+    /** 读取单个对象的元数据；对象不存在返回 null。 */
+    public StoredObject getInfo(String objectKey) {
+        try {
+            HeadObjectResponse response = client.headObject(HeadObjectRequest.builder()
+                    .bucket(props.getBucket())
+                    .key(objectKey)
+                    .build());
+            return new StoredObject(
+                    objectKey,
+                    response.contentLength() != null ? response.contentLength() : 0L,
+                    response.lastModified(),
+                    response.contentType(),
+                    response.metadata());
+        } catch (NoSuchKeyException e) {
+            return null;
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) {
+                return null;
+            }
+            throw e;
+        }
     }
 
     /** 删除对象；对象不存在时静默忽略。 */
@@ -108,6 +169,19 @@ public class StorageService {
                     .build());
         } catch (NoSuchKeyException e) {
             return null;
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) {
+                return null;
+            }
+            throw e;
         }
+    }
+
+    public record StoredObject(
+            String key,
+            long size,
+            Instant lastModified,
+            String contentType,
+            Map<String, String> metadata) {
     }
 }

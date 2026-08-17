@@ -6,7 +6,7 @@ import com.auto.service.GameScriptService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -33,5 +33,29 @@ public class GameScriptServiceImpl extends ServiceImpl<GameScriptMapper, GameScr
                 .eq(GameScript::getIsActive, 1)
                 .eq(gameId != null, GameScript::getGameId, gameId)
                 .orderByAsc(GameScript::getSortOrder));
+    }
+
+    @Override
+    public GameScript findFirstByGameIdAndCategory(int gameId, String category) {
+        return getOne(new LambdaQueryWrapper<GameScript>()
+                .eq(GameScript::getGameId, gameId)
+                .eq(GameScript::getCategory, category)
+                .eq(GameScript::getIsActive, 1)
+                .orderByAsc(GameScript::getSortOrder)
+                .last("LIMIT 1"), false);
+    }
+
+    @Override
+    public List<GameScript> findAllByGameIdAndCategory(int gameId, String category) {
+        return list(new LambdaQueryWrapper<GameScript>()
+                .eq(GameScript::getGameId, gameId)
+                .eq(GameScript::getCategory, category)
+                .eq(GameScript::getIsActive, 1)
+                .orderByAsc(GameScript::getSortOrder));
+    }
+
+    @Override
+    public Integer maxSortOrder(Integer gameId, String category) {
+        return baseMapper.maxSortOrder(gameId, category);
     }
 }

@@ -22,20 +22,22 @@ public class GameItem {
 
     private Integer gameId;
 
-    /** 父物品ID（套装子物品）。 */
-    private Integer parentId;
-
     private String name;
 
     private String code;
 
     private String image;
 
+    /** 游戏物品被选中时的识别图片。 */
+    private String selectedImage;
+
     private Integer isBundle = 0;
 
     private String category;
 
     private BigDecimal price = BigDecimal.ZERO;
+
+    private String position;
 
     private String remark;
 

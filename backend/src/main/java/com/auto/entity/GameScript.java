@@ -25,6 +25,9 @@ public class GameScript {
 
     private String content;
 
+    /** 招呼图片URL。 */
+    private String imageUrl;
+
     private String category;
 
     private Integer sortOrder = 0;

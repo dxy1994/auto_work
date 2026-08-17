@@ -1,8 +1,7 @@
-patchright
-websockets==16.1
-python-dotenv==1.2.2
-pygame>=2.6
-pyttsx3>=2.97
-boto3>=1.28
-requests>=2.28
-beautifulsoup4>=4.12
+# ═══════════════════════════════════════════════
+# 全量依赖 — 仅供开发/测试环境
+# 生产主机只能选择 requirements-monitor.txt 或
+# requirements-game-executor.txt，不应安装本文件。
+# ═══════════════════════════════════════════════
+-r requirements-monitor.txt
+-r requirements-game-executor.txt

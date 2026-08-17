@@ -6,7 +6,7 @@ import com.auto.service.GameRegionService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -30,7 +30,7 @@ public class GameRegionServiceImpl extends ServiceImpl<GameRegionMapper, GameReg
         return list(new LambdaQueryWrapper<GameRegion>()
                 .eq(GameRegion::getIsActive, 1)
                 .eq(gameId != null, GameRegion::getGameId, gameId)
-                .orderByAsc(GameRegion::getSortOrder));
+                .orderByDesc(GameRegion::getSortOrder));
     }
 
     @Override

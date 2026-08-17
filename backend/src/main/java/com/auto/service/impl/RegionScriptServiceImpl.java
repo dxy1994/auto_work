@@ -6,8 +6,10 @@ import com.auto.service.RegionScriptService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 @Service
 public class RegionScriptServiceImpl extends ServiceImpl<RegionScriptMapper, RegionScript>
@@ -24,5 +26,29 @@ public class RegionScriptServiceImpl extends ServiceImpl<RegionScriptMapper, Reg
                 .orderByAsc(RegionScript::getSortOrder)
                 .orderByDesc(RegionScript::getId);
         return page(page, w);
+    }
+
+    @Override
+    public RegionScript findFirstByRegionIdAndCategory(int regionId, String category) {
+        return getOne(new LambdaQueryWrapper<RegionScript>()
+                .eq(RegionScript::getRegionId, regionId)
+                .eq(RegionScript::getCategory, category)
+                .eq(RegionScript::getIsActive, 1)
+                .orderByAsc(RegionScript::getSortOrder)
+                .last("LIMIT 1"), false);
+    }
+
+    @Override
+    public List<RegionScript> findAllByRegionIdAndCategory(int regionId, String category) {
+        return list(new LambdaQueryWrapper<RegionScript>()
+                .eq(RegionScript::getRegionId, regionId)
+                .eq(RegionScript::getCategory, category)
+                .eq(RegionScript::getIsActive, 1)
+                .orderByAsc(RegionScript::getSortOrder));
+    }
+
+    @Override
+    public Integer maxSortOrder(Integer regionId, String category) {
+        return baseMapper.maxSortOrder(regionId, category);
     }
 }

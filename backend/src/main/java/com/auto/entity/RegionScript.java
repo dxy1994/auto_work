@@ -28,7 +28,8 @@ public class RegionScript {
 
     private String content;
 
-    private String positionImage;
+    /** 图片URL。 */
+    private String imageUrl;
 
     private String category;
 

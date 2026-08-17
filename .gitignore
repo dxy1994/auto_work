@@ -18,6 +18,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 .venv/
+.venv-*/
 venv/
 *.egg-info/
 dist/
@@ -43,6 +44,7 @@ frontend/dist/
 # IDE
 # ================================
 .idea/
+.worktrees/
 *.iml
 .vscode/
 *.swp
@@ -60,6 +62,7 @@ Desktop.ini
 # 日志
 # ================================
 *.log
+worker/.runtime-site-packages/
 
 # ================================
 # Docker

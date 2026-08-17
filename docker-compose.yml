@@ -3,7 +3,7 @@ services:
   # MySQL 数据库
   # ────────────────────────────────────────
   mysql:
-    image: mysql:8.0
+    image: mysql:8.0.40
     container_name: auto-mysql
     restart: unless-stopped
     environment:
@@ -16,12 +16,8 @@ services:
       - mysql_data:/var/lib/mysql
       - ./mysql/logs:/var/log/mysql
       - ./mysql/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
-      # ── 初始化 SQL（按编号顺序执行，仅首次启动生效）──
-      - ./sql/1_init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
-      - ./sql/1_central_control.sql:/docker-entrypoint-initdb.d/02_central_control.sql:ro
-      - ./sql/websites_1.sql:/docker-entrypoint-initdb.d/03_websites.sql:ro
-      - ./sql/accounts_1.sql:/docker-entrypoint-initdb.d/04_accounts.sql:ro
-      - ./sql/website_schedules_1.sql:/docker-entrypoint-initdb.d/05_schedules.sql:ro
+      # ── 初始化 SQL（按字母顺序执行，仅首次启动生效）──
+      - ./sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-root}"]
       interval: 10s
@@ -44,7 +40,7 @@ services:
     volumes:
       - rustfs_data:/data
     healthcheck:
-      test: ["CMD", "sh", "-c", "curl -f http://localhost:9000/ || wget -q -O /dev/null http://localhost:9000/ || exit 1"]
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:9000/health || wget -q -O /dev/null http://localhost:9000/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10

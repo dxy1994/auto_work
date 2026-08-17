@@ -50,6 +50,10 @@ public class ScriptController {
     public GameScript createGameScript(@RequestBody GameScript payload) {
         payload.setId(null);
         payload.setIsActive(1);
+        if (payload.getSortOrder() == null || payload.getSortOrder() == 0) {
+            Integer maxSort = gameScriptService.maxSortOrder(payload.getGameId(), payload.getCategory());
+            payload.setSortOrder((maxSort == null ? 0 : maxSort) + 1);
+        }
         gameScriptService.save(payload);
         return payload;
     }
@@ -60,6 +64,7 @@ public class ScriptController {
         if (s == null) throw ApiException.notFound("话术不存在");
         if (payload.getTitle() != null) s.setTitle(payload.getTitle());
         if (payload.getContent() != null) s.setContent(payload.getContent());
+        if (payload.getImageUrl() != null) s.setImageUrl(payload.getImageUrl());
         if (payload.getCategory() != null) s.setCategory(payload.getCategory());
         if (payload.getSortOrder() != null) s.setSortOrder(payload.getSortOrder());
         if (payload.getIsActive() != null) s.setIsActive(payload.getIsActive());
@@ -72,8 +77,7 @@ public class ScriptController {
     public void deleteGameScript(@PathVariable Integer scriptId) {
         GameScript s = gameScriptService.getById(scriptId);
         if (s == null) throw ApiException.notFound("话术不存在");
-        s.setIsActive(0);
-        gameScriptService.updateById(s);
+        gameScriptService.removeById(scriptId);
     }
 
     // ── 大区话术 ────────────────────────────────────────────────
@@ -95,6 +99,10 @@ public class ScriptController {
     public RegionScript createRegionScript(@RequestBody RegionScript payload) {
         payload.setId(null);
         payload.setIsActive(1);
+        if (payload.getSortOrder() == null || payload.getSortOrder() == 0) {
+            Integer maxSort = regionScriptService.maxSortOrder(payload.getRegionId(), payload.getCategory());
+            payload.setSortOrder((maxSort == null ? 0 : maxSort) + 1);
+        }
         regionScriptService.save(payload);
         return payload;
     }
@@ -106,7 +114,7 @@ public class ScriptController {
         if (payload.getGameScriptId() != null) s.setGameScriptId(payload.getGameScriptId());
         if (payload.getTitle() != null) s.setTitle(payload.getTitle());
         if (payload.getContent() != null) s.setContent(payload.getContent());
-        if (payload.getPositionImage() != null) s.setPositionImage(payload.getPositionImage());
+        if (payload.getImageUrl() != null) s.setImageUrl(payload.getImageUrl());
         if (payload.getCategory() != null) s.setCategory(payload.getCategory());
         if (payload.getSortOrder() != null) s.setSortOrder(payload.getSortOrder());
         if (payload.getIsActive() != null) s.setIsActive(payload.getIsActive());
@@ -119,7 +127,6 @@ public class ScriptController {
     public void deleteRegionScript(@PathVariable Integer scriptId) {
         RegionScript s = regionScriptService.getById(scriptId);
         if (s == null) throw ApiException.notFound("话术不存在");
-        s.setIsActive(0);
-        regionScriptService.updateById(s);
+        regionScriptService.removeById(scriptId);
     }
 }
